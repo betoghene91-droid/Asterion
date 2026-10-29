@@ -1,0 +1,85 @@
+name: fix-tree
+# One-click repair: resets the repo to the exact source tree.
+# Works regardless of how files were uploaded (flat, nested, or partly missing).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download the source zip
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/src.zip \
+            'https://neo.api.projectdiscovery.io/api/v1/files/public/f_vIB9khkuklMqyRgvOA3VAt76ul0'
+          echo "bytes: $(stat -c%s /tmp/src.zip)"
+
+      - name: Clear the repository
+        run: |
+          set -euo pipefail
+          # Keep .git and this workflow; delete everything else. The real tree is
+          # then rebuilt from the zip, so misplaced or partial files cannot survive.
+          find . -mindepth 1 -maxdepth 1 \
+            -not -name '.git' -not -name '.github' \
+            -exec rm -rf -- {} +
+          find .github -mindepth 1 -maxdepth 1 \
+            -not -name 'workflows' -exec rm -rf -- {} +
+          find .github/workflows -mindepth 1 -maxdepth 1 \
+            -not -name 'fix-tree.yml' -exec rm -rf -- {} +
+          echo "cleared; remaining:"; find . -path ./.git -prune -o -type f -print
+
+      - name: Extract the real tree
+        run: |
+          set -euo pipefail
+          unzip -o -q /tmp/src.zip -d .
+          echo "--- top level ---"; ls -a
+
+      - name: Verify the tree
+        run: |
+          set -euo pipefail
+          fail() { echo "FAIL: $*"; exit 1; }
+
+          # Source tree is 169 files; fix-tree.yml is ours, so 170 total.
+          n=$(find . -path ./.git -prune -o -type f -print | wc -l)
+          [ "$n" -eq 170 ] || fail "file count $n, expected 170 (169 + this workflow)"
+
+          for d in src tests desk scripts tools eval dashboard; do
+            [ -d "app/$d" ] || fail "missing app/$d/"
+          done
+          for f in app/package.json app/package-lock.json app/tsconfig.json \
+                   app/tsconfig.build.json app/wrangler.toml app/schema.sql; do
+            [ -f "$f" ] || fail "missing $f"
+          done
+          [ -f app/src/index.ts ] || fail "missing app/src/index.ts"
+
+          s=$(find skills -mindepth 1 -maxdepth 1 -type d | wc -l)
+          [ "$s" -eq 25 ] || fail "skills folders $s, expected 25"
+          t=$(find skills -type f | wc -l)
+          [ "$t" -eq 50 ] || fail "skills files $t, expected 50"
+
+          for w in deploy.yml eval.yml prove.yml contract-audit.yml; do
+            [ -f ".github/workflows/$w" ] || fail "missing .github/workflows/$w"
+          done
+
+          echo "OK: $n files, $s skill packs, $t skill files, app/ subfolders intact, 4 workflows"
+
+      - name: Commit the repaired tree
+        run: |
+          set -euo pipefail
+          git config user.name  'fix-tree'
+          git config user.email 'fix-tree@users.noreply.github.com'
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Nothing to change - repo already correct."
+            exit 0
+          fi
+          git commit -m "fix: restore source tree (169 files, 25 skill packs)"
+          git push origin "HEAD:${{ github.ref_name }}"
