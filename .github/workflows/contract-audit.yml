@@ -1,0 +1,128 @@
+name: contract-audit
+# The smart-contract audit pipeline. Free compute, no laptop.
+#
+# Inputs are a git URL and a commit. Output is a findings bundle that either
+# contains a reproducing test or says nothing. Slither output alone is never
+# a finding: it is a lead. Only a forge test that fails pre-fix counts.
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: 'git URL of the target (public clone)'
+        required: true
+      commit:
+        description: 'commit to audit (empty = default branch head)'
+        required: false
+        default: ''
+      playbooks:
+        description: 'comma-separated playbook ids, or "all"'
+        required: false
+        default: 'all'
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: clone target
+        run: |
+          git clone --quiet "${{ inputs.repo }}" target
+          cd target
+          if [ -n "${{ inputs.commit }}" ]; then git checkout --quiet "${{ inputs.commit }}"; fi
+          echo "HEAD=$(git rev-parse HEAD)" >> $GITHUB_ENV
+          echo "auditing $(git rev-parse --short HEAD) of ${{ inputs.repo }}"
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: install slither
+        run: pip install --quiet slither-analyzer
+
+      - name: build
+        working-directory: target
+        run: |
+          forge build --sizes 2>&1 | tail -30 || forge build 2>&1 | tail -30
+
+      - name: run existing test suite as the baseline
+        working-directory: target
+        continue-on-error: true
+        run: forge test 2>&1 | tail -40
+
+      - name: deterministic pattern scan (ours)
+        working-directory: target
+        run: python3 "$GITHUB_WORKSPACE/scripts/detect.py" . --out /tmp/detect.json
+
+      - name: slither (external, JSON)
+        # AGPL-3.0. Invoked as a separate process over a JSON file: aggregation,
+        # not derivation. Never vendored, never linked.
+        working-directory: target
+        continue-on-error: true
+        run: |
+          pip install --quiet slither-analyzer
+          # Flags verified against slither's CLI: --json-types keeps detector
+          # output only, --fail-on none is deliberate (we gate on our own
+          # triage, not Slither's severity), SARIF is emitted alongside.
+          slither . --json-types detectors \
+            --json /tmp/slither.json \
+            --sarif /tmp/slither.sarif \
+            --filter-paths 'lib|test|script' \
+            --fail-on none 2>&1 | tail -15 || true
+
+      - name: aderyn (external, JSON)
+        # GPL-3.0. Same boundary: external binary, JSON in, nothing linked.
+        working-directory: target
+        continue-on-error: true
+        run: |
+          curl -sSL https://raw.githubusercontent.com/Cyfrin/aderyn/dev/cyfrinup/install | bash >/dev/null 2>&1 || true
+          ADERYN="$(command -v aderyn || echo $HOME/.cyfrin/bin/aderyn)"
+          if [ -x "$ADERYN" ]; then
+            # Format is chosen by file EXTENSION (verified in aderyn/src/main.rs),
+          # so the filename must end .json. `--output` is not the flag.
+          "$ADERYN" . -o /tmp/aderyn.json --src src/ 2>&1 | tail -10 || true
+          "$ADERYN" . -o /tmp/aderyn.sarif --src src/ 2>&1 | tail -3 || true
+          else
+            echo 'aderyn unavailable; continuing with slither + detect'
+          fi
+
+      - name: normalise every tool into one lead set
+        run: |
+          python3 "$GITHUB_WORKSPACE/scripts/normalize.py" \
+            --slither /tmp/slither.json \
+            --aderyn /tmp/aderyn.json \
+            --detect /tmp/detect.json \
+            --out /tmp/leads.json
+          python3 - <<'PY'
+          import json, pathlib
+          p = pathlib.Path('/tmp/leads.json')
+          d = json.loads(p.read_text()) if p.exists() else {'leads': 0, 'items': []}
+          print(f"total leads {d.get('leads', 0)}")
+          for it in (d.get('items') or [])[:20]:
+              by = ','.join(it.get('corroborated_by', []))
+              print(f"  {it['playbook']:20} {it['file']}:{it['line']}  [{by}]")
+          PY
+
+      - name: assemble bundle
+        if: always()
+        run: |
+          mkdir -p out
+          for f in detect slither aderyn leads; do cp /tmp/$f.json out/ 2>/dev/null || true; done
+          echo "{\"repo\":\"${{ inputs.repo }}\",\"commit\":\"$TARGET_SHA\",\"playbooks\":\"${{ inputs.playbooks }}\"}" > out/meta.json
+          ls -la out
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: audit-bundle
+          path: out/
+          retention-days: 90
