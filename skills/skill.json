@@ -1,0 +1,40 @@
+{
+  "id": "sol.delegatecall",
+  "version": 1,
+  "name": "Arbitrary delegatecall / unchecked target",
+  "cls": "solidity",
+  "family": "injection",
+  "requires": [
+    "a delegatecall whose target is traceable to attacker-supplied calldata or attacker-writable storage",
+    "an unprivileged caller path to the function performing the delegatecall",
+    "privileged storage in the caller's context that the called code can write (owner, implementation, balances)"
+  ],
+  "questions": [
+    "Does the delegatecall target come from calldata, an attacker-writable storage slot, or a constant or admin-only slot?",
+    "Who can reach the function performing the delegatecall, and can that authority be granted or transferred by an unprivileged account?",
+    "Which storage slots does the called code write in the caller's context, and is any of them owner, implementation, paused, a balance, or an allowance?",
+    "Is the delegatecall inside a loop over an attacker-growable list of targets?",
+    "Are both the success flag and the returndata checked, or only the low-level boolean, hiding a failed privileged write?",
+    "Does the target receive the caller's msg.sender and msg.value unchanged, letting attacker code act with the caller's authority and balance?",
+    "Is the called code required to be a whitelisted implementation, and can the same actor who supplies the target modify that whitelist?",
+    "For a proxy variant, is _authorizeUpgrade implemented and does it check an authority rather than a writable slot?"
+  ],
+  "false_positives": [
+    "Compiler-emitted library delegatecalls to an address fixed at deploy time",
+    "A proxy with a correct audited _authorizeUpgrade, where the pattern itself is not the bug",
+    "An admin-controlled, timelocked implementation reported as arbitrary delegatecall",
+    "An internal helper named _delegate that calls a fixed address and never uses the opcode",
+    "A target read from a factory registry the attacker cannot write",
+    "A contract with no privileged storage or balance for the called code to overwrite",
+    "A delegatecall to a contract the attacker would have to whitelist first, when whitelisting is admin-only",
+    "The same opcode inside a staticcall-only or view path, where storage cannot be mutated"
+  ],
+  "poc_must_show": [
+    "an attacker contract whose function writes the victim's owner slot or implementation slot",
+    "the unprivileged call supplying that contract as the delegatecall target, succeeding",
+    "post-state read from the caller's storage showing owner() == attacker or the implementation slot pointing at the attacker contract",
+    "for an allowance variant, the allowance delta the attacker gained",
+    "a control run where a restricted or whitelisted target rejects the same attacker contract"
+  ],
+  "impact_bar": "Reportable when an unprivileged caller controls the delegatecall target and can write privileged storage, become owner, replace the implementation, or move funds. Informational when the target is admin-controlled under a timelock or only non-privileged storage is writable."
+}
