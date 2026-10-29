@@ -15,24 +15,15 @@ head_sampling_rate = 0.1
 [[d1_databases]]
 binding = "DB"
 database_name = "asterion"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "4f98cf48-ee71-4f18-8d61-2feceb4af16c"
 # No `migrations_dir` on purpose. The schema is a single idempotent file applied
 # with `wrangler d1 execute --file=./schema.sql` (see package.json db:migrate and
 # the deploy workflow). `wrangler d1 migrations apply` pointed at a `migrations/`
 # directory that does not exist, so that command failed with ENOENT on a fresh
 # clone. Adding the key back means creating a real migrations/ tree first.
 
-# ── R2: corpus + ledger backups (10GB free) ────────────────────────────────
-# Create once: `wrangler r2 bucket create asterion-backups`
-[[r2_buckets]]
-binding = "BACKUPS"
-bucket_name = "asterion-backups"
-
 # ── KV: fast flags / last-known state (does not consume D1 rows) ───────────
 # Create once: `wrangler kv namespace create FLAGS`, paste the id.
-[[kv_namespaces]]
-binding = "FLAGS"
-id = "00000000000000000000000000000000"
 
 # ── Workers AI fallback (free daily neurons) ───────────────────────────────
 [ai]
