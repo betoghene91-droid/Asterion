@@ -1,0 +1,33 @@
+{
+  "name": "asterion",
+  "version": "4.0.0",
+  "private": true,
+  "description": "Asterion — one app. Worker + Telegram bot (intake, dispatch, policy, skills, corpus, learning) and the proof engine (capture, counterfactual, judge, fuzz, patch, plan).",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json && node scripts/copy-mjs.mjs",
+    "test": "npm run build --silent && node --test tests/*.mjs",
+    "test:gates": "node --test tests/gates.test.mjs",
+    "test:dispatch": "node --test tests/dispatch.test.mjs",
+    "test:send": "node --test tests/send.test.mjs",
+    "test:skills": "node --test tests/skills.test.mjs",
+    "test:learn": "node --test tests/learn.test.mjs",
+    "test:proof": "node --test tests/proof.test.mjs tests/counterfactual.test.mjs tests/fuzzseed.test.mjs tests/drain.test.mjs",
+    "test:digest": "node --test tests/digest-union.test.mjs",
+    "db:create": "wrangler d1 create asterion",
+    "db:migrate:local": "wrangler d1 execute asterion --local --file=./schema.sql",
+    "db:migrate": "wrangler d1 execute asterion --remote --file=./schema.sql",
+    "set-webhook": "node scripts/set-webhook.mjs",
+    "skills:build": "node scripts/build-skills-embed.mjs",
+    "corpus:check": "node scripts/load-corpus.mjs --check",
+    "distill": "python3 eval/distill.py"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261028.1",
+    "typescript": "5.9.3",
+    "wrangler": "4.155.0"
+  }
+}

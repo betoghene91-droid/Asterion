@@ -1,0 +1,67 @@
+#:schema node_modules/wrangler/config-schema.json
+name = "asterion"
+main = "src/index.ts"
+compatibility_date = "2026-10-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+# ── observability ──────────────────────────────────────────────────────────
+[observability]
+enabled = true
+head_sampling_rate = 0.1
+
+# ── D1: the single source of truth ─────────────────────────────────────────
+# After `wrangler d1 create asterion`, paste the returned database_id here.
+[[d1_databases]]
+binding = "DB"
+database_name = "asterion"
+database_id = "00000000-0000-0000-0000-000000000000"
+# No `migrations_dir` on purpose. The schema is a single idempotent file applied
+# with `wrangler d1 execute --file=./schema.sql` (see package.json db:migrate and
+# the deploy workflow). `wrangler d1 migrations apply` pointed at a `migrations/`
+# directory that does not exist, so that command failed with ENOENT on a fresh
+# clone. Adding the key back means creating a real migrations/ tree first.
+
+# ── R2: corpus + ledger backups (10GB free) ────────────────────────────────
+# Create once: `wrangler r2 bucket create asterion-backups`
+[[r2_buckets]]
+binding = "BACKUPS"
+bucket_name = "asterion-backups"
+
+# ── KV: fast flags / last-known state (does not consume D1 rows) ───────────
+# Create once: `wrangler kv namespace create FLAGS`, paste the id.
+[[kv_namespaces]]
+binding = "FLAGS"
+id = "00000000000000000000000000000000"
+
+# ── Workers AI fallback (free daily neurons) ───────────────────────────────
+[ai]
+binding = "AI"
+
+# ── Cron: 5 triggers is the free-plan ceiling. Each must earn its slot. ────
+[triggers]
+crons = [
+  "*/5 * * * *",    # sentinel: watchlist log scan
+  "0 * * * *",      # crawler: one discovery tick (<=20 programs)
+  "15 3 * * *",     # maintenance: ledger verify, expire stale approvals
+  "0 */6 * * *",    # dead-man's switch
+  "30 6 * * *"      # daily briefing to Telegram
+]
+
+# ── Vars: non-secret config only. ─────────────────────────────────────────
+# Secrets are a different store: `wrangler secret put NAME`.
+[vars]
+CHAIN_ID = "8453"
+ALERT_FLOOR = "medium"
+DAILY_LLM_BUDGET = "200000"
+DAILY_SUBREQUEST_BUDGET = "40000"
+OPERATOR_NAME = "jennifer"
+# Local-first LLM. Empty means "use hosted free tiers".
+# Point LLM_LOCAL_BASE at your own tabbyapi / vLLM / Ollama OpenAI endpoint.
+LLM_LOCAL_BASE = ""
+LLM_LOCAL_MODEL = ""
+
+# ── Environments ───────────────────────────────────────────────────────────
+[env.production]
+name = "asterion"
+workers_dev = true
