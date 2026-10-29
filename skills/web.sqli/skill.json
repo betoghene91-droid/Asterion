@@ -1,0 +1,38 @@
+{
+  "id": "web.sqli",
+  "version": 1,
+  "name": "SQL injection with a reproducible boolean or time differential",
+  "cls": "web2",
+  "family": "injection",
+  "requires": [
+    "a parameter whose value plausibly reaches a query: filter, sort, search, id, or pagination",
+    "a stable baseline response to diff against, on the same endpoint and session",
+    "for a time claim: the ability to measure latency repeatedly, not once"
+  ],
+  "questions": [
+    "Which parameter reaches a query unsafely, and is it concatenated into SQL text or bound as a parameter in a prepared statement?",
+    "Does a boolean pair such as a true and a false condition produce a consistent, repeatable difference in body, length, or status, independent of caching?",
+    "Does a time-delay payload produce a delay that scales with the requested seconds, rather than a flat timeout that any slow query would also cause?",
+    "Is the injection inside a quoted string, a numeric position, an identifier such as a column or table name, or an ORDER BY clause where bound parameters are illegal?",
+    "Can the same differential be reproduced on a second, structurally similar parameter or endpoint, or is it unique to one request shape?",
+    "Does the response distinguish a syntax error from an empty result set, letting the payload confirm it is being parsed as SQL rather than compared as a string?",
+    "Is the value stored and later used in a second query, such that the injection fires on a read path the original request never touched?",
+    "Does a WAF or normaliser rewrite the payload, so that a negative result reflects the filter rather than the query construction?"
+  ],
+  "false_positives": [
+    "A 500 or a database error page caused by malformed input the application rejected before any query ran",
+    "A body-length change from input reflection in the HTML, where the payload's own characters alter the page size",
+    "A delay that reproduces identically with a syntactically invalid payload, indicating load or a fixed timeout rather than a sleep",
+    "A single observed timing sample with no repeat and no baseline distribution to compare against",
+    "A WAF block page that looks like a query error but appears only for the payload and never for benign special characters",
+    "Ranking or filter changes that a non-SQL path also honours because the endpoint implements them in application code"
+  ],
+  "poc_must_show": [
+    "the baseline response and the true-condition response and the false-condition response, all three, with lengths or hashes",
+    "for a time claim, repeated measurements of baseline and payload latency with the delay scaling with the requested interval",
+    "a neutralised control where the injection characters are escaped or the parameter is removed, showing the differential disappears",
+    "the parameter and exact request that carried the payload, replayable without the tester's commentary",
+    "evidence that the difference is query-derived, such as a syntax error naming a SQL dialect or a delay that only a sleep produces"
+  ],
+  "impact_bar": "a reproducible boolean or time differential that disappears when the payload is neutralised, and that differs from a benign control in a way only query execution explains"
+}

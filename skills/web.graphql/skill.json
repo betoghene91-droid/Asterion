@@ -1,0 +1,38 @@
+{
+  "id": "web.graphql",
+  "version": 1,
+  "name": "GraphQL authorization gap on a field or mutation",
+  "cls": "web2",
+  "family": "access-control",
+  "requires": [
+    "a GraphQL endpoint, with introspection enabled or a schema obtainable from the client bundle",
+    "two principals in different scopes, for the authorization comparison",
+    "a field or mutation that returns or changes data the caller's role should not reach"
+  ],
+  "questions": [
+    "Is introspection enabled, and does the schema reveal types, fields, and mutations the UI never calls?",
+    "Which resolver enforces authorization: the top-level query, the type-level field resolver, or a framework directive applied per field?",
+    "Can a low-privilege caller reach another tenant's object by traversing a relationship from an object they legitimately own, such as team, members, or organization?",
+    "Does a nested field return a sensitive attribute (email, token, internal note, role) that the parent query's authorization was never written to cover?",
+    "Can a mutation be invoked directly with an identifier the caller does not own, bypassing the read-path check the UI relies on?",
+    "Does a field accept an argument such as a tenant, account, or user id that overrides the caller's own context rather than being scoped by it?",
+    "Can batching or aliasing in one document reach many objects in a single request, defeating a per-request rate or scope check?",
+    "Does a query allow unbounded depth or breadth through recursive relationships, making a costly nested traversal available to any caller?"
+  ],
+  "false_positives": [
+    "Introspection is enabled, which is a schema disclosure observation and not an authorization gap on its own",
+    "The nested field is authorized by a type-level resolver applied to every field of that type, which the test did not read",
+    "The traversed relationship returns only the caller's own memberships by construction, so no foreign object is reachable",
+    "A field named like a secret returns a masked or redacted value for non-owners",
+    "The endpoint returns a not-authorized error for the nested path even though the parent query succeeds",
+    "Batching produces many responses that are individually authorized, with no aggregate exposure"
+  ],
+  "poc_must_show": [
+    "the exact GraphQL document issued, with the aliases and arguments quoted",
+    "the response showing another tenant's or role's data, with the principal that sent it named",
+    "a control request for the same document from the owning principal, showing the same data, isolating authorization from schema shape",
+    "the top-level query's authorization behaving correctly, so the gap is specifically in the nested path or the mutation",
+    "for a mutation claim, the persisted change read back from the owner's session afterwards"
+  ],
+  "impact_bar": "a GraphQL field or mutation returns or changes another principal's data through the object graph, with an owning-principal control isolating the authorization gap"
+}

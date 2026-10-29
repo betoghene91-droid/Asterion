@@ -1,0 +1,41 @@
+{
+  "id": "sol.rounding",
+  "version": 1,
+  "name": "Accounting / rounding / precision loss",
+  "cls": "solidity",
+  "family": "accounting",
+  "requires": [
+    "a share, debt, fee, or interest conversion reachable by an unprivileged caller",
+    "attacker influence over the magnitude of at least one operand",
+    "a repeatable or batch path so a dust leak can compound",
+    "foundry fork or unit test with the real token decimals"
+  ],
+  "questions": [
+    "Which direction does the truncation run, and does the party keeping the remainder stay the attacker in every path that reaches it?",
+    "Can the attacker choose the small magnitude (deposit, repay, liquidate amount), or is it fixed by the protocol?",
+    "How many times can the operation be repeated per unit of gas, and is there a batch entry point that amortises each leak?",
+    "Is there a require(shares > 0), minimum deposit, or dead-share guard blocking the zero-value outcome?",
+    "Do the preview functions and the executing function use the same rounding direction, or does the preview lie in the attacker's favour?",
+    "Does the formula divide before it multiplies anywhere, and can the lost precision become large relative to the output?",
+    "Are all token decimals accounted for, and is any involved token fee-on-transfer or rebasing so amount equals received is false?",
+    "Does the interest or reward accumulator use a precision multiplier large enough that per-block truncation cannot be forced repeatedly?"
+  ],
+  "false_positives": [
+    "Dust that costs more gas to harvest than it is worth, with no batch path",
+    "Rounding that favours the protocol in the direction that actually matters",
+    "A require(shares > 0) already present, which blocks the zero-share case",
+    "A one-wei loss with no repetition and no amplification",
+    "Precision loss confined to a view that no state-changing function trusts",
+    "Division-before-multiplication where the operands make the loss provably zero",
+    "Rebasing-token concern on a hardcoded token that cannot rebase",
+    "Fee-on-transfer concern on a standard fixed-supply ERC20"
+  ],
+  "poc_must_show": [
+    "the exact rounding site exercised with numerator, denominator, and truncated result printed",
+    "the attacker net position over N stated repetitions, with gas cost subtracted",
+    "the counterparty loss over the same N repetitions",
+    "a control run with the rounding direction flipped, where the leak disappears",
+    "for fee-on-transfer, the token amount actually received versus the amount recorded"
+  ],
+  "impact_bar": "Reportable for a repeatable, gas-profitable extraction from other users or the protocol, or a permanent accounting drift that breaks a required operation, with total profit quantified after gas. Informational for a real asymmetry with no profitable repetition."
+}

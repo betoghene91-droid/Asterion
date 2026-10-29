@@ -1,0 +1,38 @@
+{
+  "id": "web.xss.reflected",
+  "version": 1,
+  "name": "Reflected XSS that executes in the target origin",
+  "cls": "web2",
+  "family": "injection",
+  "requires": [
+    "a parameter whose value appears in the response body",
+    "knowledge of the sink context: HTML text, attribute, URL, script block, or JSON consumed by client code",
+    "a headless browser to observe execution in the real origin"
+  ],
+  "questions": [
+    "Which parameter is echoed into the response, and in what exact context does it land: HTML text, a quoted attribute, an unquoted attribute, a URL, or inside a script block?",
+    "Are the dangerous characters for that context encoded, and which ones survive \u2014 angle brackets, quotes, ampersand, backslash, or the closing sequence for the surrounding block?",
+    "Is the value decoded somewhere between the request and the sink, making a double-encoded payload land as live markup?",
+    "Does a Content-Security-Policy apply to the response, and does it forbid inline script and eval, or only report violations?",
+    "Is the reflection reachable on a GET request a victim can be made to issue, or does it require a method, header, or interaction the attacker cannot force?",
+    "Does a client-side sink such as innerHTML, document.write, or a framework escape hatch handle the value after the server echoes it?",
+    "Is the response type HTML, or is it JSON or text that only becomes executable once a browser sniffs or a client inserts it?",
+    "Would HttpOnly and a strict cookie policy limit what a successful execution actually yields, and is the session cookie flagged that way?"
+  ],
+  "false_positives": [
+    "The payload is reflected but angle brackets arrive encoded, so it renders as visible text and never becomes an element",
+    "The reflection sits in a JSON response consumed by a client that assigns it with textContent or an equivalent safe sink",
+    "A CSP without unsafe-inline blocks the executed payload, so the reflection exists but the script does not run",
+    "The reflection only occurs on a POST the attacker cannot deliver cross-site without a same-origin form and a matching token",
+    "The value is reflected inside a script block as a properly quoted and escaped string literal, so breaking out requires a sequence that is escaped",
+    "Execution was observed only after the tester manually pasted the payload into the console or edited the DOM by hand"
+  ],
+  "poc_must_show": [
+    "a headless browser load of the exact crafted URL and a DOM or console observation proving our script ran in the target origin",
+    "the unique marker value injected, visible in the execution evidence rather than only in the raw response body",
+    "a control load with the marker replaced by benign text, showing no execution and a normally rendered page",
+    "the response context quoted exactly, so a reader can see why that character sequence was executable",
+    "the document origin at execution time, confirming it is the target and not a data, blob, or sandboxed origin"
+  ],
+  "impact_bar": "a browser executes attacker-supplied script in the target's origin on a URL a victim can be induced to open, with the origin and the execution both observed"
+}

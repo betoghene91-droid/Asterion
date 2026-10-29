@@ -1,0 +1,40 @@
+{
+  "id": "sol.upgrade",
+  "version": 1,
+  "name": "Unsafe upgrade / storage collision",
+  "cls": "solidity",
+  "family": "upgrade",
+  "requires": [
+    "a live proxy in front of the target contract, identified on-chain rather than from the source tree",
+    "the implementation source or bytecode, and both versions' storage layouts for a collision claim",
+    "an unprivileged caller path to initialize or upgrade, or a real layout shift affecting a live variable"
+  ],
+  "questions": [
+    "If the implementation was left initializable, what does an attacker who initializes it gain over the upgrade path specifically: control of the implementation's own storage, a claimed slot the next upgradeTo recycles, or a layout the next version's initializer will not repair?",
+    "Is upgradeTo or upgradeToAndCall guarded by an authority the attacker cannot obtain, and is that authority a timelock or multisig rather than an EOA?",
+    "Do the two versions' forge inspect storageLayout outputs differ in a way that shifts an existing variable, or only append at the end?",
+    "Was a __gap shrunk or reused, or a base contract inserted mid-inheritance, which are the shapes that silently shift layout?",
+    "Does the initializer set every variable the implementation reads, or does an unset variable become an exploitable default such as owner == address(0)?",
+    "Can the proxy's initialize be front-run between proxy deployment and initialization in a separate transaction?",
+    "Are there selector clashes between the proxy's own functions and the implementation's in a non-transparent proxy?",
+    "If the upgrade is timelocked, what is the delay, and does the program scope treat admin-only actions as in-scope?"
+  ],
+  "false_positives": [
+    "A storage collision inferred by reading Solidity inheritance instead of comparing actual storage layouts",
+    "New variables appended at the end of storage, which is safe by design",
+    "_disableInitializers() present in the implementation constructor",
+    "The implementation address has no code or is not deployed",
+    "Admin-can-upgrade treated as a vulnerability when governance is a timelocked multisig and the program excludes trusted-admin risk",
+    "A reinitializer(2) whose version was already consumed",
+    "Mock or test proxies present in the repository",
+    "A layout diff between versions that are not actually deployed in sequence"
+  ],
+  "poc_must_show": [
+    "for the initializer bug, a fresh EOA calling initialize() on the implementation address successfully and owner() reading back as the attacker",
+    "a control call through the proxy that reverts, proving the difference is the direct-implementation path",
+    "for the upgrade bug, the unprivileged upgradeTo succeeding and the implementation slot changing to an attacker-controlled contract",
+    "for a collision, both storageLayout dumps, the exact slot, the old and new variables, and a value written before the upgrade read as a different variable after it",
+    "the value at risk through the proxy and who can withdraw it"
+  ],
+  "impact_bar": "Reportable when an unprivileged account can initialize or replace the implementation and thereby control funds, or a layout change demonstrably corrupts a live variable governing withdrawals, with address and amount named. Informational for shifts that touch nothing live, initializers on non-proxied contracts, or upgrade authority behind a timelock."
+}

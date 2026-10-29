@@ -1,0 +1,38 @@
+{
+  "id": "web.race",
+  "version": 1,
+  "name": "Race condition defeating a single-use or limit semantic",
+  "cls": "web2",
+  "family": "logic",
+  "requires": [
+    "an operation that is single-use or limit-bounded: redeem, transfer, vote, claim, or apply",
+    "approval to issue concurrent state-changing requests against a throwaway account",
+    "the ability to measure the resulting state, such as balance, count, or redemption status"
+  ],
+  "questions": [
+    "Which operation is supposed to succeed exactly once, or at most N times, and where is that limit enforced \u2014 a pre-read then a write, a unique constraint, or an atomic update?",
+    "Can two requests read the same pre-state before either writes, so both pass a check that should admit only one?",
+    "Is the limit enforced by a database constraint inside the transaction, which serialises the requests, or by application logic that reads and then writes?",
+    "What is the exact window: the latency between a balance read and a debit, between a token lookup and a delete, or between a status check and a transition?",
+    "Does a single request correctly produce one effect, establishing that the endpoint works before concurrency is introduced?",
+    "Does the burst produce N effects, or N-1 errors that indicate the limit actually held under load?",
+    "Does a rate limit or a per-account lock reduce the burst to one success, and if so can it be evaded across sessions or connections?",
+    "Is the affected resource money, a coupon, a vote, an invitation, or a seat, and does the multiplied effect convert to a measurable gain?"
+  ],
+  "false_positives": [
+    "A burst where all but one request fails with a conflict or lock error, which is the semantic holding",
+    "Concurrent requests that all succeed but each applies to a different resource, so no limit was violated",
+    "A duplicated side effect that the system reconciles asynchronously, leaving the final state correct",
+    "Sequential requests that also produce multiple effects, which is a missing-check bug rather than a race",
+    "Load-induced 5xx responses mistaken for a successful parallel execution",
+    "A limit that is per-session and by design not global, so multiplying sessions is not a bypass"
+  ],
+  "poc_must_show": [
+    "the single-request control proving one request yields exactly one effect",
+    "the concurrent burst with a stated count and timing, and the observed number of successful effects",
+    "the pre-state and post-state of the affected quantity, measured in the account or resource itself",
+    "the server-side evidence that the limit was exceeded, such as a balance above the permitted maximum",
+    "a repeat run showing the outcome is reproducible rather than a one-off timing coincidence"
+  ],
+  "impact_bar": "a concurrent burst produces more effects than the design permits, measured in the affected resource, with a single-request control proving the limit normally holds"
+}

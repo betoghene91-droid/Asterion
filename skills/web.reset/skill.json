@@ -1,0 +1,38 @@
+{
+  "id": "web.reset",
+  "version": 1,
+  "name": "Password reset link poisoned to an attacker-controlled host",
+  "cls": "web2",
+  "family": "auth",
+  "requires": [
+    "a password reset flow that emails a link containing a token",
+    "a mailbox we control to read what the target actually sends",
+    "a way to influence the host used to build the link, via Host or a forwarded-host header"
+  ],
+  "questions": [
+    "Does the reset email build its link from the request's Host header, X-Forwarded-Host, a Referer value, or a configured base that is only sometimes used?",
+    "Does the injected host actually appear in the link the victim receives, or is the link built from a server-side constant regardless of the header?",
+    "Does the token appear in the path or query of the poisoned link, so an attacker host would receive it and could then use it?",
+    "Does the reset flow validate the Host header against a configured allowlist on the request that triggers the email, or only on other routes?",
+    "Is the poisoned request a POST the attacker can force cross-site, or does it need a same-origin form with an anti-CSRF token?",
+    "Does the app accept a forwarded-host value only from a trusted proxy list, or from any client that sets the header?",
+    "Does the token remain valid after the attacker's host receives it, or is it bound to the requesting IP or session in a way that blocks reuse?",
+    "Is there a second poisoning vector, such as a language or template parameter that rewrites the link's domain?"
+  ],
+  "false_positives": [
+    "The Host header is reflected in the response body but the outgoing email uses a configured base URL",
+    "The link is poisoned but the token is bound to the victim's IP or session, so the attacker host cannot use it",
+    "The reset request requires an anti-CSRF token and same-site cookies, so the poisoned request cannot be forced cross-site",
+    "The email link uses a relative path that the victim's client resolves against the legitimate host",
+    "The token in the poisoned link is single-use and already consumed by the legitimate delivery",
+    "A forwarded-host header is ignored because the app only trusts it from a proxy address the attacker cannot spoof"
+  ],
+  "poc_must_show": [
+    "the exact reset request with the poisoned host header quoted, against the victim's identifier",
+    "the email as actually delivered, showing the link and the attacker host in it",
+    "the token extracted from that link, and evidence it is a live reset token for the victim's account",
+    "a control reset request without the header, showing the link points at the legitimate host",
+    "for full impact, proof the token is usable \u2014 or an explicit statement that using it was not attempted"
+  ],
+  "impact_bar": "the reset email delivered to a victim contains a link on an attacker-controlled host that carries a live token, shown from the actual delivered message"
+}

@@ -1,0 +1,42 @@
+{
+  "id": "sol.inflation",
+  "version": 1,
+  "name": "First-depositor / donation share inflation",
+  "cls": "solidity",
+  "family": "accounting",
+  "requires": [
+    "a share-pricing vault reachable by an unprivileged depositor",
+    "totalAssets derived from a live balance read rather than an internal counter",
+    "an empty or very small totalSupply at the target block",
+    "a subsequent depositor (or a front-runnable one) to absorb the loss"
+  ],
+  "questions": [
+    "Is totalAssets() computed from a live balanceOf(address(this)) donation-sensitive read, or from an internal counter only deposit and withdraw move?",
+    "Is the vault totalSupply zero or economically tiny at the block where the attacker can first deposit?",
+    "Is there a virtual-share offset, dead-share burn, or MINIMUM_LIQUIDITY that already prices the first share above dust?",
+    "Does the deposit path floor-divide such that a later depositor receives exactly zero shares, and does any require(shares > 0) prevent it?",
+    "Who is the victim, and can the attacker choose the moment a victim deposits, or does the attack need a specific victim action?",
+    "What is the attacker cost (first deposit plus donation plus gas) versus the victim loss, and is the net positive at realistic gas prices?",
+    "Can the attacker recover the donated amount by redeeming their own shares, or is the donation a sunk cost bounded by the theft?",
+    "If the underlying is fee-on-transfer or rebasing, does a direct transfer bypass the bookkeeping while totalAssets still sees it?"
+  ],
+  "false_positives": [
+    "totalAssets is a stored variable that donations cannot move",
+    "OpenZeppelin ERC4626 with a non-zero decimals offset already inflating the first share",
+    "Dead shares burned at initialization or a MINIMUM_LIQUIDITY sent to address(0)",
+    "The vault already holds a large balance, so the required donation dwarfs the theft",
+    "A require(shares > 0) in deposit that turns the theft into a revert",
+    "A deposit cap or whitelist preventing the attacker from depositing",
+    "A share price that is 1:1 by construction, such as a non-yield-bearing wrapper",
+    "No second depositor exists in the attack window, leaving the primitive without a victim"
+  ],
+  "poc_must_show": [
+    "vault totalSupply and totalAssets before the attack, plus the underlying balance",
+    "the attacker minimum deposit and the shares received",
+    "the donation amount and the resulting share-price multiplier",
+    "the victim deposit and the zero or dust shares received, with exact numbers",
+    "attacker net profit after recovering the donation and paying gas, and the victim loss",
+    "a control run on a mitigated vault (dead shares or decimals offset) yielding no profit"
+  ],
+  "impact_bar": "Reportable when an unprivileged attacker causes a measurable loss to a subsequent depositor or captures unsupplied value, atomically and gas-profitable, with victim loss and attacker net profit quantified. Informational when the primitive exists but the vault is seeded, the victim set is empty, or the donation cost exceeds the theft."
+}

@@ -1,0 +1,38 @@
+{
+  "id": "web.cors",
+  "version": 1,
+  "name": "CORS misconfiguration allowing credentialed cross-origin reads",
+  "cls": "web2",
+  "family": "misconfig",
+  "requires": [
+    "an endpoint that returns sensitive, session-scoped data as JSON",
+    "the ability to send an arbitrary Origin header and read the response headers",
+    "for an impact claim: a session carried in a cookie the browser attaches automatically"
+  ],
+  "questions": [
+    "Does the response reflect an arbitrary attacker-supplied Origin into Access-Control-Allow-Origin, or return a fixed value, or omit the header entirely?",
+    "Is Access-Control-Allow-Credentials true on that same response, which is what turns reflection into a cross-origin credentialed read?",
+    "Is the reflected origin matched against an allowlist by exact string comparison, or by a prefix, suffix, or regex a lookalike domain can satisfy?",
+    "Does the endpoint also answer a preflight with the requested method and headers allowed, or does the credentialed read fail at OPTIONS?",
+    "Is Origin: null accepted with credentials, which a sandboxed iframe or a data URL can supply without any attacker domain?",
+    "Does the response carry Vary: Origin, or will a shared cache serve one origin's ACAO header to a different origin?",
+    "Is the session credential a cookie with SameSite=None, so the browser will attach it on a cross-site fetch from the attacker page?",
+    "Does the data returned differ per user, or is it identical for every caller and therefore already public?"
+  ],
+  "false_positives": [
+    "ACAO reflects the origin but Access-Control-Allow-Credentials is absent or false, so the browser blocks credentialed reads",
+    "The endpoint requires an Authorization header, which an attacker page cannot set cross-origin without its own token",
+    "The allowlist compares the parsed origin host exactly, and every lookalike attempt fails the comparison",
+    "The data returned is identical for anonymous and authenticated callers, so a cross-origin read reveals nothing",
+    "The wildcard ACAO is returned with credentials false, which is the standards-compliant public-API configuration",
+    "The preflight rejects the attacker origin's method or headers, so the actual request is never sent"
+  ],
+  "poc_must_show": [
+    "the full response headers for a request carrying our controlled Origin, with ACAO and ACAC both quoted",
+    "the same endpoint with a benign Origin, showing the header either absent or restricted to the legitimate origin",
+    "for impact, a browser page on our origin that reads the response body cross-origin and displays authenticated data",
+    "the cookie attributes of the session being read, showing the browser would attach it cross-site",
+    "confirmation the endpoint is not returning identical public data to an unauthenticated caller"
+  ],
+  "impact_bar": "a browser on an attacker-controlled origin reads authenticated, user-specific response content, demonstrated with reflected-origin plus credentials plus a real cross-origin read"
+}

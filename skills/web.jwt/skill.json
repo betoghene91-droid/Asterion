@@ -1,0 +1,38 @@
+{
+  "id": "web.jwt",
+  "version": 1,
+  "name": "JWT verification bypass or weak signing secret",
+  "cls": "web2",
+  "family": "auth",
+  "requires": [
+    "a JWT in use on an authenticated endpoint",
+    "a protected endpoint that returns identity-specific data, to prove acceptance",
+    "for a secret-guessing claim: a captured token and an offline wordlist"
+  ],
+  "questions": [
+    "Does the server verify the signature at all, and does it pin the expected algorithm rather than accepting the alg header's value?",
+    "Is alg:none accepted, or is the algorithm taken from the header in a way that lets an RSA public key be used as an HMAC secret?",
+    "Is the HMAC secret a guessable value that an offline dictionary attack against the captured token would recover?",
+    "Which claims drive authorization: sub, a role claim, a tenant claim, or a database lookup keyed by sub, and can any of them be changed without invalidating the signature?",
+    "Does the verifier check exp, nbf, and iss, or does it decode the payload and trust the claims without validating the standard fields?",
+    "Is the token accepted from a cookie, a header, or a query parameter, and does a second acceptance path skip the verification the first one performs?",
+    "Does a key-identifier header let the client select the verification key or inject a URL the server fetches?",
+    "After a password change or a role removal, is the old token still accepted, so a revoked identity keeps its claims until expiry?"
+  ],
+  "false_positives": [
+    "The token is decoded but every protected endpoint re-reads the user's role from the database rather than from the claim",
+    "alg:none is rejected with an explicit algorithm-mismatch error, proving the algorithm is pinned server-side",
+    "The signature verifies and the token is merely long-lived, which is a session-lifetime policy question rather than a bypass",
+    "The endpoint returns the same generic response for a forged token as for an absent one, indicating the request was rejected",
+    "The secret recovered offline belongs to a test or staging issuer whose tokens production does not accept",
+    "The forged token was only accepted by a client-side route guard, with the API rejecting the same request"
+  ],
+  "poc_must_show": [
+    "the original token and the exact modification made to it, with the field and value named",
+    "a protected endpoint accepting the modified token and returning data for the identity we asserted",
+    "a control request with the same modified token against a correctly verifying endpoint, showing rejection",
+    "for a secret claim, the recovered key value and the recomputed signature that the server accepted",
+    "the decoded claims of the accepted token, showing which claim produced the elevated access"
+  ],
+  "impact_bar": "a forged or replayed token is accepted by a protected endpoint and yields another identity's data or a privilege the signer never granted"
+}

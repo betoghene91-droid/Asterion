@@ -1,0 +1,40 @@
+{
+  "id": "sol.accesscontrol",
+  "version": 1,
+  "name": "Missing or wrong access control on privileged function",
+  "cls": "solidity",
+  "family": "access-control",
+  "requires": [
+    "the contract source or verified bytecode, including inherited bases",
+    "at least one externally reachable function that writes privileged state or moves value",
+    "a way to execute it as an unprivileged account (fork test or local deployment)"
+  ],
+  "questions": [
+    "Is there any modifier or in-body check on this exact function, and does it compare the caller against the correct subject?",
+    "Is the check inherited, and does the inherited implementation read a slot an attacker cannot write?",
+    "Under a meta-transaction forwarder (ERC2771), does every authorization path use _msgSender() rather than raw msg.sender?",
+    "Once an attacker calls it, what is the maximum damage: full drain, bounded fee change, one-time flag, or nothing observable?",
+    "Does the function let the caller choose the beneficiary (mint to, withdraw to, upgrade to) as well as trigger the action?",
+    "Which account can actually reach the implementation's initialize or reinitialize, and is that restriction a real modifier rather than a self-service call any role can make?",
+    "Is tx.origin used for authorization anywhere in the call path?",
+    "Is the role-granting function guarded by the admin role specifically, or can a low-privilege role escalate itself?"
+  ],
+  "false_positives": [
+    "A guard exists under a project-specific name (auth, restricted, onlyGovernance) that was not read",
+    "The function is internal or private and its single caller carries the gate",
+    "The role holder is a timelocked governance contract, making the issue centralisation rather than broken access control",
+    "An unguarded setter bounded to a harmless range, such as a fee that can only move by one basis point",
+    "Test, mock, or script contracts that are never deployed",
+    "onlyOwner on a function whose only effect is on the owner's own funds",
+    "An open renounceOwnership that bricks admin functions without touching user funds",
+    "A constructor mistaken for a callable initializer, when no initializer actually exists"
+  ],
+  "poc_must_show": [
+    "a freshly generated EOA with no roles calling the function successfully",
+    "the privileged effect read back from state (owner, implementation slot, fee, minted balance, paused flag)",
+    "a control call by a legitimately privileged account producing the same effect",
+    "for a drain, the attacker balance delta and the protocol loss in token units",
+    "for a proxy initializer, the implementation address called and the storage slot written"
+  ],
+  "impact_bar": "Reportable when an unprivileged account can move or destroy funds, replace the implementation, mint supply, change a trusted price, or lock users out of their own funds, with the amount or slot named. Informational for missing guards with bounded harmless effect or centralisation observations about a legitimate admin."
+}

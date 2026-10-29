@@ -1,0 +1,42 @@
+{
+  "id": "sol.flashloan",
+  "version": 1,
+  "name": "Flashloan-amplified invariant break",
+  "cls": "solidity",
+  "family": "economic",
+  "requires": [
+    "an underlying primitive that is unprofitable at small size and profitable at borrowed size",
+    "a lender with the required asset and liquidity at the fork block, and a knowable fee",
+    "a path that stays open inside a single transaction (no per-block or epoch guard)",
+    "a fork with the real pools, the lender, and the target deployed"
+  ],
+  "questions": [
+    "What is the underlying primitive, and at what size does it become profitable relative to the lender's available liquidity?",
+    "Does the primitive require holding a position across blocks, or can the whole sequence complete inside the loan callback?",
+    "Which lender supplies the capital and what is its fee: does net profit survive that plus swap fees?",
+    "Is the vulnerable path protected by a per-block, per-epoch, or cooldown guard a single-transaction attack cannot satisfy?",
+    "Does the protocol pay out based on a value the same transaction just changed, such as a live balance, reserve, or share price?",
+    "Is the profit taken from the protocol or another user, or merely from a third-party pool, which would be arbitrage and not a vulnerability?",
+    "Can the attacker repay the loan and keep a positive balance in the same transaction, with the repayment shown in the PoC?",
+    "If an asset must be swapped mid-attack, does that swap move the price the protocol trusts, compounding the effect?"
+  ],
+  "false_positives": [
+    "A flashloan was used with no net profit number, proving only that borrowing works",
+    "Profit originating from a public AMM rather than the protocol, which is arbitrage",
+    "A primitive that requires the position to persist across blocks, beyond a flashloan's reach",
+    "Loan and swap fees exceeding the edge, for example five basis points of a large notional against a rounding leak",
+    "Liquidity that is not actually available at the fork block for that asset",
+    "The path reverting under the loan callback due to a same-block guard the report did not read",
+    "A self-funded zero-capital claim where the test seeds the attacker with the capital it claims to borrow",
+    "A liquidation bonus observation where the profit is the intended bonus"
+  ],
+  "poc_must_show": [
+    "the lender, asset, borrowed amount, and the fee actually charged",
+    "capital in from the lender and the repayment, with the attacker balance delta after repayment strictly positive",
+    "a control run with unborrowed small capital showing the delta is zero or negative, proving the loan was necessary",
+    "the protocol or victim loss in the same unit, so the profit has a source",
+    "the fee breakdown (loan fee, swap fees, gas) subtracted from gross",
+    "no privileged role and no pre-seeded attacker balance"
+  ],
+  "impact_bar": "Reportable for a zero-capital single-transaction sequence extracting value from the protocol or its users with net profit positive after all fees, and a control run proving the loan was necessary. Informational when it only works with the attacker's own capital, nets negative after fees, or is third-party arbitrage with no protocol loss."
+}

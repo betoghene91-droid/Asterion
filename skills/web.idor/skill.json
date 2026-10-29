@@ -1,0 +1,38 @@
+{
+  "id": "web.idor",
+  "version": 1,
+  "name": "Broken object-level authorization across tenants",
+  "cls": "web2",
+  "family": "access-control",
+  "requires": [
+    "two authenticated principals in genuinely different tenants or ownership scopes",
+    "an object identifier owned by principal A, captured from A's own session",
+    "a known-nonexistent identifier to prove the endpoint distinguishes missing from forbidden"
+  ],
+  "questions": [
+    "Which identifier in the request selects the object, and is ownership checked against the caller's tenant or assumed from the identifier being hard to guess?",
+    "When principal B requests A's identifier, does the response contain A's object body, or a 200 with an empty or default object?",
+    "Does a nonexistent identifier return 404 while a foreign identifier returns 200, proving the endpoint resolves objects before it authorizes them?",
+    "Is the authorization decision made from a session claim, a token scope, or a client-supplied tenant field such as a header or query parameter?",
+    "Does the same gap exist on the write paths for that object \u2014 update, delete, share, export \u2014 or only on read?",
+    "Is the identifier exposed in a listing, a URL, an email, an export, or a predictable sequence that lets B learn A's identifiers without guessing?",
+    "Are nested or child resources authorized through the parent, so that a permitted parent id grants access to a child belonging to another owner?",
+    "Does the endpoint behave differently for a foreign identifier belonging to a deleted or soft-deleted owner, bypassing the ownership join entirely?"
+  ],
+  "false_positives": [
+    "Principal B receives 200 with an empty object or a default record, which is a scoping bug in appearance only and leaks nothing",
+    "Both test principals belong to the same tenant, so the access is authorized and the test proved nothing",
+    "The identifier is a signed or encrypted token that the server verifies, so a modified value fails before any lookup",
+    "The endpoint returns 403 for the foreign identifier, which is the control working correctly rather than a bypass",
+    "The object is genuinely public by design, such as a published document or a shared link the owner created",
+    "The apparent leak is cached content from the tester's own earlier request in the same session"
+  ],
+  "poc_must_show": [
+    "the identifier captured from principal A's own authenticated session, shown with A's request",
+    "principal B's request for that identifier and the response body proving it is A's object, with both tenants named",
+    "a negative control where B requests a nonexistent identifier and receives 404, proving ids are resolved rather than defaulted",
+    "a same-principal control where A requests the same identifier and receives the same body, isolating authorization from routing",
+    "for a write claim, the state change observed afterwards in A's view of the object"
+  ],
+  "impact_bar": "a principal in one tenant receives another tenant's object content or mutates it, with both sessions and a nonexistent-id control shown"
+}

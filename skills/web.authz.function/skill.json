@@ -1,0 +1,38 @@
+{
+  "id": "web.authz.function",
+  "version": 1,
+  "name": "Missing function-level authorization on a privileged endpoint",
+  "cls": "web2",
+  "family": "access-control",
+  "requires": [
+    "a low-privilege authenticated session and the ability to observe an admin or staff surface",
+    "at least one privileged endpoint whose path, method, or payload shape can be identified",
+    "an anonymous baseline to distinguish authentication failure from authorization failure"
+  ],
+  "questions": [
+    "Which privileged endpoints exist, and is the role check enforced in the handler, in shared middleware on that route group, or only in the client that hides the menu item?",
+    "When called with a low-privilege session, does the endpoint return 200 with privileged data, or 401 and 403 that indicate a real gate?",
+    "Does the anonymous call fail with 401 while the low-privilege call succeeds, isolating authorization from authentication?",
+    "Is the role or permission read from a token claim, a session record, or a request field the caller can set?",
+    "Does a method or path variant reach the same handler without the guard, such as PATCH instead of PUT, or a trailing slash, or a different API version prefix?",
+    "Are administrative operations exposed as separate actions on an otherwise authorized endpoint, selected by a body field rather than a distinct route?",
+    "Does a lower role reach a superset of another role's permissions through a role hierarchy, an impersonation feature, or a support-mode header?",
+    "Is the guard applied to the collection route but omitted on the per-item route, or the reverse?"
+  ],
+  "false_positives": [
+    "The endpoint returns 403 for the low-privilege session, which is the authorization working rather than failing",
+    "The low-privilege session was actually issued an admin-equivalent role by the test setup, so the comparison was never unprivileged",
+    "The data returned is public information that the same low-privilege user can already see in the normal UI",
+    "The anonymous request returned 200 but with a login page body, which is a redirect or SPA shell rather than protected data",
+    "The endpoint is a stub or feature-flagged off for everyone, so its reachability does not depend on the caller's role",
+    "The privileged action succeeded but was recorded and reverted, or applied only to the caller's own records"
+  ],
+  "poc_must_show": [
+    "the privileged endpoint and the exact request issued with the low-privilege session's credential",
+    "the response body showing data or an effect that the UI and role model deny to that session",
+    "the anonymous call to the same endpoint returning 401 or 403, isolating authorization from authentication",
+    "the same request with a genuinely privileged session, so the delta is the role and nothing else",
+    "for a state-changing claim, the resulting privileged state observed from the privileged session afterwards"
+  ],
+  "impact_bar": "a low-privilege session successfully invokes a privileged function or retrieves data the role model denies, with anonymous and privileged baselines both shown"
+}

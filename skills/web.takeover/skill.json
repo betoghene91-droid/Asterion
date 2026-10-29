@@ -1,0 +1,38 @@
+{
+  "id": "web.takeover",
+  "version": 1,
+  "name": "Subdomain takeover on a dangling third-party pointer",
+  "cls": "infra",
+  "family": "dns",
+  "requires": [
+    "resolution already showing a CNAME or A record to a known third-party host",
+    "a provider fingerprint: the error page or response body the service emits for an unclaimed name",
+    "authorization to attempt a claim only where claiming is non-destructive and reversible"
+  ],
+  "questions": [
+    "What does the DNS chain actually resolve to \u2014 a CNAME to a third-party hostname, or an A record to a provider IP the provider would also serve for an unclaimed name?",
+    "Does the third-party service respond with its unclaimed-name signature, such as a no-such-bucket error, a 404 from the CDN edge, or a provider-specific takeover page?",
+    "Is the resource name in the CNAME target uniquely claimable by us, or does the provider namespace it under an account or a tenant that the name alone cannot reconstruct?",
+    "Is the record an NS or MX delegation rather than a CNAME, which would let us serve arbitrary content or receive mail rather than only hosting a page?",
+    "Has the third-party service retired the feature or changed its claim semantics, so that the dangling record is no longer claimable at all?",
+    "Does the parent domain sit inside the target's cookie scope, so content on the subdomain receives cookies scoped to a common parent?",
+    "Is the DNS record still actively used by a live integration, meaning the service expectation exists but is temporarily misconfigured rather than abandoned?",
+    "Would claiming the name require creating a billable resource or accepting terms in the target's name, which changes what we are permitted to do?"
+  ],
+  "false_positives": [
+    "The CNAME target returns a provider error page but the name is not claimable because it is namespaced under an account we cannot reconstruct",
+    "The record points at a provider that has since disabled unclaimed-name serving, so the dangling pointer is inert",
+    "The subdomain is referenced only by that record with no certificates, cookies, or links, so nothing trusts it",
+    "The provider returns a generic 404 that is identical for every hostname, not a service-specific unclaimed signature",
+    "An NXDOMAIN on the CNAME target, which means the third-party name itself is gone rather than available to claim",
+    "A wildcard DNS record answering for a name that has no explicit record, which looks like a dangling pointer but is a routing default"
+  ],
+  "poc_must_show": [
+    "the full DNS resolution chain, with the CNAME target and the resolver output quoted",
+    "the provider response for the unclaimed name, with the takeover-specific signature identified",
+    "for a claim, content we control served on the target's own hostname, fetched by its real name rather than by an IP",
+    "evidence of what trusts that name: the cookie scope, a certificate issued for it, or a link from the main application",
+    "a control fetch of the same hostname before the claim, showing the provider's unclaimed response instead of our content"
+  ],
+  "impact_bar": "content we control is served on a hostname in the target's domain, or the dangling record is an NS or MX delegation we can claim, with the resolution chain and provider signature both shown"
+}

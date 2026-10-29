@@ -1,0 +1,38 @@
+{
+  "id": "web.oauth",
+  "version": 1,
+  "name": "OAuth redirect_uri bypass delivering a code to an attacker",
+  "cls": "web2",
+  "family": "auth",
+  "requires": [
+    "an OAuth client id for the target, from a login flow or a public client",
+    "the registered redirect_uri, learned from the flow or from an error message",
+    "a host we control at a path or subdomain the bypass puts the code on"
+  ],
+  "questions": [
+    "Does the authorization server compare redirect_uri by exact string, or by prefix, suffix, path-prefix, or regex match?",
+    "Can a path be appended to the registered URI, such as `..%2f` or `/callback/../../attacker`, so the browser still lands on the registered host but the path serves our content?",
+    "Can a subdomain or a sibling domain satisfy a suffix check, as `example.com.attacker.tld` or `attacker-example.com` would?",
+    "Is a second, looser redirect_uri registered for the client \u2014 a mobile scheme, a localhost URL, or a partner host \u2014 that accepts a code without the same checks?",
+    "Does the server enforce PKCE, and if so can the code be redeemed without our verifier, which decides whether interception is useful?",
+    "Is the state parameter validated on the callback, or can a login CSRF let us bind the victim's flow to our own account?",
+    "Does the flow use the implicit grant, returning a token in the fragment where any script on the landing page can read it?",
+    "Is the code bound to a client secret or a client id we do not have, making interception alone insufficient?"
+  ],
+  "false_positives": [
+    "The redirect_uri is rejected with an explicit invalid_request error, which is the allowlist working",
+    "A path can be appended but the browser is still on the registered origin, so our server never receives the code",
+    "The code arrives at our host but PKCE is enforced and we have no verifier, so it cannot be redeemed",
+    "The code is single-use and already consumed by the legitimate client before our request",
+    "The looser redirect_uri we found belongs to a different client id that cannot access the target's scopes",
+    "The redirect 302s to our URL but strips the code, or replaces it with an error"
+  ],
+  "poc_must_show": [
+    "the authorization request with the crafted redirect_uri quoted verbatim, including any encoding",
+    "the redirect response showing the browser sent to our host with a code or token in it",
+    "the code value received on our listener, and the token exchange that succeeds, or a statement PKCE blocked it",
+    "a control request with the legitimate redirect_uri, showing the flow completing normally on the real host",
+    "the scopes granted, tying the intercepted code to the user data it unlocks"
+  ],
+  "impact_bar": "an authorization code or token is delivered to a host we control and redeemed for a token with the victim's scopes, or the code arrives with PKCE the only barrier"
+}

@@ -1,0 +1,41 @@
+{
+  "id": "sol.signature",
+  "version": 1,
+  "name": "Signature replay / missing nonce or chainid",
+  "cls": "solidity",
+  "family": "signature",
+  "requires": [
+    "a contract path that acts on an off-chain signature supplied with the transaction",
+    "submission open to an arbitrary account, or a relayer whose trust does not already cover the effect",
+    "a second-use path (same chain) or a sibling deployment at the same address (cross-chain) to replay into"
+  ],
+  "questions": [
+    "Does the signed digest include block.chainid through a domain separator and the verifying contract address, or only the payload?",
+    "Is a per-owner nonce included in the digest and incremented before any external effect?",
+    "Can an arbitrary account submit the signature-carrying transaction, or is submission restricted to a trusted relayer?",
+    "Does a second submission of the same signature produce a second state change or value movement?",
+    "Is ecrecover's result checked against a zero-address return from a malformed signature?",
+    "Does the digest use abi.encodePacked with two or more dynamic types, creating a collision surface?",
+    "Is the nonce per-owner, per-key, or global, and can an attacker consume a global counter to invalidate a victim's pending signature?",
+    "Is the same contract deployed at the same address on another chain with a non-empty balance while chainid is absent from the digest?"
+  ],
+  "false_positives": [
+    "OpenZeppelin ERC20Permit inherited, where the domain separator and nonces are present but the grep did not follow inheritance",
+    "An off-chain-signature design with a trusted relayer, where replay gains nothing the operator could not already do",
+    "A nonce that is incremented in a modifier or base contract",
+    "Signature hashes used as stored ids, where malleability is irrelevant",
+    "chainid present in the domain separator while the reviewer inspected only a helper",
+    "A cross-chain replay claim with no sibling deployment at the same address",
+    "ecrecover returning zero on a path that already requires recovered == expectedSigner",
+    "A payload containing a monotonic on-chain value that makes reuse impossible"
+  ],
+  "poc_must_show": [
+    "the exact digest preimage printed from the test",
+    "the first submission accepted with its measured effect (balance, allowance, position)",
+    "the identical signature submitted a second time, accepted again, with the second effect measured",
+    "a control run where the nonce is incremented or chainid added, and the second submission reverts",
+    "for cross-chain, proof the same signature is valid at the sibling deployment and what it moves there",
+    "for ecrecover zero, the malformed signature yielding address(0) and the authorization check still passing"
+  ],
+  "impact_bar": "Reportable when one signature produces two or more state changes, or a signature intended for one chain acts on another, with value or authority moving. Informational when replay has no economic effect or the path is a trusted relayer."
+}

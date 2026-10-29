@@ -1,0 +1,38 @@
+{
+  "id": "web.massassign",
+  "version": 1,
+  "name": "Mass assignment of a field the client must not control",
+  "cls": "web2",
+  "family": "access-control",
+  "requires": [
+    "a create or update endpoint that accepts a structured body",
+    "a throwaway account, and approval for the write",
+    "a way to read the subject back and observe whether the field persisted"
+  ],
+  "questions": [
+    "Does the endpoint bind the request body directly to a model or ORM object, or to an explicit per-field allowlist?",
+    "Which fields on the underlying model are security-relevant: role, isAdmin, verified, tenantId, ownerId, balance, credits, plan, or status?",
+    "After sending a security-relevant field, does reading the subject back show the value persisted, or was it dropped?",
+    "If it persisted, does the change alter an authorization decision on a later request, or is the field only cosmetic?",
+    "Is there a nested object or association in the body that binds through to a related record, such as `account.plan` or `organization.role`?",
+    "Does the same body work on a registration or invitation endpoint, where the field would be set before any authorization context exists?",
+    "Is the field writable only on create and ignored on update, or the reverse, and does the framework's filtering differ between them?",
+    "Does a JSON-vs-form content-type change the binding path, so one representation is filtered and the other is not?"
+  ],
+  "false_positives": [
+    "The field is accepted in the request but silently dropped, and the read-back shows the original value",
+    "The field persists but is never consulted for any authorization decision, making it a cosmetic inconsistency",
+    "The endpoint requires an admin session, so setting role is an authorized administrative action",
+    "The read-back shows the field because the response echoes the request rather than because it was stored",
+    "A framework-level allowlist filters the body before the handler, and the probe only proved the JSON parser accepts extra keys",
+    "The field is persisted on the caller's own record where they are already permitted to change it"
+  ],
+  "poc_must_show": [
+    "the exact request body with the injected field quoted, and the field's absence from the legitimate client payload",
+    "the read-back after a fresh request, proving the value was persisted rather than echoed",
+    "the authorization consequence: a follow-up request that now succeeds or returns data it did not before",
+    "a control request with the field omitted, showing the pre-change authorization outcome",
+    "the field's location in the model or schema, tying the persisted value to the decision it affects"
+  ],
+  "impact_bar": "a client-supplied field the UI never sends is persisted and measurably changes an authorization outcome, demonstrated by a before-and-after privileged request"
+}

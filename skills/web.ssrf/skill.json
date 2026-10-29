@@ -1,0 +1,38 @@
+{
+  "id": "web.ssrf",
+  "version": 1,
+  "name": "Server-side request forgery with a reachable internal destination",
+  "cls": "web2",
+  "family": "ssrf",
+  "requires": [
+    "a parameter the server uses as a URL, host, or host-and-path for an outbound request",
+    "a listener we control to observe the request arriving from the server's egress",
+    "for impact claims: a reachable internal address (RFC1918, link-local metadata, localhost, or an internal-only hostname)"
+  ],
+  "questions": [
+    "Which parameter reaches an HTTP client or resolver server-side, and is the value used whole, or only as a host, or only as a path appended to a fixed base?",
+    "Does the fetcher follow redirects, and if so is the allowlist applied to the first URL only or re-checked on every hop of the chain?",
+    "Is the destination validated by parsing and then re-serialising the URL, or by substring or prefix matching on the raw string that a userinfo or fragment can defeat?",
+    "Can the request reach 169.254.169.254, localhost, or an RFC1918 address, and is that blocked inside the fetcher or only by a front proxy that the worker bypasses?",
+    "Does the response body, status code, or measurable timing return to the attacker, making this full-read SSRF rather than blind egress?",
+    "Is the value validated at submission time and fetched later by an asynchronous worker, leaving a DNS-rebinding window between the check and the use?",
+    "Does the underlying client accept non-HTTP schemes such as gopher, file, or dict, turning a fetch into a protocol-level request against an internal daemon?",
+    "Does the fetching process hold cloud instance credentials, a metadata token, or a service-account key in its environment or filesystem?"
+  ],
+  "false_positives": [
+    "A callback arrives on the collector but no response content ever returns and no internal service answers, which is blind egress at most",
+    "The destination is checked against an exact list of literal hosts after parsing, not a prefix, suffix, or regex match on the raw string",
+    "Only DNS resolution leaves the network and the request to our host is never actually issued by the target",
+    "The URL is fetched by the visiting browser rather than the server, so the request carries the tester's address and is not SSRF at all",
+    "The proxy rejects every scheme except https and resolves the host to a pinned first-party address",
+    "The internal address that responded belongs to our own test harness or a shared egress proxy, not to the target's network"
+  ],
+  "poc_must_show": [
+    "the exact request that triggered the fetch, with the injected value quoted verbatim and the parameter named",
+    "a hit on a listener we control that arrived from the target's server egress rather than from our own browser",
+    "for a read claim, the internal response body proving content we could not obtain by calling that address ourselves",
+    "a control run with the parameter set to a benign public URL that produces no internal content and no callback",
+    "evidence that the responding address is internal to the target, distinct from our own infrastructure and its addresses"
+  ],
+  "impact_bar": "a server-side fetch reaches an attacker-chosen destination and the attacker recovers content, or reaches an internal-only service or cloud metadata endpoint, with the internal response shown"
+}

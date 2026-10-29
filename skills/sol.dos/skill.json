@@ -1,0 +1,41 @@
+{
+  "id": "sol.dos",
+  "version": 1,
+  "name": "Denial of service via unbounded loop or revert-on-push",
+  "cls": "solidity",
+  "family": "dos",
+  "requires": [
+    "an unprivileged way to grow or poison a collection the contract iterates",
+    "a victim function that iterates it and is depended on for withdrawals, liquidations, or claims",
+    "no cap, fee, or removal path that bounds the growth",
+    "the block gas limit at the target block to quantify the threshold"
+  ],
+  "questions": [
+    "Can an unprivileged account grow the iterated array, and is there a cap or fee that makes unbounded growth expensive?",
+    "Once added, can the entry be removed by anyone other than the attacker, or does the attacker hold it hostage?",
+    "Which victim function becomes uncallable when the loop reverts, and does that block withdrawals, liquidations, or claims users depend on?",
+    "Is there a paginated or single-item alternative path that bypasses the loop entirely?",
+    "In a push-payment loop, can one recipient revert and block all the others?",
+    "What is the gas cost per iteration, and how many entries push the total past the block gas limit at a sane attack cost?",
+    "Does the loop write storage per iteration, multiplying gas per entry and making the attack cheaper to mount?",
+    "Is the reverting condition permanent, or can the admin clear it, and is that clear itself blocked by the same loop?"
+  ],
+  "false_positives": [
+    "An attacker-paid revert that harms nobody but the caller",
+    "The array is owner-growable and capped with require(length <= N)",
+    "A loop inside a view function with no state-changing consequence",
+    "A temporary griefing state the protocol can clear in one admin transaction while the report claims permanent DoS",
+    "Theoretically unbounded but economically impossible growth costing more than the protocol holds",
+    "A loop over a fixed-size constant array or a bounded timestamp-derived range",
+    "Gas estimates that ignore calldata and intrinsic costs, off by orders of magnitude",
+    "A loop over an array only the protocol's own trusted contracts push to"
+  ],
+  "poc_must_show": [
+    "the growth calls with their measured gas cost in the test output",
+    "the victim call reverting out-of-gas, with the gas measurement exceeding the block gas limit",
+    "a control run with fewer entries where the victim call succeeds, pinning the threshold",
+    "for push-payment, one reverting recipient and the resulting whole-distribution revert with other balances unchanged",
+    "the state of the protocol while blocked: which balances are stuck, and for whom"
+  ],
+  "impact_bar": "Reportable when value or function is permanently blocked for uninvolved users and no normal admin action lifts it, for example locking funds or blocking liquidations into bad debt. Low or informational for temporary griefing, attacker-funded clearable state, view-only DoS, or unaffordable theoretical growth."
+}

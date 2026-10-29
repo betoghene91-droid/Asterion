@@ -1,0 +1,41 @@
+{
+  "id": "sol.reentrancy",
+  "version": 1,
+  "name": "Reentrancy on state-changing external call",
+  "cls": "solidity",
+  "family": "reentrancy",
+  "requires": [
+    "an external call (native value, token transfer, hook, or arbitrary target) reachable by an unprivileged caller",
+    "state written after that call, or accounting derived from a live balance the call can change",
+    "value present at the fork block that the reentry can reach",
+    "foundry with a fork RPC at the deployment block"
+  ],
+  "questions": [
+    "Does the external call execute before the storage write that the same path later reads, or is the write strictly before the call?",
+    "Is the called address attacker-controlled (calldata, attacker-written storage, attacker-deployed token) or a fixed immutable/constant?",
+    "Which state does the callback reach: the same function, a sibling function sharing the accounting, or only a view a third party trusts?",
+    "When the re-entrant call returns, does the outer frame read a value the inner frame changed, or a value it cached before the call?",
+    "Is the accounting derived from address(this).balance or balanceOf(address(this)) rather than an internal ledger a reentry cannot move?",
+    "Is there one mutex covering every function that touches the shared state, or only the obvious withdraw?",
+    "Are shares minted before the deposit transfer settles, or burned after the withdrawal transfer is attempted?",
+    "If a token hook is involved (ERC777 tokensToSend, ERC1155 onERC1155Received, ERC721 onERC721Received), is the hook invoked while the sender balance is still un-debited?"
+  ],
+  "false_positives": [
+    "A reentrancy guard is present under a different name (lock, entered, a ReentrancyGuard base) and was not read",
+    "The external call is after the state write; only the grep ordering suggested otherwise",
+    "Reentry can only spend the attacker's own already-credited balance",
+    "The contract holds no value at the fork block, so the primitive has no consequence today",
+    "transfer() or send() with the 2300 gas stipend, which prevents a meaningful callback",
+    "The reentry reverts and the whole transaction reverts: griefing or self-DoS, not extraction",
+    "A staticcall into an attacker contract, which cannot mutate storage and is an oracle question instead",
+    "Cross-function claims where the two functions do not actually share the written slot"
+  ],
+  "poc_must_show": [
+    "attacker balance delta within one transaction or one atomic bundle, measured before and after",
+    "a control run with reentry disabled, showing the delta is attributable to the reentry and not to normal flow",
+    "the protocol or victim balance losing a corresponding amount, so the profit has a source",
+    "the call trace: outer entry, external call, inner entry, return, outer continues on stale state",
+    "no privileged role used, and capital in not greater than capital out"
+  ],
+  "impact_bar": "Reportable when an unprivileged account extracts value it did not deposit, or permanently locks funds a legitimate user could otherwise withdraw, with the amount quantified. Informational for gas-only griefing, self-DoS, or reentry requiring an already-privileged role."
+}

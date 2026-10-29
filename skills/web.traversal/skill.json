@@ -1,0 +1,38 @@
+{
+  "id": "web.traversal",
+  "version": 1,
+  "name": "Path traversal returning a file outside the intended directory",
+  "cls": "web2",
+  "family": "injection",
+  "requires": [
+    "a parameter used to build a filesystem path: filename, template, language, or document id",
+    "a known file outside the intended directory whose content is distinctive",
+    "a control request for a legitimate file on the same endpoint"
+  ],
+  "questions": [
+    "Which parameter becomes part of a filesystem path, and is it concatenated, joined with a base directory, or used directly?",
+    "Is the traversal sequence filtered once, recursively, or after decoding, so that a double-encoded or overlong form survives to the filesystem call?",
+    "Does the response return the file contents, or a distinguishable error that reveals existence and length without the bytes?",
+    "Is the base directory enforced by resolving the final path and comparing a prefix, or only by stripping `../` from the input string?",
+    "Does an absolute path in the parameter override the base directory, because the join is a plain string concatenation?",
+    "Is the same parameter used for a write, delete, or include, which would escalate a read into modification or code execution?",
+    "Does a normalisation layer decode the parameter twice, or does a proxy decode once before the application decodes again?",
+    "Would the file be returned from a container path the operator controls, such as a mounted secret or a config map?"
+  ],
+  "false_positives": [
+    "The endpoint returns 200 with an empty or default body for every traversal attempt, because it falls back rather than resolving the path",
+    "The traversal is blocked but a generic error page is returned, which is a rejection and not a read",
+    "The file content appears in the response because it was cached from the tester's own earlier legitimate request",
+    "The parameter is resolved against an allowlist of names before any path is built",
+    "The returned content is a file inside the intended directory reachable by a legitimate name anyway",
+    "A path-looking value is accepted but normalised by the framework's static handler, which confines it to its root"
+  ],
+  "poc_must_show": [
+    "the exact request with the traversal payload quoted verbatim, including any encoding layers",
+    "the response body showing content that provably comes from outside the intended directory",
+    "a control request for a legitimate file on the same endpoint returning its normal content",
+    "for an absolute-path claim, the payload form that overrode the base directory, shown separately from the relative form",
+    "for a write or include claim, the resulting state change or execution, not just a successful response"
+  ],
+  "impact_bar": "a file outside the intended directory is returned with content proving its origin, or the same primitive writes or includes a file, with a legitimate-path control"
+}

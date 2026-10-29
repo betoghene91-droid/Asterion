@@ -1,0 +1,40 @@
+{
+  "id": "sol.oracle",
+  "version": 1,
+  "name": "Spot-price / oracle manipulation",
+  "cls": "solidity",
+  "family": "oracle",
+  "requires": [
+    "a price-consuming path (borrow, mint, liquidate, settle, payout) reachable by an unprivileged caller",
+    "a price source that changes within one transaction, such as pool reserves, a live balance, or a single-block TWAP",
+    "a fork with the real pool depth and liquidity at the target block"
+  ],
+  "questions": [
+    "Is the price read from a reserve or balance that any swap changes in the same block, or from a time-weighted accumulator one block cannot move?",
+    "What exactly consumes this price (borrow, mint, liquidate, settle, payout), and what is the maximum value that consumer exposes?",
+    "If it is a TWAP, what is the window, and can the attacker hold a deviated price for the whole window for less than the profit?",
+    "Does the consumer check staleness, round completeness, answer positivity, and a sanity bound on the value?",
+    "How much capital moves the pool to the profitable price, and how does that compare with profit plus fees: is a flashloan sufficient?",
+    "Is the manipulated reading used to value the attacker's own collateral, or only for an unrelated read?",
+    "Can the whole sequence be atomic: borrow, swap, act, unwind, repay?",
+    "Is there a second independent price source the consumer also checks, which would cap the manipulation?"
+  ],
+  "false_positives": [
+    "Uses getReserves or balanceOf but only for a slippage bound or a display value, with no value-bearing consumer",
+    "A genuinely long TWAP the attacker cannot fund for the required window",
+    "Manipulation cost exceeds the extractable profit at real pool depth",
+    "The consumer path is admin-only or unreachable from an unprivileged caller",
+    "The price feeds an event or a UI view only",
+    "A stale-price claim that used the wrong heartbeat value for that feed",
+    "An assumed pool depth that was never measured on the fork"
+  ],
+  "poc_must_show": [
+    "value extracted in one transaction on a pinned fork block, in a stated unit",
+    "the price before and after manipulation plus the cost of the swap (fees and slippage) in the same unit",
+    "net profit (extraction minus manipulation cost minus loan fee) strictly positive",
+    "the consumer call that converts the moved price into value, with the price-dependent argument named",
+    "a control run without the price move showing the same call is unprofitable",
+    "capital in versus capital out, with any flashloan demonstrably repaid"
+  ],
+  "impact_bar": "Reportable for a single-transaction, self- or flashloan-funded sequence that extracts value because a trusted price was moved, with the net profit quantified. Informational when the price is manipulable but no consumer converts it to value or the manipulation costs more than it yields."
+}
