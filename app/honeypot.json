@@ -1,0 +1,64 @@
+{
+  "fetchedAt": 1793300000000,
+  "holderList": [],
+  "holders": {
+    "atr14Pct": 7.5,
+    "avgBuyUsd": 180,
+    "bundledPct": 7.0,
+    "buyVolumeUsd": 558000.0,
+    "devClusterPct": 8.0,
+    "devPct": 1.0,
+    "devPriorRug": false,
+    "holders": 2400,
+    "medianBuyUsd": 150,
+    "sellVolumeUsd": 342000.0,
+    "smartWalletPct": 6.2,
+    "sniper20Pct": 20.0,
+    "top10ExcludedPct": 18.0,
+    "top10RawPct": 31.0,
+    "totalBuys": 1100,
+    "uniqueBuyerGrowthPct": 46.0,
+    "uniqueBuyers": 640
+  },
+  "knownAccounts": {
+    "burns": [],
+    "cex": [],
+    "pools": []
+  },
+  "market": {
+    "change1hPct": 12.0,
+    "change24hPct": 30.0,
+    "change6hPct": 20.0,
+    "dexId": "raydium",
+    "feeBps": 25,
+    "liqUsd": 600000,
+    "mcapUsd": 4000000,
+    "mint": "HoneyPotMint1111111111111111111111111111111",
+    "name": "HPOT token",
+    "pairAddress": "PAIRHoneyP",
+    "pairCreatedAtMs": 1793278400000,
+    "price24hLowUsd": 0.00035,
+    "price6hLowUsd": 0.00038,
+    "priceUsd": 0.0004,
+    "symbol": "HPOT",
+    "vol1hUsd": 900000,
+    "vol24hUsd": 7200000
+  },
+  "safety": {
+    "extensions": [],
+    "freezeAuthorityRevoked": false,
+    "lpBurned": true,
+    "lpLockDaysRemaining": null,
+    "metadataMutable": false,
+    "mintAuthorityRevoked": true,
+    "programUpgradeable": false,
+    "tokenProgram": "spl-token",
+    "transferFeeBps": 0
+  },
+  "sell": {
+    "modelled": true,
+    "ok": true,
+    "priceImpactPct": 1.0,
+    "revertReason": null
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "2": {
+    "file": "v2.json.gz",
+    "source_path": "asterion/_archive/v1/src/corpus-digest.json",
+    "sha256": "19ff783732c53c5808d68feaeb732cdbfeee6c1009722a3d1183544593b6745d",
+    "source_rows": 180907,
+    "precedent_ids": 2500
+  },
+  "3": {
+    "file": "v3.json.gz",
+    "source_path": "workstreams/654e4435-6d71-45c8-8def-ec271afcbd0c/digest-merged.json",
+    "sha256": "7bffa1dad2bce2764afc2d4dccf85693ce668263a1e5762ec147522cc31af194",
+    "source_rows": 181165,
+    "precedent_ids": 2682
+  },
+  "4": {
+    "file": "v4.json.gz",
+    "source_path": "workstreams/654e4435-6d71-45c8-8def-ec271afcbd0c/digest-merged2.json",
+    "sha256": "72d79c132b72ea6f5c8d63269b376ce999f1ff1d6dc320b661361be0d42bab06",
+    "source_rows": 181357,
+    "precedent_ids": 2866
+  }
+}

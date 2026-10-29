@@ -1,0 +1,64 @@
+{
+  "fetchedAt": 1793300000000,
+  "holderList": [],
+  "holders": {
+    "atr14Pct": 7.5,
+    "avgBuyUsd": 180,
+    "bundledPct": 7.0,
+    "buyVolumeUsd": 483600.0,
+    "devClusterPct": 8.0,
+    "devPct": 1.0,
+    "devPriorRug": false,
+    "holders": 1500,
+    "medianBuyUsd": 150,
+    "sellVolumeUsd": 296400.0,
+    "smartWalletPct": 6.2,
+    "sniper20Pct": 19.0,
+    "top10ExcludedPct": 17.0,
+    "top10RawPct": 24.0,
+    "totalBuys": 900,
+    "uniqueBuyerGrowthPct": 46.0,
+    "uniqueBuyers": 82
+  },
+  "knownAccounts": {
+    "burns": [],
+    "cex": [],
+    "pools": []
+  },
+  "market": {
+    "change1hPct": 12.0,
+    "change24hPct": 30.0,
+    "change6hPct": 20.0,
+    "dexId": "raydium",
+    "feeBps": 25,
+    "liqUsd": 520000,
+    "mcapUsd": 3200000,
+    "mint": "WashMint111111111111111111111111111111111",
+    "name": "WASH token",
+    "pairAddress": "PAIRWashMi",
+    "pairCreatedAtMs": 1793278400000,
+    "price24hLowUsd": 0.0008,
+    "price6hLowUsd": 0.00085,
+    "priceUsd": 0.0009,
+    "symbol": "WASH",
+    "vol1hUsd": 780000,
+    "vol24hUsd": 6240000
+  },
+  "safety": {
+    "extensions": [],
+    "freezeAuthorityRevoked": true,
+    "lpBurned": true,
+    "lpLockDaysRemaining": null,
+    "metadataMutable": false,
+    "mintAuthorityRevoked": true,
+    "programUpgradeable": false,
+    "tokenProgram": "spl-token",
+    "transferFeeBps": 0
+  },
+  "sell": {
+    "modelled": true,
+    "ok": true,
+    "priceImpactPct": 1.0,
+    "revertReason": null
+  }
+}

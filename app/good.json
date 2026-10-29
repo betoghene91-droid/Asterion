@@ -1,0 +1,134 @@
+{
+  "fetchedAt": 1793300000000,
+  "holderList": [
+    {
+      "address": "poolTokenAcct1111",
+      "owner": "POOLowner1111111111111111111111111111111111",
+      "pct": 14.2
+    },
+    {
+      "address": "burnAcct1111",
+      "owner": "1nc1nerator11111111111111111111111111111111",
+      "pct": 6.0
+    },
+    {
+      "address": "cexAcct1111",
+      "owner": "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
+      "pct": 4.1
+    },
+    {
+      "address": "h1",
+      "owner": "o1",
+      "pct": 2.6
+    },
+    {
+      "address": "h2",
+      "owner": "o2",
+      "pct": 2.5
+    },
+    {
+      "address": "h3",
+      "owner": "o3",
+      "pct": 2.4
+    },
+    {
+      "address": "h4",
+      "owner": "o4",
+      "pct": 2.3
+    },
+    {
+      "address": "h5",
+      "owner": "o5",
+      "pct": 2.2
+    },
+    {
+      "address": "h6",
+      "owner": "o6",
+      "pct": 2.1
+    },
+    {
+      "address": "h7",
+      "owner": "o7",
+      "pct": 2.0
+    },
+    {
+      "address": "h8",
+      "owner": "o8",
+      "pct": 1.9
+    },
+    {
+      "address": "h9",
+      "owner": "o9",
+      "pct": 1.8
+    },
+    {
+      "address": "h10",
+      "owner": "o10",
+      "pct": 1.7
+    }
+  ],
+  "holders": {
+    "atr14Pct": 7.5,
+    "avgBuyUsd": 180,
+    "bundledPct": 6.0,
+    "buyVolumeUsd": 868000.0,
+    "devClusterPct": 9.0,
+    "devPct": 1.0,
+    "devPriorRug": false,
+    "holders": 3800,
+    "medianBuyUsd": 150,
+    "sellVolumeUsd": 532000.0,
+    "smartWalletPct": 6.2,
+    "sniper20Pct": 18.0,
+    "top10ExcludedPct": 19.5,
+    "top10RawPct": 31.0,
+    "totalBuys": 1240,
+    "uniqueBuyerGrowthPct": 46.0,
+    "uniqueBuyers": 780
+  },
+  "knownAccounts": {
+    "burns": [
+      "1nc1nerator11111111111111111111111111111111"
+    ],
+    "cex": [],
+    "pools": [
+      "POOLowner1111111111111111111111111111111111"
+    ]
+  },
+  "market": {
+    "change1hPct": 12.0,
+    "change24hPct": 30.0,
+    "change6hPct": 20.0,
+    "dexId": "raydium",
+    "feeBps": 25,
+    "liqUsd": 900000,
+    "mcapUsd": 5000000,
+    "mint": "GoodMint1111111111111111111111111111111111",
+    "name": "GOOD token",
+    "pairAddress": "PAIRGoodMi",
+    "pairCreatedAtMs": 1793278400000,
+    "price24hLowUsd": 0.0015,
+    "price6hLowUsd": 0.0019,
+    "priceUsd": 0.0021,
+    "symbol": "GOOD",
+    "vol1hUsd": 1400000,
+    "vol24hUsd": 11200000
+  },
+  "safety": {
+    "extensions": [],
+    "freezeAuthorityRevoked": true,
+    "lpBurned": true,
+    "lpLockDaysRemaining": null,
+    "metadataMutable": false,
+    "mintAuthorityRevoked": true,
+    "programUpgradeable": false,
+    "tokenProgram": "spl-token",
+    "transferFeeBps": 0
+  },
+  "sell": {
+    "modelled": true,
+    "ok": true,
+    "priceImpactPct": 1.0,
+    "revertReason": null
+  }
+}
