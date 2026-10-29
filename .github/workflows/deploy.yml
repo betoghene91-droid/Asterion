@@ -1,0 +1,145 @@
+name: deploy
+# Push from a phone on github.com -> this deploys. No laptop, no terminal.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'app/**'
+      - 'skills/**'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # One gate, because there is now one app. Previously this was `gate` (v1) plus
+  # `v2-gate`, and `deploy` needed both -- a structure that existed only because
+  # the two trees had separate package.json files. The proof-engine tests are no
+  # longer a second job: they are part of the same `npm test`.
+  gate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: install
+        run: npm ci --no-audit --no-fund
+
+      - name: typecheck
+        run: npx tsc --noEmit
+
+      - name: full test suite
+        # Everything must pass before anything may deploy: the policy engine, the
+        # skills embed, methodology, the corpus-path contract, the digest zero-loss
+        # union, and the whole proof engine (proof/counterfactual/fuzzseed/drain).
+        # This used to run gates.test.mjs alone, so a broken Worker still deployed.
+        run: npm test
+
+      - name: digest invariant check
+        # Refuses a digest whose per-class stats contradict source_rows, and prints
+        # the merge provenance. Cheap, and it catches a bad promotion before deploy.
+        run: node scripts/load-corpus.mjs --check
+
+      - name: detector tests
+        # Precision and recall on the contract scanner.
+        run: python3 tools/test_detect.py
+
+      - name: normaliser tests
+        # Proves every third-party adapter maps or preserves output correctly.
+        run: python3 tools/normalize.py --selftest
+
+      - name: eval arithmetic self-test
+        run: python3 eval/ingest-more.py --selftest
+
+  deploy:
+    needs: [gate]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: install
+        run: npm ci --no-audit --no-fund
+
+      - name: apply schema
+        run: npx wrangler d1 execute asterion --remote --file=./schema.sql --yes
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      # The 181k corpus is distilled into src/corpus-digest.json and the Worker
+      # reads it at runtime from D1 (corpus_digest, ORDER BY loaded_at DESC).
+      # Without this step the digest is never loaded, getCorpus() returns null,
+      # and every precedence/prior signal silently degrades to "no precedent" —
+      # the bot still runs, it is just blind. Non-fatal: a missing corpus must
+      # not block shipping a working bot.
+      - name: load the distilled corpus digest into D1
+        continue-on-error: true
+        run: |
+          if [ ! -f src/corpus-digest.json ]; then
+            echo 'no corpus digest present; skipping (bot runs without precedent)'
+            exit 0
+          fi
+          node scripts/load-corpus.mjs --apply
+          echo '--- verify it landed ---'
+          npx wrangler d1 execute asterion --remote --yes \
+            --command "SELECT COUNT(*) AS rows, MAX(loaded_at) AS newest FROM corpus_digest"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: push runtime secrets
+        # Worker secrets are a different store from GitHub secrets.
+        run: |
+          echo "$TELEGRAM_BOT_TOKEN" | npx wrangler secret put TELEGRAM_BOT_TOKEN
+          if [ -n "$TELEGRAM_CHAT_ID" ]; then echo "$TELEGRAM_CHAT_ID" | npx wrangler secret put TELEGRAM_CHAT_ID; fi
+          if [ -n "$TELEGRAM_WEBHOOK_SECRET" ]; then echo "$TELEGRAM_WEBHOOK_SECRET" | npx wrangler secret put TELEGRAM_WEBHOOK_SECRET; fi
+          # /hook/proof FAILS CLOSED without this: an unset secret refuses every
+          # proof callback, so the Worker and the GitHub secret must agree.
+          if [ -n "$PROOF_HOOK_SECRET" ]; then echo "$PROOF_HOOK_SECRET" | npx wrangler secret put PROOF_HOOK_SECRET; fi
+          if [ -n "$GEMINI_API_KEY" ]; then echo "$GEMINI_API_KEY" | npx wrangler secret put GEMINI_API_KEY; fi
+          if [ -n "$GROQ_API_KEY" ]; then echo "$GROQ_API_KEY" | npx wrangler secret put GROQ_API_KEY; fi
+          if [ -n "$OPENROUTER_API_KEY" ]; then echo "$OPENROUTER_API_KEY" | npx wrangler secret put OPENROUTER_API_KEY; fi
+          if [ -n "$RPC_URL" ]; then echo "$RPC_URL" | npx wrangler secret put RPC_URL; fi
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_WEBHOOK_SECRET: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
+          PROOF_HOOK_SECRET: ${{ secrets.PROOF_HOOK_SECRET }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          RPC_URL: ${{ secrets.RPC_URL }}
+
+      - name: deploy worker
+        run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: point telegram at the worker
+        run: node scripts/set-webhook.mjs
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_WEBHOOK_SECRET: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
+          WORKER_URL: ${{ vars.WORKER_URL }}

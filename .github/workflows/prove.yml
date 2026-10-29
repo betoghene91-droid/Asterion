@@ -1,0 +1,370 @@
+name: prove
+# V2 executor. Takes leads, synthesises PoCs, runs them on real compute, and
+# reports a verdict per lead. This is where a lead becomes a finding or dies.
+#
+# Free-tier safe: one job, 300 min ceiling, no secrets beyond a fork RPC.
+#
+# ── The counterfactual stage ────────────────────────────────────────────
+#
+# judge() returns `proven` only for reproduced + CAUSAL + measured. Causality
+# is established by a SECOND run whose result is interpretable, and the plan
+# names which mechanism it chose per attempt:
+#
+#   with_fix              apply a minimal derived patch to the target source,
+#                         re-run the SAME attack test, require it to PASS.
+#   without_precondition  run the generated `<test>_nocond` test, which keeps
+#                         the attack's assertion and removes only the enabling
+#                         condition, require it to PASS.
+#
+# Both mechanisms are real runs. Neither is a placeholder: the patch is derived
+# from the flagged file's actual text (app/src/patch.ts) and the nocond test is
+# emitted by the same synthesizer as the attack (app/src/poc.ts).
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: 'git URL of the target'
+        required: true
+      commit:
+        description: 'commit to test against'
+        required: true
+      contract:
+        description: 'contract name (the PoC imports ../src/<name>.sol)'
+        required: true
+      fork_block:
+        description: 'block to pin'
+        required: false
+        default: '0'
+      hunt_id:
+        description: 'hunt row id, for correlation'
+        required: false
+        default: ''
+      address:
+        description: 'V2: deployed contract address the PoC attaches to (0x... ). Optional; a repo URL here would break setUp.'
+        required: false
+        default: ''
+      fuzz_playbook:
+        description: 'V3: playbook to fuzz (e.g. sol.reentrancy). Empty disables fuzzer-guided proof.'
+        required: false
+        default: ''
+      methodology:
+        description: 'Expert methodology block that governed this hunt. Carried for
+          auditability and runner-side reference; the executor is deterministic and
+          does not read it to synthesise PoCs. Empty when no pack applied.'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  prove:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: record the methodology that governed this run
+        if: always()
+        env:
+          METHODOLOGY: ${{ inputs.methodology }}
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/methodology"
+          if [ -n "${METHODOLOGY:-}" ]; then
+            printf '%s\n' "$METHODOLOGY" > "$GITHUB_WORKSPACE/methodology/methodology.md"
+            echo "methodology recorded: $(wc -c < "$GITHUB_WORKSPACE/methodology/methodology.md") bytes"
+            head -5 "$GITHUB_WORKSPACE/methodology/methodology.md"
+          else
+            echo 'no methodology input; nothing recorded'
+          fi
+
+      - name: clone target at the pinned commit
+        run: |
+          git clone --quiet "${{ inputs.repo }}" target
+          cd target
+          git checkout --quiet "${{ inputs.commit }}"
+          echo "TARGET_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: install app
+        working-directory: app
+        run: npm ci --no-audit --no-fund && npm run build --silent
+
+      - name: install forge-std into the target
+        working-directory: target
+        run: |
+          mkdir -p lib
+          if [ ! -d lib/forge-std ]; then
+            git clone --quiet --depth 1 https://github.com/foundry-rs/forge-std lib/forge-std
+          fi
+          test -f foundry.toml || printf '[profile.default]\nsrc = "src"\ntest = "test"\nlibs = ["lib"]\n' > foundry.toml
+          forge build 2>&1 | tail -15
+
+      - name: synthesise PoCs from leads
+        working-directory: app
+        env:
+          CONTRACT: ${{ inputs.contract }}
+          FORK_BLOCK: ${{ inputs.fork_block }}
+        run: |
+          # tsc emits app/build/, and scripts/copy-mjs.mjs copies the .mjs
+          # entrypoints to that same flat build root. src/ and build/ are one
+          # level apart, so every .mjs import is a plain sibling specifier
+          # (./hunt.js) and resolvable from either directory.
+          node build/plan.mjs \
+            --target "$GITHUB_WORKSPACE/target" \
+            --contract "$CONTRACT" \
+            --fork-block "$FORK_BLOCK" \
+            --out "$GITHUB_WORKSPACE/plan.json"
+          cat "$GITHUB_WORKSPACE/plan.json" | head -50
+
+      # ── V3: fuzzer-guided proof ────────────────────────────────────────
+      #
+      # These two steps are strictly ADDITIVE. Both are `continue-on-error`, and
+      # fuzz.mjs itself exits 0 whenever it has no seeds, so a missing or broken
+      # Echidna can only ever mean "V3 contributed nothing" — the V2 static path
+      # above and the judge below behave exactly as they did before.
+      #
+      # Echidna is AGPL-3.0. We INSTALL AND INVOKE the released binary as a CLI
+      # and never vendor or link its source into this repository.
+      - name: run echidna to find a falsifying sequence (V3, best-effort)
+        id: v3_fuzz
+        continue-on-error: true
+        working-directory: app
+        env:
+          CONTRACT: ${{ inputs.contract }}
+          PLAYBOOK: ${{ inputs.fuzz_playbook }}
+        run: |
+          set -uo pipefail
+
+          if [ -z "${PLAYBOOK:-}" ]; then
+            echo 'no fuzz_playbook input; V3 skipped'
+            exit 0
+          fi
+
+          # No honest property for this class means we do not fuzz at all.
+          mkdir -p "$GITHUB_WORKSPACE/fuzz"
+          if ! node build/fuzz.mjs --emit-harness "$PLAYBOOK" \
+                 --contract "$CONTRACT" \
+                 --out-dir "$GITHUB_WORKSPACE/fuzz"; then
+            echo "no property for $PLAYBOOK; V3 skipped"
+            exit 0
+          fi
+
+          # Release binary, pinned. Invoked as a CLI only — no source in-tree.
+          ECHIDNA_VERSION=2.3.3
+          curl -sSfL -o /tmp/echidna.tar.gz \
+            "https://github.com/crytic/echidna/releases/download/v${ECHIDNA_VERSION}/echidna-${ECHIDNA_VERSION}-x86_64-linux.tar.gz" \
+            || { echo 'echidna download failed; V3 skipped'; exit 0; }
+          mkdir -p "$HOME/.local/bin"
+          tar -xzf /tmp/echidna.tar.gz -C "$HOME/.local/bin" || { echo 'echidna extract failed; V3 skipped'; exit 0; }
+          chmod +x "$HOME/.local/bin/echidna" || true
+          export PATH="$HOME/.local/bin:$PATH"
+
+          # echidna needs a compiler; solc-select keeps it reproducible.
+          pip install --quiet crytic-compile solc-select || { echo 'crytic-compile install failed; V3 skipped'; exit 0; }
+          solc-select install 0.8.20 && solc-select use 0.8.20 || true
+
+          cd "$GITHUB_WORKSPACE/target"
+          cp "$GITHUB_WORKSPACE/fuzz/AsterionFuzzHarness.sol" test/
+
+          # The harness deploys its own copy of the target, so it must sit where
+          # the import ../src/<Contract>.sol resolves.
+          set +e
+          timeout 420 echidna test/AsterionFuzzHarness.sol \
+            --config "$GITHUB_WORKSPACE/fuzz/echidna.yaml" \
+            --format json \
+            > "$GITHUB_WORKSPACE/echidna.json" 2> "$GITHUB_WORKSPACE/echidna.stderr"
+          fuzz_exit=$?
+          set -e
+          # A non-zero exit is EXPECTED when a property is falsified (echidna
+          # exits 1). It is also what a crash looks like, so we never branch on
+          # it — fuzz.mjs inspects the JSON instead and refuses anything that is
+          # not a real falsification.
+          echo "echidna exit: $fuzz_exit (not used to decide anything)"
+          wc -c "$GITHUB_WORKSPACE/echidna.json" || true
+          tail -5 "$GITHUB_WORKSPACE/echidna.stderr" || true
+
+      - name: merge echidna seeds into the plan (V3, best-effort)
+        continue-on-error: true
+        working-directory: app
+        run: |
+          node build/fuzz.mjs \
+            --plan "$GITHUB_WORKSPACE/plan.json" \
+            --fuzz "$GITHUB_WORKSPACE/echidna.json" \
+            --target "$GITHUB_WORKSPACE/target" \
+            --contract "${{ inputs.contract }}"
+          echo '--- plan attempts after V3 merge ---'
+          python3 -c "import json;d=json.load(open('$GITHUB_WORKSPACE/plan.json'));print('attempts',len(d.get('attempts',[])));[print(' ',a['test_name'],a.get('source','static')) for a in d.get('attempts',[])]"
+
+      - name: write PoCs into the target
+        run: |
+          python3 - <<'PY'
+          import json, pathlib
+          plan = json.loads(pathlib.Path('plan.json').read_text())
+          out = pathlib.Path('target/test')
+          out.mkdir(exist_ok=True)
+          for item in plan.get('attempts', []):
+              p = out / f"{item['test_name']}.t.sol"
+              p.write_text(item['solidity'])
+              print('wrote', p)
+          print('attempts:', len(plan.get('attempts', [])))
+          PY
+
+      # ── run 1 of 2: the attack ─────────────────────────────────────────
+      #
+      # capture.mjs records the TEST's exit status, not tee's. The naive form
+      #
+      #     forge test ... | tee run.log
+      #     echo $?
+      #
+      # prints 0 even when forge fails, because $? is tee's status. Recording 0
+      # makes judge() read "the test passed" -> `disproved`, silently discarding
+      # every real reproduction. capture.mjs runs the pipeline under
+      # `bash -o pipefail` so the command's own status survives.
+      - name: run each PoC attack and capture the exit status
+        env:
+          FORK_RPC: ${{ secrets.FORK_RPC }}
+          # Must be an ADDRESS: the PoC does vm.envAddress("TARGET"). It used to
+          # be inputs.repo (a git URL), so every PoC died in setUp with
+          # "TARGET is not a valid address" and could only be inconclusive.
+          TARGET: ${{ inputs.address }}
+        run: |
+          mkdir -p results
+          cd target
+          shopt -s nullglob
+          for f in test/test_*.t.sol; do
+            name=$(basename "$f" .t.sol)
+            # The counterfactual tests are run by their OWN steps below, with
+            # their own exit files. Running the attack over them here would
+            # overwrite `<name>_control`/`<name>_nocond` results with the wrong
+            # verdict.
+            case "$name" in *_control|*_nocond) continue ;; esac
+            echo "::group::attack $name"
+            set +e
+            node "$GITHUB_WORKSPACE/app/build/capture.mjs" \
+              --log "../results/${name}.log" \
+              --exit "../results/${name}.exit" \
+              -- forge test --match-test "^${name}$" -vvv
+            set -e
+            echo "::endgroup::"
+          done
+
+      # ── run 2a of 2: the fixture control ───────────────────────────────
+      #
+      # The paired control is what makes a reproduction interpretable, so it is
+      # executed and recorded SEPARATELY (`<name>_control.exit`). It is never the
+      # attempt's own exit code: judge() consumes only the attack run for
+      # `reproduced`, and a control result must not be able to launder an attack
+      # into `proven`.
+      - name: run each PoC's control (fixture soundness)
+        if: always()
+        env:
+          FORK_RPC: ${{ secrets.FORK_RPC }}
+          TARGET: ${{ inputs.address }}
+        run: |
+          mkdir -p controls
+          cd target
+          shopt -s nullglob
+          for f in test/test_*.t.sol; do
+            name=$(basename "$f" .t.sol)
+            case "$name" in *_control|*_nocond) continue ;; esac
+            # Only the generated controls follow the <name>_control convention.
+            if ! grep -q "function ${name}_control()" "$f"; then continue; fi
+            echo "::group::control ${name}_control"
+            set +e
+            node "$GITHUB_WORKSPACE/app/build/capture.mjs" \
+              --log "../controls/${name}_control.log" \
+              --exit "../controls/${name}_control.exit" \
+              -- forge test --match-test "^${name}_control$" -vvv
+            set -e
+            echo "::endgroup::"
+          done
+
+      # ── run 2b of 2: the counterfactual ────────────────────────────────
+      #
+      # This is the run that makes `proven` reachable. Two mechanisms:
+      #
+      # without_precondition  the generated `<test>_nocond` test, executed as-is.
+      # with_fix              the derived patch is applied to the target source
+      #                       and the SAME attack test is re-run. The patch is
+      #                       what plan.mjs derived from the flagged file; this
+      #                       step applies it literally and refuses if it does
+      #                       not match exactly, so a partially applied patch can
+      #                       never be reported as a fix.
+      #
+      # Results land in `counterfactual/<test>.{log,exit}` — a directory of its
+      # own, so a with_fix run of `test_x` cannot overwrite the attack run of
+      # `test_x` that lives in `results/`.
+      - name: run each counterfactual (causality evidence)
+        if: always()
+        env:
+          FORK_RPC: ${{ secrets.FORK_RPC }}
+          TARGET: ${{ inputs.address }}
+        run: |
+          mkdir -p counterfactual
+          cd target
+          shopt -s nullglob
+          for f in test/test_*.t.sol; do
+            name=$(basename "$f" .t.sol)
+            case "$name" in *_control|*_nocond) continue ;; esac
+            echo "::group::counterfactual $name"
+            set +e
+            node "$GITHUB_WORKSPACE/app/build/counterfactual.mjs" \
+              --plan "$GITHUB_WORKSPACE/plan.json" \
+              --test "$name" \
+              --target "$GITHUB_WORKSPACE/target" \
+              --out "$GITHUB_WORKSPACE/counterfactual"
+            cf_exit=$?
+            set -e
+            echo "counterfactual $name exit: $cf_exit (recorded; not decisive here)"
+            echo "::endgroup::"
+          done
+
+      - name: judge
+        if: always()
+        env:
+          FORK_RPC: ${{ secrets.FORK_RPC }}
+        run: |
+          node "$GITHUB_WORKSPACE/app/build/judge.mjs" \
+            --plan "$GITHUB_WORKSPACE/plan.json" \
+            --results "$GITHUB_WORKSPACE/results" \
+            --counterfactual "$GITHUB_WORKSPACE/counterfactual" \
+            --out "$GITHUB_WORKSPACE/verdicts.json"
+          cat "$GITHUB_WORKSPACE/verdicts.json"
+
+      - name: report to the Worker
+        if: always()
+        run: |
+          if [ -z "${{ vars.WORKER_URL }}" ]; then echo 'no WORKER_URL; skipping'; exit 0; fi
+          if [ -z "${{ secrets.PROOF_HOOK_SECRET }}" ]; then
+            echo 'PROOF_HOOK_SECRET not set; the Worker would refuse this callback (fail-closed)'
+            exit 1
+          fi
+          curl -sS -X POST "${{ vars.WORKER_URL }}/hook/proof" \
+            -H 'content-type: application/json' \
+            -H "x-asterion-hunt: ${{ inputs.hunt_id }}" \
+            -H "x-asterion-secret: ${{ secrets.PROOF_HOOK_SECRET }}" \
+            --data @verdicts.json || echo 'report failed (non-fatal)'
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: proof-bundle
+          path: |
+            plan.json
+            verdicts.json
+            results/
+            controls/
+            counterfactual/
+            echidna.json
+            echidna.stderr
+            fuzz/
+          retention-days: 90

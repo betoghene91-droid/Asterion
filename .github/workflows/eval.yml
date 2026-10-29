@@ -1,0 +1,59 @@
+name: eval
+# The learning loop. Runs nightly on free Actions minutes.
+#
+# What it does, and why it matters more than any detector:
+#   1. pull the audit-findings corpus (180k expert-labelled findings)
+#   2. pick a random slice, weight recent + high severity
+#   3. run the deterministic detectors over each one's code at pre-fix state
+#   4. write precision / recall per bug class to D1
+#   5. open an issue naming the weakest class -> that becomes tomorrow's focus
+#
+# Without this, "the bot is learning" is a feeling. With it, it is a number.
+
+on:
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+    inputs:
+      sample_size:
+        description: 'how many findings to sample'
+        required: false
+        default: '60'
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: fetch corpus manifest
+        run: |
+          mkdir -p eval/data
+          curl -sSL --retry 3 --max-time 300 \
+            https://github.com/DicksonWu654/web3-audit-corpus/releases/latest/download/findings.jsonl.gz \
+            -o eval/data/findings.jsonl.gz || echo 'manifest fetch failed' 
+          ls -lh eval/data || true
+
+      - name: run eval harness
+        env:
+          SAMPLE_SIZE: ${{ inputs.sample_size || '60' }}
+          CF_EVAL_ENDPOINT: ${{ vars.EVAL_ENDPOINT }}
+          CF_EVAL_TOKEN: ${{ secrets.CF_EVAL_TOKEN }}
+        run: python eval/harness.py
+
+      - name: upload results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-results
+          path: eval/out/
+          retention-days: 90
