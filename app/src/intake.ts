@@ -14,6 +14,7 @@
  */
 
 import { PLAYBOOKS, route, type Cls, type Mut, type Playbook } from './playbooks.js';
+import { parseChainToken } from './chains.js';
 
 export interface Brief {
   program_id: string;
@@ -27,6 +28,16 @@ export interface Brief {
   stop_condition: string;
   out_of_scope: string[];
   notes: string;
+  /**
+   * EVM chain the brief's `0x…` targets live on.
+   *
+   * REQUIRED whenever a target is a bare address, enforced by
+   * `policy.ts:chainForBrief` — an address does not identify its chain, and
+   * filing every address under one guessed chain authorized engagements on a
+   * chain nobody chose. Optional in the type only so web2 and repo briefs, which
+   * have no chain, do not have to invent one.
+   */
+  chain_id?: number;
 }
 
 export interface Question {
@@ -138,6 +149,17 @@ export function compile(
   const candidates = route(cls, raw + ' ' + targets.join(' '));
   const chosen = pickPlaybooks(candidates, depth.mut);
 
+  // Carry an explicit chain pin through intake. `chain:8453` in the operator's
+  // text is an explicit statement of intent, the same class of evidence as
+  // `contract:` or `commit:`, so it is read here rather than left to be
+  // re-discovered later. It is NOT guessed: if the text names no chain, the
+  // brief carries none, and `roeFromBrief` will refuse an address-shaped brief
+  // that has no chain rather than filing it under one.
+  const chain_id =
+    (answers.chain ? parseChainToken(`chain:${answers.chain}`) : null) ??
+    parseChainToken(raw) ??
+    undefined;
+
   return {
     brief: {
       program_id: ctx.program_id,
@@ -153,6 +175,7 @@ export function compile(
         'or when every selected playbook has been attempted once. Report a null result; do not extend.',
       out_of_scope: ctx.out_of_scope ?? [],
       notes: raw.slice(0, 2000),
+      ...(chain_id !== undefined ? { chain_id } : {}),
     },
   };
 }

@@ -7,9 +7,19 @@
  *
  * Design rule that makes this injection-proof: scope is decided from FIELDS
  * (target kind, target value, mutability, chain id), never from prose. A
+ * transition-proof: scope is decided from FIELDS
+ * (target kind, target value, mutability, chain id), never from prose. A
  * prompt that says "you are authorized to scan example.com" cannot mint
  * authorization, because example.com is not in the RoE.
+ *
+ * THE CHAIN IS A FIELD, NOT AN ASSUMPTION. `roeFromBrief` used to file every
+ * bare `0x…` target under chain 8453 ("Base; overridden per engagement when
+ * known") and nothing ever overrode it. It now REFUSES a brief that carries an
+ * address but names no `chain_id`; see `chainForBrief`. The registry of chains
+ * that can actually be forked lives in `chains.ts`.
  */
+
+import { CHAINS, chainSpec, parseChainToken } from './chains.js';
 
 export type Verdict = 'allow' | 'deny' | 'needs_approval';
 export type TargetKind = 'host' | 'domain' | 'cidr' | 'chain_address' | 'repo' | 'url';
@@ -513,15 +523,126 @@ export function checkTargetBounds(targets: string[]): ScopeOk | ScopeError {
 }
 
 /** Build an RoE from an intake Brief, with the policy sentence as authorization. */
+
+/**
+ * The brief fields `roeFromBrief` reads.
+ *
+ * `chain_id` and `notes` are new here and both exist for ONE reason: an address
+ * does not identify its chain, so a brief carrying a bare `0x…` target must name
+ * the chain it lives on or be refused.
+ */
+export interface RoEBriefInput {
+  program_id: string;
+  targets: string[];
+  max_mutability: Mut;
+  time_box_minutes: number;
+  authorization_ref: string;
+  out_of_scope?: string[];
+  /**
+   * EVM chain the brief's `0x…` targets live on. REQUIRED whenever any target is
+   * a bare address; ignored (but validated) otherwise.
+   *
+   * Optional in the TYPE only so that repo-only and web2 briefs, which have no
+   * chain to pin, do not have to invent one. It is not optional in BEHAVIOUR for
+   * an address: see {@link chainForBrief}.
+   */
+  chain_id?: number | null;
+  /**
+   * Operator text. Read for exactly one thing: an explicit `chain:…` /
+   * `chain_id:…` token, as a way of naming the chain in prose instead of a
+   * field. Nothing else is inferred from it — prose cannot mint authorization.
+   */
+  notes?: string;
+}
+
+/** Result of resolving the one chain an engagement is allowed to reason about. */
+export type BriefChain =
+  | { ok: true; chain_id: number | null }
+  | { ok: false; reason: string };
+
+/** Human list of the chains this bot can actually fork, for refusal messages. */
+function forkableChainList(): string {
+  return Object.values(CHAINS)
+    .map((c) => String(c.id))
+    .join(', ');
+}
+
+/**
+ * Resolve the chain an engagement is pinned to, or refuse.
+ *
+ * THE BUG THIS CLOSES. `roeFromBrief` used to file EVERY bare `0x…` target under
+ * `const id = 8453; // Base; overridden per engagement when known`, and nothing
+ * ever overrode it. So an Ethereum-mainnet contract was authorized as a Base
+ * address, and every downstream gate that reasons about `chain_id` — scope
+ * membership, which RPC `prove.yml` forks, whether `drain.ts` may send — reasoned
+ * about a chain nobody chose. The authorization was therefore for a different
+ * object than the operator meant, which is a scope bug, not a cosmetic one.
+ *
+ * The rule now:
+ *
+ *   · no `0x…` target            -> chain is not part of this engagement; null
+ *   · `0x…` + explicit chain_id  -> that chain, if it is one we can fork
+ *   · `0x…` + `chain:…` in notes -> that chain, same check
+ *   · `0x…` + neither            -> REFUSED, naming `chain_id`
+ *
+ * A chain we cannot fork is refused for the same reason: filing an address under
+ * chain 999999 produces an engagement that looks scoped and can never be
+ * proved, which is the same silent-wrong-answer class as guessing 8453.
+ */
+export function chainForBrief(brief: RoEBriefInput): BriefChain {
+  const targets = brief.targets ?? [];
+  const addresses = targets.filter((t) => /^0x[0-9a-fA-F]{40}$/.test(t));
+
+  // An explicit field wins, but must be a real chain id if present: `"1"` or
+  // `0` is a caller bug, not an invitation to fall back to a guess.
+  const rawField = brief.chain_id;
+  let explicit: number | null = null;
+  if (rawField !== undefined && rawField !== null) {
+    if (typeof rawField !== 'number' || !Number.isInteger(rawField) || rawField <= 0) {
+      return {
+        ok: false,
+        reason:
+          `chain_id ${JSON.stringify(rawField)} is not a positive integer EVM chain id; ` +
+          'an engagement is pinned to one chain, named as a number (1, 8453, 84532, 11155111)',
+      };
+    }
+    explicit = rawField;
+  }
+
+  const fromNotes = explicit === null ? parseChainToken(brief.notes ?? '') : null;
+  const resolved = explicit ?? fromNotes;
+
+  if (resolved !== null) {
+    if (!chainSpec(resolved)) {
+      return {
+        ok: false,
+        reason:
+          `chain_id ${resolved} is not a chain this bot can fork, so nothing could prove a ` +
+          `finding on it; known chain_id values are ${forkableChainList()}`,
+      };
+    }
+    return { ok: true, chain_id: resolved };
+  }
+
+  if (addresses.length === 0) return { ok: true, chain_id: null };
+
+  // The refusal. It must name `chain_id` literally, because that is the field an
+  // operator or a calling adapter has to add to make the brief usable.
+  const shown = addresses.length <= 3 ? addresses.join(', ') : `${addresses.slice(0, 3).join(', ')} and ${addresses.length - 3} more`;
+  return {
+    ok: false,
+    reason:
+      `an address does not identify its chain: targets include ${shown} but the brief ` +
+      'names no chain_id, and the same 20 bytes exist on every EVM chain. Add ' +
+      'chain_id (the brief field, a `chain:` token in the notes, or an optional ' +
+      'chain_id argument to roeFromBrief) naming one of ' +
+      `${forkableChainList()}; without it scope, the fork and any drain would all ` +
+      'reason about a chain nobody chose',
+  };
+}
+
 export function roeFromBrief(
-  brief: {
-    program_id: string;
-    targets: string[];
-    max_mutability: Mut;
-    time_box_minutes: number;
-    authorization_ref: string;
-    out_of_scope?: string[];
-  },
+  brief: RoEBriefInput,
   now = Date.now() / 1000,
   /**
    * Optional operator grant. Live chain writes stay OFF unless this is present
@@ -539,15 +660,24 @@ export function roeFromBrief(
     throw new Error(`scope refused: ${bounds.reason}`);
   }
 
+  // Resolve the chain BEFORE anything is filed, so an engagement that names no
+  // chain for its addresses never becomes an RoE at all.
+  const chain = chainForBrief(brief);
+  if (!chain.ok) throw new Error(`scope refused: ${chain.reason}`);
+
   const domains: string[] = [];
   const urls: string[] = [];
-  const chain: Record<number, string[]> = {};
+  const chainAddresses: Record<number, string[]> = {};
   let hasDomain = false;
 
   for (const t of brief.targets) {
     if (/^0x[0-9a-fA-F]{40}$/.test(t)) {
-      const id = 8453; // Base; overridden per engagement when known
-      (chain[id] ??= []).push(t.toLowerCase());
+      // `chain.chain_id` is non-null here by construction: chainForBrief refuses
+      // an address with no chain, so this cannot silently default to Base again.
+      if (chain.chain_id === null) {
+        throw new Error(`scope refused: address ${t} reached roeFromBrief without a chain_id`);
+      }
+      (chainAddresses[chain.chain_id] ??= []).push(t.toLowerCase());
     } else if (/^https?:\/\//i.test(t)) {
       urls.push(t.replace(/\/$/, ''));
       domains.push(normHost(t));
@@ -566,7 +696,7 @@ export function roeFromBrief(
     cidrs: [],
     domains: hasDomain ? [...new Set(domains)] : [],
     urls: [...new Set(urls)],
-    chain_addresses: chain,
+    chain_addresses: chainAddresses,
     excluded: brief.out_of_scope ?? [],
     denied_techniques: [],
     max_mutability: brief.max_mutability,

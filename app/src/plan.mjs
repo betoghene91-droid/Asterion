@@ -46,6 +46,11 @@ function arg(name, fallback = null) {
 const target = arg('target');
 const contract = arg('contract');
 const forkBlock = Number(arg('fork-block', '0'));
+// Chain the fork must be taken from, when the caller pinned one. Carried into
+// the generated harness as `EXPECTED_CHAIN_ID` so a wrong-chain fork fails in
+// setUp rather than producing a delta against unrelated state.
+const chainRaw = arg('chain-id', '');
+const chainId = chainRaw && /^\d+$/.test(chainRaw) && Number(chainRaw) > 0 ? Number(chainRaw) : null;
 const out = arg('out', 'plan.json');
 
 if (!target || !contract) {
@@ -222,12 +227,17 @@ const loaded = loadDigest();
 const digest = loaded?.digest ?? null;
 const leads = scan(target);
 const ranked = rank(PLAYBOOKS.map((p) => p.id), digest);
-const { attempts, unprovable } = planAttempts(leads, { contract, forkBlock: forkBlock || 1 }, 8);
+const { attempts, unprovable } = planAttempts(
+  leads,
+  { contract, forkBlock: forkBlock || 1, chainId },
+  8,
+);
 
 const plan = {
   contract,
   commit: process.env.TARGET_SHA ?? '',
   fork_block: forkBlock,
+  chain_id: chainId,
   leads_found: leads.length,
   attempts: attempts.map(({ lead, spec }) => {
     return {

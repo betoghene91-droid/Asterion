@@ -36,6 +36,13 @@ on:
         description: 'block to pin'
         required: false
         default: '0'
+      chain_id:
+        description: 'EVM chain the fork must be taken from: 1, 8453, 84532,
+          11155111 or 31337. Resolved to FORK_RPC_<id>, and asserted against
+          `cast chain-id`. Empty means no chain pinned (repo-only brief) and
+          falls back to the legacy FORK_RPC secret.'
+        required: false
+        default: ''
       hunt_id:
         description: 'hunt row id, for correlation'
         required: false
@@ -65,6 +72,82 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # ── resolve the fork RPC for THIS chain, and fail by name if it is absent ──
+      #
+      # WHY THIS STEP EXISTS
+      #
+      # Before it, all four steps that fork read one secret, `secrets.FORK_RPC`.
+      # A Base-Sepolia run whose operator had pointed that single secret at
+      # mainnet therefore forked mainnet: the PoC reverted in setUp against a
+      # testnet address, or — much worse — "proved" a delta against unrelated
+      # mainnet state, and nothing in the run could notice.
+      #
+      # GitHub Actions cannot index `secrets` dynamically: `secrets["X"]` does not
+      # exist, and `secrets[vars.X]` does not either. The chain table in
+      # app/src/chains.ts is therefore mirrored here literally, one `case` arm per
+      # chain, each naming its secret. Adding a chain means adding BOTH.
+      #
+      # A chain this workflow does not know is a hard failure, not a fallback: an
+      # unrecognised id must never quietly fork something else.
+      - name: resolve FORK_RPC for the pinned chain
+        env:
+          CHAIN_ID: ${{ inputs.chain_id }}
+          RPC_1: ${{ secrets.FORK_RPC_1 }}
+          RPC_8453: ${{ secrets.FORK_RPC_8453 }}
+          RPC_84532: ${{ secrets.FORK_RPC_84532 }}
+          RPC_11155111: ${{ secrets.FORK_RPC_11155111 }}
+          RPC_31337: ${{ secrets.FORK_RPC_31337 }}
+          RPC_LEGACY: ${{ secrets.FORK_RPC }}
+        run: |
+          set -uo pipefail
+
+          if [ -z "${CHAIN_ID:-}" ]; then
+            # No chain pinned. This is legitimate ONLY for a repo-only brief with
+            # no deployed address: there is nothing to fork against, so the
+            # legacy single secret is used and the run is labelled as unpinned.
+            if [ -z "${RPC_LEGACY:-}" ]; then
+              echo "::error::no chain_id was pinned and the legacy FORK_RPC secret is not set."
+              echo "::error::A run with no fork RPC cannot reproduce anything. Set FORK_RPC (or pin chain_id and set FORK_RPC_<id>)."
+              exit 1
+            fi
+            echo '::warning::no chain_id pinned; using the legacy FORK_RPC secret. Any measured delta is against an unknown chain and must not be read as a reproduction.'
+            echo "FORK_RPC=${RPC_LEGACY}" >> "$GITHUB_ENV"
+            echo "RESOLVED_CHAIN_ID=" >> "$GITHUB_ENV"
+            echo "RESOLVED_RPC_SECRET=FORK_RPC" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          case "$CHAIN_ID" in
+            1)        RPC="${RPC_1:-}"        ; SECRET=FORK_RPC_1 ;;
+            8453)     RPC="${RPC_8453:-}"     ; SECRET=FORK_RPC_8453 ;;
+            84532)    RPC="${RPC_84532:-}"    ; SECRET=FORK_RPC_84532 ;;
+            11155111) RPC="${RPC_11155111:-}" ; SECRET=FORK_RPC_11155111 ;;
+            31337)    RPC="${RPC_31337:-}"    ; SECRET=FORK_RPC_31337 ;;
+            *)
+              echo "::error::chain_id '$CHAIN_ID' is not a chain this workflow can fork."
+              echo "::error::Known ids: 1, 8453, 84532, 11155111, 31337. Add an arm to the case here AND a row to app/src/chains.ts."
+              exit 1
+              ;;
+          esac
+
+          # NAME THE MISSING SECRET. A generic "no RPC configured" leaves the
+          # operator guessing which of five secrets to add.
+          if [ -z "$RPC" ]; then
+            echo "::error::$SECRET is not set, so a fork of chain $CHAIN_ID cannot be taken."
+            echo "::error::Add the Actions secret $SECRET pointing at an RPC for chain $CHAIN_ID, then re-dispatch."
+            echo "::error::Refusing to fall back to another chain's RPC: that is how a run silently measures a delta against unrelated state."
+            exit 1
+          fi
+
+          # Write to the environment, not to a step output, so every later step
+          # inherits the SAME resolved value and none of them can read a
+          # different secret.
+          echo "FORK_RPC=$RPC" >> "$GITHUB_ENV"
+          echo "RESOLVED_CHAIN_ID=$CHAIN_ID" >> "$GITHUB_ENV"
+          echo "RESOLVED_RPC_SECRET=$SECRET" >> "$GITHUB_ENV"
+          echo "resolved $SECRET for chain $CHAIN_ID"
+
+
       - name: record the methodology that governed this run
         if: always()
         env:
@@ -90,6 +173,37 @@ jobs:
         with:
           version: stable
 
+      # ── THE ASSERTION: prove the RPC really serves the chain we were told ──
+      #
+      # Resolving `FORK_RPC_84532` only proves somebody filled in a secret with
+      # that NAME. It does not prove the value points at Base Sepolia — the
+      # operator can paste a mainnet URL into the testnet secret, which is the
+      # same class of silent wrong-chain run this workflow is being fixed for.
+      # `cast chain-id` asks the RPC itself, so a mismatch is red before a single
+      # test runs. This needs `cast`, which is why it sits after the toolchain.
+      - name: assert the fork RPC serves the pinned chain
+        run: |
+          set -uo pipefail
+
+          if [ -z "${RESOLVED_CHAIN_ID:-}" ]; then
+            echo '::warning::no chain_id pinned; skipping the chain assertion. The run is labelled unpinned and its delta must not be read as a reproduction.'
+            exit 0
+          fi
+
+          ACTUAL=$(cast chain-id --rpc-url "$FORK_RPC" 2>&1) || {
+            echo "::error::cast chain-id failed against $RESOLVED_RPC_SECRET:"
+            echo "::error::$ACTUAL"
+            exit 1
+          }
+          ACTUAL=$(printf '%s' "$ACTUAL" | tr -d '[:space:]')
+
+          if [ "$ACTUAL" != "$RESOLVED_CHAIN_ID" ]; then
+            echo "::error::WRONG CHAIN: $RESOLVED_RPC_SECRET reports chain-id $ACTUAL but the brief pinned $RESOLVED_CHAIN_ID."
+            echo "::error::Refusing to fork. A PoC measured on chain $ACTUAL says nothing about chain $RESOLVED_CHAIN_ID."
+            exit 1
+          fi
+          echo "chain assertion OK: $RESOLVED_RPC_SECRET serves chain-id $ACTUAL"
+
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -113,15 +227,22 @@ jobs:
         env:
           CONTRACT: ${{ inputs.contract }}
           FORK_BLOCK: ${{ inputs.fork_block }}
+          PINNED_CHAIN_ID: ${{ env.RESOLVED_CHAIN_ID }}
         run: |
           # tsc emits app/build/, and scripts/copy-mjs.mjs copies the .mjs
           # entrypoints to that same flat build root. src/ and build/ are one
           # level apart, so every .mjs import is a plain sibling specifier
           # (./hunt.js) and resolvable from either directory.
+          #
+          # --chain-id is carried into every generated harness as
+          # EXPECTED_CHAIN_ID, so the guard also lives inside the test: the
+          # shell assertion above is not the only line of defence, because a
+          # judge reading a trace cannot see which chain the fork took.
           node build/plan.mjs \
             --target "$GITHUB_WORKSPACE/target" \
             --contract "$CONTRACT" \
             --fork-block "$FORK_BLOCK" \
+            --chain-id "${PINNED_CHAIN_ID:-}" \
             --out "$GITHUB_WORKSPACE/plan.json"
           cat "$GITHUB_WORKSPACE/plan.json" | head -50
 
@@ -231,7 +352,9 @@ jobs:
       # `bash -o pipefail` so the command's own status survives.
       - name: run each PoC attack and capture the exit status
         env:
-          FORK_RPC: ${{ secrets.FORK_RPC }}
+          # Resolved once, in the `resolve FORK_RPC for the pinned chain` step,
+          # so every forking step necessarily uses the chain that was asserted.
+          FORK_RPC: ${{ env.FORK_RPC }}
           # Must be an ADDRESS: the PoC does vm.envAddress("TARGET"). It used to
           # be inputs.repo (a git URL), so every PoC died in setUp with
           # "TARGET is not a valid address" and could only be inconclusive.
@@ -267,7 +390,9 @@ jobs:
       - name: run each PoC's control (fixture soundness)
         if: always()
         env:
-          FORK_RPC: ${{ secrets.FORK_RPC }}
+          # Resolved once, in the `resolve FORK_RPC for the pinned chain` step,
+          # so every forking step necessarily uses the chain that was asserted.
+          FORK_RPC: ${{ env.FORK_RPC }}
           TARGET: ${{ inputs.address }}
         run: |
           mkdir -p controls
@@ -306,7 +431,9 @@ jobs:
       - name: run each counterfactual (causality evidence)
         if: always()
         env:
-          FORK_RPC: ${{ secrets.FORK_RPC }}
+          # Resolved once, in the `resolve FORK_RPC for the pinned chain` step,
+          # so every forking step necessarily uses the chain that was asserted.
+          FORK_RPC: ${{ env.FORK_RPC }}
           TARGET: ${{ inputs.address }}
         run: |
           mkdir -p counterfactual
@@ -331,7 +458,9 @@ jobs:
       - name: judge
         if: always()
         env:
-          FORK_RPC: ${{ secrets.FORK_RPC }}
+          # Resolved once, in the `resolve FORK_RPC for the pinned chain` step,
+          # so every forking step necessarily uses the chain that was asserted.
+          FORK_RPC: ${{ env.FORK_RPC }}
         run: |
           node "$GITHUB_WORKSPACE/app/build/judge.mjs" \
             --plan "$GITHUB_WORKSPACE/plan.json" \

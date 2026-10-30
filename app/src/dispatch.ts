@@ -27,6 +27,7 @@
 import { PolicyEngine, roeFromBrief, type Decision } from './policy.js';
 import { esc } from './telegram.js';
 import type { Brief } from './intake.js';
+import { chainSpec, describeChain, parseChainToken, DEFAULT_FORK_RPC_ENV } from './chains.js';
 import {
   METHODOLOGY_INPUT,
   describeMethodology,
@@ -63,6 +64,15 @@ export interface ProveInputs {
   commit: string;
   contract: string;
   fork_block: string;
+  /**
+   * EVM chain the fork must be taken from, as `cast chain-id` would report it.
+   *
+   * Optional only because a repo-only brief has no chain to pin. prove.yml
+   * resolves this to a `FORK_RPC_<id>` secret and asserts `cast chain-id` agrees
+   * with it, so a wrong-chain fork is red rather than silently measured against
+   * unrelated state.
+   */
+  chain_id?: string;
   /**
    * Deployed instance the PoC attaches to, as a 20-byte hex address.
    *
@@ -242,6 +252,16 @@ export function deriveProveInputs(brief: Brief): Derivation {
   const forkBlock = token(brief.notes ?? '', ['fork_block', 'forkblock', 'fork', 'block']) ?? '0';
   const fork_block = /^\d+$/.test(forkBlock) ? forkBlock : '0';
 
+  // chain_id: carried whenever the brief pinned one. A brief that carries a bare
+  // `0x…` target MUST name a chain, and `roeFromBrief` refuses it otherwise —
+  // but that refusal happens in the gate, which runs before derivation. So this
+  // lookup is for the ordinary case, and the gate is the guarantee.
+  const pinnedChain =
+    brief.chain_id != null && Number.isInteger(brief.chain_id)
+      ? brief.chain_id
+      : parseChainToken(brief.notes ?? '');
+  if (pinnedChain != null) partial.chain_id = String(pinnedChain);
+
   // address: the deployed instance to attach the PoC to. Taken ONLY from an
   // explicit 0x target (or an explicit `address:` note token) — the same
   // explicit-intent rule this function already uses for repo and commit. We do
@@ -270,6 +290,7 @@ export function deriveProveInputs(brief: Brief): Derivation {
       commit: commit!,
       contract: contract!,
       fork_block,
+      ...(pinnedChain != null ? { chain_id: String(pinnedChain) } : {}),
       ...(address ? { address } : {}),
     },
     missing: [],
@@ -303,8 +324,24 @@ export async function authorizeProof(
     mutability: 'simulate',
     adapter: 'foundry',
     is_fork: true,
-    chain_id: null,
+    // The chain the fork must be taken from, when the brief pinned one. Passed
+    // through so the decision fingerprint covers it: two runs of the same repo
+    // on different chains are different actions, and a fingerprint that ignored
+    // the chain would let one approval cover both.
+    chain_id: brief.chain_id ?? null,
   });
+}
+
+/**
+ * One line describing the chain a run is pinned to, for the operator message.
+ *
+ * Never empty and never throws: a blank line there is exactly the "which chain
+ * did this run on?" blindness this work exists to remove.
+ */
+function chainLine(chainId: string | undefined): string {
+  if (!chainId) return `unpinned - ${DEFAULT_FORK_RPC_ENV} (no chain_id in the brief)`;
+  const id = Number(chainId);
+  return Number.isInteger(id) ? describeChain(id) : `${chainId} (unparseable chain_id)`;
 }
 
 // ─── the GitHub call ─────────────────────────────────────────────────────────
@@ -350,13 +387,17 @@ export async function dispatchProveWorkflow(
         'x-github-api-version': '2022-11-28',
         'user-agent': 'asterion-worker',
       },
-      body: JSON.stringify({
+        body: JSON.stringify({
         ref: args.ref,
         inputs: {
           repo: args.inputs.repo,
           commit: args.inputs.commit,
           contract: args.inputs.contract,
           fork_block: args.inputs.fork_block,
+          // Only sent when the brief pinned a chain. prove.yml declares this
+          // input; a dispatch carrying an undeclared input is a 422, which is
+          // why the workflow had to gain the declaration in the same change.
+          ...(args.inputs.chain_id ? { chain_id: args.inputs.chain_id } : {}),
           // Only sent when known: an empty string would set TARGET="" and make
           // vm.envAddress revert rather than cleanly leave it unset.
           ...(args.inputs.address ? { address: args.inputs.address } : {}),
@@ -561,8 +602,7 @@ export async function approveAndDispatch(
   }
 
   // 3. Environment. Name the exact missing variable, never a generic failure.
-  const missingVars: string[] = [];
-  if (!deps.env.GITHUB_DISPATCH_TOKEN) missingVars.push('GITHUB_DISPATCH_TOKEN');
+  const missingVars: string[] = [];  if (!deps.env.GITHUB_DISPATCH_TOKEN) missingVars.push('GITHUB_DISPATCH_TOKEN');
   if (!deps.env.GITHUB_REPO) missingVars.push('GITHUB_REPO');
   if (missingVars.length) {
     await deps.ledger('dispatch.blocked', { approval: approvalId, missing_env: missingVars });
@@ -693,6 +733,7 @@ export async function approveAndDispatch(
       `repo      <code>${esc(shortRepo)}</code>`,
       `commit    <code>${esc(inputs.commit.slice(0, 12))}</code>`,
       `contract  <code>${esc(inputs.contract)}</code>   fork block ${esc(inputs.fork_block)}`,
+      `chain     ${esc(chainLine(inputs.chain_id))}`,
       `method    ${esc(methodology.skill_id ? `${methodology.skill_id} (${methodology.block.length} chars)` : 'none — ' + methodology.reason)}`,
       '',
       `GitHub returned ${res.status}. Verdicts arrive at /hook/proof when the run finishes.`,

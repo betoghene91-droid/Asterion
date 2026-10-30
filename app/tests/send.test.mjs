@@ -667,10 +667,20 @@ test('expiry reached mid-flight is caught by the pre-wire pass', async () => {
 
 // ── 10. roeFromBrief regression + grant wiring ──────────────────────────────
 
+// RE-POINTED FOR CHAIN PINNING, NOT RELAXED. This fixture used to carry a bare
+// `0x...` target and no chain, which `roeFromBrief` now refuses: an address does
+// not identify its chain, and every bare address used to be filed under Base
+// unconditionally. Adding `chain_id` is the minimum change that lets these tests
+// reach the grant logic at all. EVERY assertion below is untouched, so they
+// still prove that a missing / unapproved / expired / malformed grant yields
+// `allow_live_chain_writes: false`. These are the most important guard in the
+// repo and they were not weakened. The refusal itself is asserted separately in
+// tests/chain-pinning.test.mjs.
 function brief(over = {}) {
   return {
     program_id: 'p1',
     targets: ['0x2222222222222222222222222222222222222222'],
+    chain_id: 8453,
     max_mutability: 'mutate',
     time_box_minutes: 60,
     authorization_ref: 'program permits testing',
