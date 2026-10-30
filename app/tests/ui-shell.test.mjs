@@ -117,8 +117,9 @@ test('the six kinds of work each have their own view', () => {
 });
 
 test('follow-up questions are answerable, and the queue survives a reload', () => {
-  // The Telegram chat cannot answer these at all (no `ans` case in routeButton),
-  // so this is the only working path and it must not be lost on reload.
+  // The chat answers these with an `ans:` callback (routeButton, branch
+  // task3/hunt-loop); the console must keep its own path working and must not
+  // lose an open question on reload either.
   assert.match(JS, /asterion\.questions\.v1/);
   assert.match(JS, /localStorage/);
   assert.match(JS, /function resolveQuestion/);

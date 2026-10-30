@@ -476,33 +476,59 @@ async function startHunt(
   raw: string,
   hints: { cls?: Cls; playbook?: string } = {},
 ): Promise<void> {
-  // A hunt needs a program row to hang off. Default to a self-scoped one.
-  const programId = await ensureSelfProgram(env, raw);
-  const authRef = await authorizationFor(env, programId);
+  await huntFrom(env, chatId, raw, hints, {}, null);
+}
 
-  if (!authRef) {
-    await send(
-      env,
-      [
-        '<b>NO AUTHORIZATION ON FILE</b>',
-        rule(),
-        'I will not touch a target whose program policy is not recorded.',
-        '',
-        'Two ways forward:',
-        '  1. <code>/seed example.com</code> then let discovery parse its policy',
-        '  2. paste the exact policy sentence that authorizes testing',
-      ].join('\n'),
-      KEYBOARDS.back(),
-      chatId,
-    );
-    return;
-  }
+/** Persisted draft of a hunt that is waiting on follow-up answers. */
+interface IntakeDraft {
+  raw: string;
+  hints: { cls?: Cls; playbook?: string };
+  answers: Record<string, string>;
+}
+
+/**
+ * One hunt, from free text to Authorize card - or to a question.
+ *
+ * AUTHORIZATION GATES CREATION AND DISPATCH, NOT COMPILATION.
+ *
+ * `authorizationFor()` returns the anchor (a policy URL sentence) or null. It is
+ * allowed to return null here so the compiler can still run: compiling a brief
+ * and asking at most three questions touches no target, writes no `approvals`
+ * row and dispatches no compute. Everything with a consequence still needs the
+ * anchor - the approvals row the Authorize button acts on is only written when
+ * `authRef` is non-null, and `approveAndDispatch` refuses a brief whose
+ * `authorization_ref` does not satisfy `PolicyEngine`. A brief that could not be
+ * anchored ends in the refusal below, which is still reachable and still tested.
+ *
+ * `answers` re-enters this same function from the `ans:` callback, so the
+ * Telegram button path and the typed path share one implementation and the
+ * question loop can never drift from the brief path.
+ */
+async function huntFrom(
+  env: Env,
+  chatId: number,
+  raw: string,
+  hints: { cls?: Cls; playbook?: string },
+  answers: Record<string, string>,
+  editTo: number | null,
+): Promise<void> {
+  // A hunt needs a program row to hang off. Default to a self-scoped one. An
+  // answered target joins the text exactly as the Mini App's path joins it, so
+  // the same host resolves whether it was typed or tapped.
+  const programId = await ensureSelfProgram(env, answers['target'] ? `${raw} ${answers['target']}` : raw);
+  // May be null. See the note above: null means "no approvals row, no dispatch",
+  // not "refuse to think".
+  const authRef = await authorizationFor(env, programId);
 
   const compiled = await compileWithEnrichment(
     env,
     raw,
-    { program_id: programId, authorization_ref: authRef, scope_hints: [] },
-    hints.playbook || hints.cls ? { class: hints.cls } : {},
+    {
+      program_id: programId,
+      authorization_ref: authRef ?? '',
+      scope_hints: await scopeHintsFor(env, programId),
+    },
+    hints.playbook || hints.cls ? { class: hints.cls, ...answers } : answers,
   );
   const result = compiled.result;
 
@@ -517,7 +543,42 @@ async function startHunt(
   }
 
   if ('questions' in result) {
-    await send(env, renderQuestions(result.questions), questionKeyboard(result.questions), chatId);
+    // The question loop is the whole point of the free-text path, so the draft is
+    // remembered: `ans:` has only the chat id and the question key to work with.
+    await rememberDraft(env, chatId, { raw, hints, answers });
+    await reply(
+      env,
+      chatId,
+      editTo,
+      renderQuestions(result.questions),
+      questionKeyboard(result.questions),
+    );
+    return;
+  }
+
+  // Past this line a brief exists, so the draft is finished either way.
+  await forgetDraft(env, chatId);
+
+  if (!authRef) {
+    // The anchor refusal, unchanged in substance and now reached AFTER the
+    // compiler rather than instead of it. Fail-closed: no approvals row is
+    // written and nothing can be dispatched from here.
+    await reply(
+      env,
+      chatId,
+      editTo,
+      [
+        '<b>NO AUTHORIZATION ON FILE</b>',
+        rule(),
+        'I will not touch a target whose program policy is not recorded.',
+        '',
+        `Compiled, but not queued: <code>${esc(result.brief.targets.join(', ') || programId)}</code>`,
+        'Two ways forward:',
+        '  1. <code>/seed example.com</code> then let discovery parse its policy',
+        '  2. paste the exact policy sentence that authorizes testing',
+      ].join('\n'),
+      KEYBOARDS.back(),
+    );
     return;
   }
 
@@ -539,12 +600,122 @@ async function startHunt(
     )
     .run();
 
-  await send(env, renderBrief(brief), [
+  await reply(
+    env,
+    chatId,
+    editTo,
+    renderBrief(brief),
     [
-      { text: '\u2713  Authorize', callback_data: `ok:${id}` },
-      { text: '\u2717  Cancel', callback_data: `no:${id}` },
+      [
+        { text: '\u2713  Authorize', callback_data: `ok:${id}` },
+        { text: '\u2717  Cancel', callback_data: `no:${id}` },
+      ],
     ],
-  ], chatId);
+  );
+}
+
+/** Send a new message, or replace the card the button came from. */
+async function reply(
+  env: Env,
+  chatId: number,
+  editTo: number | null,
+  text: string,
+  keyboard: Btn[][],
+): Promise<void> {
+  if (editTo === null) await send(env, text, keyboard, chatId);
+  else await editText(env, chatId, editTo, text, keyboard);
+}
+
+/**
+ * Remember which hunt a chat is in the middle of, so `ans:` can resume it.
+ *
+ * The `intake_sessions` table has existed in schema.sql unused since the first
+ * schema; a follow-up question is exactly the state it was shaped for. A write
+ * failure must not lose the question the operator is looking at, so it is
+ * logged, not thrown.
+ */
+async function rememberDraft(env: Env, chatId: number, d: IntakeDraft): Promise<void> {
+  try {
+    await env.DB.prepare(
+      `INSERT INTO intake_sessions (chat_id, state, draft, step, updated_at)
+       VALUES (?, 'asking', ?, ?, ?)
+       ON CONFLICT(chat_id) DO UPDATE SET
+         state=excluded.state, draft=excluded.draft, step=excluded.step, updated_at=excluded.updated_at`,
+    )
+      .bind(chatId, JSON.stringify(d), Object.keys(d.answers).length, Math.floor(Date.now() / 1000))
+      .run();
+  } catch (e) {
+    console.error('intake draft not stored', e);
+  }
+}
+
+async function readDraft(env: Env, chatId: number): Promise<IntakeDraft | null> {
+  try {
+    const row = await env.DB.prepare(
+      "SELECT draft FROM intake_sessions WHERE chat_id=? AND state='asking'",
+    )
+      .bind(chatId)
+      .first<{ draft: string }>();
+    if (!row) return null;
+    let d: Partial<IntakeDraft> | null = null;
+    try {
+      d = JSON.parse(row.draft) as Partial<IntakeDraft>;
+    } catch {
+      d = null;
+    }
+    if (!d || typeof d.raw !== 'string' || !d.raw) return null;
+    return {
+      raw: d.raw,
+      hints: d.hints && typeof d.hints === 'object' ? d.hints : {},
+      answers: d.answers && typeof d.answers === 'object' ? d.answers : {},
+    };
+  } catch (e) {
+    console.error('intake draft not readable', e);
+    return null;
+  }
+}
+
+async function forgetDraft(env: Env, chatId: number): Promise<void> {
+  try {
+    await env.DB.prepare('DELETE FROM intake_sessions WHERE chat_id=?').bind(chatId).run();
+  } catch (e) {
+    console.error('intake draft not cleared', e);
+  }
+}
+
+/**
+ * Suggested answers to the "which host?" question.
+ *
+ * A question with no options renders as a question the operator cannot tap, so
+ * the hints are drawn from what this Worker already knows: the resolved
+ * program's own in-scope assets first, then programs that actually carry a
+ * policy. Nothing here authorizes anything - a hint that has no `policy_url`
+ * still ends in the anchor refusal when it is chosen.
+ */
+async function scopeHintsFor(env: Env, programId: string): Promise<string[]> {
+  const out: string[] = [];
+  try {
+    const assets = await env.DB.prepare(
+      "SELECT value FROM assets WHERE program_id=? AND in_scope=1 AND kind IN ('domain','host','url') LIMIT 4",
+    )
+      .bind(programId)
+      .all<{ value: string }>();
+    for (const r of assets.results ?? []) if (r.value) out.push(r.value);
+    if (out.length < 4) {
+      const progs = await env.DB.prepare(
+        `SELECT id FROM programs WHERE id<>? AND id<>'unscoped'
+           AND policy_url IS NOT NULL AND automation<>'prohibited'
+         ORDER BY priority DESC LIMIT ?`,
+      )
+        .bind(programId, 4 - out.length)
+        .all<{ id: string }>();
+      for (const r of progs.results ?? []) if (r.id) out.push(r.id);
+    }
+  } catch (e) {
+    // Advisory only: an unreadable suggestion table must not block a hunt.
+    console.error('scope hints unavailable', e);
+  }
+  return [...new Set(out)].slice(0, 4);
 }
 
 async function ensureSelfProgram(env: Env, raw: string): Promise<string> {
