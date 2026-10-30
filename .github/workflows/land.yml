@@ -61,6 +61,10 @@ concurrency:
 
 permissions:
   contents: write
+  # Required by the final step, which dispatches deploy.yml after a successful
+  # push. Without it that dispatch is a 403, so the landing would fail at the
+  # very last moment - see the note on that step for why the dispatch exists.
+  actions: write
 
 jobs:
   land:
@@ -203,7 +207,10 @@ jobs:
           # --- refuse surprise files: everything regular in the zip must be declared
           find "$STAGE_DIR" -type f -print | sed "s|^$STAGE_DIR/||" \
             | grep -v '^MANIFEST$' | LC_ALL=C sort > "$ENTRIES_FILE.actual"
-          undeclared=$(comm -23 "$ENTRIES_FILE.actual" "$PATHS_FILE")
+          # Both sides sorted: `comm` requires it and exits non-zero on unsorted
+          # input, which under `set -e` would fail the landing for a payload whose
+          # MANIFEST merely listed its paths in a different order.
+          undeclared=$(LC_ALL=C comm -23 "$ENTRIES_FILE.actual" <(LC_ALL=C sort "$PATHS_FILE"))
           if [ -n "$undeclared" ]; then
             echo "--- files in the zip that the MANIFEST does not declare ---"; echo "$undeclared"
             refuse "payload would write files it does not declare; rebuild it with pack-payload.sh"
@@ -437,6 +444,13 @@ jobs:
           set -euo pipefail
           refuse() { echo "REFUSED: $*" >&2; exit 1; }
 
+          # Default the dispatch signal to "do not deploy". The NO-OP arm below
+          # returns with it still false, so re-running an already-applied payload
+          # cannot trigger a pointless deploy. A real push flips it at the very
+          # end, only once the ref is confirmed on the remote.
+          echo "pushed=false" >> "$GITHUB_OUTPUT"
+          echo "sha=" >> "$GITHUB_OUTPUT"
+
           git config user.name  'land'
           git config user.email 'land@users.noreply.github.com'
 
@@ -454,7 +468,16 @@ jobs:
           fi
 
           # Safety proof: nothing outside the payload may be staged.
-          outside=$(comm -23 <(printf '%s\n' "$staged") "$PATHS_FILE")
+          # An empty `staged` is handled explicitly rather than by handing `comm`
+          # an empty file. BOTH sides are sorted because `comm` requires it and
+          # exits non-zero on unsorted input - under `set -e` that would fail the
+          # landing for a payload whose MANIFEST merely listed its paths in a
+          # different order. The staged list is already LC_ALL=C sorted above;
+          # the payload's own file is not, and must not be assumed to be.
+          outside=""
+          if [ -n "$staged" ]; then
+            outside=$(LC_ALL=C comm -23 <(printf '%s\n' "$staged") <(LC_ALL=C sort "$PATHS_FILE"))
+          fi
           if [ -n "$outside" ]; then
             echo "--- staged but not declared by the payload ---"; echo "$outside"
             refuse "refusing to commit files that are not part of the payload"
@@ -478,3 +501,88 @@ jobs:
           git --no-pager log -1 --stat --oneline
           git push origin "HEAD:${TARGET_BRANCH}"
           echo "LANDED $PAYLOAD_NAME onto $TARGET_BRANCH: $(git rev-parse HEAD)"
+
+          # Only now, with the ref confirmed on the remote, say a deploy is due.
+          # The dispatch step targets <target_branch>, which evaluates deploy.yml
+          # from that ref - so the ref must already carry this commit.
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      # ---------------------------------------------------------------------
+      # 8. Ask deploy.yml to run, because the push above did NOT ask for it.
+      #
+      # WHY THIS STEP EXISTS. This workflow pushes with the runner's implicit
+      # GITHUB_TOKEN (the default token actions/checkout persists, which `git
+      # push` then uses). GitHub deliberately does NOT create workflow runs for
+      # pushes made by that token - the rule stops a workflow from recursively
+      # triggering other workflows. deploy.yml subscribes to `push` on main
+      # filtered to app/**, skills/** and its own path, so a landing that changes
+      # any of those matches the filter but its event is never delivered.
+      #
+      # That is not theoretical: it is how production came to serve beb70e80
+      # while main was already at d97a55d1e. The landing succeeded, the push
+      # succeeded, the deploy simply never happened - and nothing in the run was
+      # red, so the gap stayed silent until someone diffed the deployed bytes
+      # against the branch. A land that does not deploy is a lie about what is
+      # live.
+      #
+      # Option (a) in the brief - a PAT/App token in a repo secret, used for the
+      # push so the event fires naturally - is the cleaner fix and is not
+      # available here: this repo's credential cannot create Actions secrets
+      # (POST /actions/secrets is refused), so there is no secret to read. This
+      # step is the equivalent that needs no new credential, using the same
+      # GITHUB_TOKEN with `actions: write` added above.
+      #
+      # It runs only on the path that actually pushed, it names its ref
+      # explicitly, and a failed dispatch FAILS THE LANDING: a land whose deploy
+      # was never even requested must not report success.
+      - name: Dispatch deploy.yml (the push event cannot do it)
+        id: dispatch
+        if: success() && steps.commit.outputs.pushed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_BRANCH: ${{ inputs.target_branch }}
+          LANDED_SHA: ${{ steps.commit.outputs.sha }}
+        run: |
+          set -euo pipefail
+          refuse() { echo "REFUSED: $*" >&2; exit 1; }
+
+          [ -n "${LANDED_SHA:-}" ] || refuse "no landed sha to dispatch for"
+          if [ "$TARGET_BRANCH" != "main" ]; then
+            echo "NOTE: target branch is '$TARGET_BRANCH', not main."
+            echo "Dispatching deploy.yml against '$TARGET_BRANCH': a workflow_dispatch"
+            echo "evaluates the workflow file FROM THE TARGET REF, so this runs the"
+            echo "workflow as it exists on that branch, not on main."
+          fi
+
+          echo "landed $LANDED_SHA onto $TARGET_BRANCH; asking deploy.yml to run against $TARGET_BRANCH"
+
+          # gh exits non-zero on a refused dispatch; `set -e` turns that into a
+          # red landing, which is the intended outcome.
+          gh workflow run deploy.yml --ref "$TARGET_BRANCH"
+
+          # A 2xx from the API only means the request was ACCEPTED.
+          # Confirm a run exists for this sha before claiming the deploy was
+          # requested, so a silently-dropped dispatch cannot pass as success.
+          # Bounded poll: the run takes a moment to appear, and a landing must not
+          # hang waiting for it.
+          found=""
+          attempt=0
+          while [ "$attempt" -lt 10 ]; do
+            attempt=$((attempt + 1))
+            runs=$(gh run list --workflow deploy.yml --branch "$TARGET_BRANCH" \
+                     --limit 20 --json headSha,status 2>/dev/null) || runs='[]'
+            found=$(printf '%s' "$runs" \
+                    | jq -r --arg sha "$LANDED_SHA" \
+                        '[.[] | select(.headSha == $sha)] | .[0].status // ""')
+            if [ -n "$found" ]; then
+              echo "deploy.yml run for $LANDED_SHA is '$found' (seen on attempt $attempt)"
+              break
+            fi
+            sleep 3
+          done
+
+          if [ -z "$found" ]; then
+            refuse "dispatched deploy.yml but no run for $LANDED_SHA appeared within 30s - check that GITHUB_TOKEN has actions: write and that deploy.yml still declares workflow_dispatch"
+          fi
+
+          echo "Verify the landing: the run's head_sha must be $LANDED_SHA and its conclusion must be success."

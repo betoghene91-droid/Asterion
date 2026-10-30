@@ -231,18 +231,37 @@ test('the router delegates to the launch-aware parser, not to a raw split', () =
     !/\(location\.hash \|\| ''\)/.test(JS),
     'nothing may go back to treating the raw fragment as a route string',
   );
+  // The same must hold for the copy that rewrites the address bar: it strips the
+  // launch parameters THROUGH the same namespace rule, never by slicing on '='.
+  assert.match(JS, /function hashWithoutLaunchParams\(hash\)[\s\S]{0,900}startsWith\('tgWebApp'\)/);
 });
 
-test('the session is read from the launch parameters FIRST, the SDK second', () => {
+test('the session is read from EVERY source, and a negative resolve is never frozen', () => {
   const body = topLevelFunction(JS, 'readInitData');
-  const atLaunch = body.indexOf('launchInitData()');
-  const atSdk = body.indexOf('TG.initData');
-  assert.ok(atLaunch !== -1, 'readInitData must consult the launch parameters');
-  assert.ok(atSdk !== -1, 'readInitData must still honour the SDK when a host provides it');
-  assert.ok(atLaunch < atSdk, 'the fragment must be preferred over the SDK');
-  // And it must survive a reload, which is why the launched value is remembered.
-  assert.match(body, /rememberLaunchInitData\(fromLaunch\)/);
+  assert.ok(body.includes('launchInitData()'), 'readInitData must consult the launch parameters');
+  assert.ok(body.includes('sdkInitData()'), 'readInitData must still honour the SDK');
+  // The SDK is never trusted blindly: it is used only when it agrees with the
+  // launch parameters, and the fragment wins a disagreement - a `startapp`
+  // re-entry brings a fresh fragment while the SDK still holds the older session.
+  assert.match(body, /if \(sdk && \(!launch \|\| sdk === launch\)\) return sdk;/,
+    'the SDK is used only when it is non-empty and consistent with the fragment');
+  // It must survive a reload, which is why the launched value is remembered.
   assert.match(body, /recallLaunchInitData\(\)/);
+  // And the resolver that calls it must remember too, since that is the one the
+  // transport runs.
+  const resolver = topLevelFunction(JS, 'resolveInitDataNow');
+  assert.match(resolver, /readInitData\(\)/);
+  assert.match(resolver, /rememberLaunchInitData\(value\)/);
+  // The frozen module-level constant is the bug: it made a cold load permanent.
+  assert.ok(!/^const INIT_DATA = /m.test(JS), 'the session must not be evaluated once at load');
+  // No `INIT_DATA` binding survives in CODE (prose explaining the old bug is fine).
+  const codeLines = JS.split('\n').filter((l) => {
+    const t = l.trim();
+    return !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*');
+  }).join('\n').replace(/ASTERION_INIT_DATA/g, '');
+  assert.ok(!/\bINIT_DATA\b(?!_)/.test(codeLines), 'no frozen INIT_DATA binding may survive');
+  assert.ok(!/const INIT_DATA/.test(codeLines) && !/let INIT_DATA/.test(codeLines),
+    'and nothing may reintroduce the binding under another keyword');
 });
 
 test('no new external script is loaded to get the session', () => {

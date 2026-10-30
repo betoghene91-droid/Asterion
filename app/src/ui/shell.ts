@@ -189,6 +189,24 @@ export type UiAuth =
   | { ok: false; reason: InitDataFail; response: Response };
 
 /**
+ * The bot's public @username, or '' when the deployment does not publish one.
+ *
+ * Deliberately narrow: a username is only returned when it matches Telegram's
+ * own shape for a bot (letters/digits/underscore, ending in "bot"), because it
+ * is interpolated into a `t.me` link the console renders as an anchor. A
+ * malformed value would become a broken or misleading link, and "no link" is a
+ * supported state on the client.
+ *
+ * This is NOT an auth input and grants nothing. It exists so the signed-out
+ * screen's one useful action can point at the real bot instead of being
+ * hardcoded, which would be a link to nobody's bot.
+ */
+export function publicBotUsername(env: UiEnv): string {
+  const raw = (env.TELEGRAM_BOT_USERNAME ?? '').trim().replace(/^@/, '');
+  return /^[A-Za-z][A-Za-z0-9_]{2,30}[Bb][Oo][Tt]$/.test(raw) ? raw : '';
+}
+
+/**
  * The single auth gate. It returns EITHER the verified identity OR the exact
  * Response to send plus the machine-readable reason, so a caller cannot forget to
  * check it (the failure arm carries the response) and cannot accidentally leak a
@@ -202,6 +220,12 @@ export async function requireUiAuth(env: UiEnv, req: Request): Promise<UiAuth> {
     // fault) and 401 for "you did not prove who you are". Both fail closed; the
     // split only stops an operator hunting for a client-side fix to a missing
     // server secret.
+    //
+    // The body shape `{ ok:false, error:<machine reason>, message:<copy> }` is
+    // IDENTICAL here and in the /api/ui/session arm, because the client branches
+    // on `error` to decide which signed-out screen to render. `json()` already
+    // sets cache-control: no-store on both, which is what stops a proxy or the
+    // WebView cache from replaying a denial against a later, valid session.
     const status = verdict.reason === 'no_bot_token' ? 503 : 401;
     return {
       ok: false,
@@ -248,12 +272,20 @@ export async function uiRoute(env: UiEnv, req: Request, url: URL): Promise<Respo
     // not signed in instead of showing a bare 401 - and still render the
     // navigation, so the open /api/* surfaces under Ops remain reachable. It
     // carries no data of its own.
+    //
+    // `bot` is the PUBLIC username the signed-out screen uses to build its
+    // "Reopen in Telegram" link. It is sent in BOTH arms: the signed-out arm is
+    // precisely the one that needs it, and a public @username that any visitor
+    // can read off t.me is not a disclosure. It is absent (never invented) when
+    // the deployment does not configure it.
+    const bot = publicBotUsername(env);
     if (!auth.ok) {
       return json({
         ok: false,
         signedIn: false,
         reason: auth.reason,
         message: describeFailure(auth.reason),
+        bot: bot || null,
         tabs: UI_TABS,
         ops: UI_OPS,
       });
@@ -265,6 +297,7 @@ export async function uiRoute(env: UiEnv, req: Request, url: URL): Promise<Respo
       operator: env.OPERATOR_NAME ?? 'operator',
       user: auth.user,
       sessionAgeSeconds: auth.ageSeconds,
+      bot: bot || null,
       tabs: UI_TABS,
       ops: UI_OPS,
       counts,
