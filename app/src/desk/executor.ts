@@ -22,7 +22,8 @@
 
 import { breakerActive, armState, todayRealizedPnl } from './arming.js';
 import { db, deployedUsd, newId, realizedEquity } from './db.js';
-import { simulateFill, feeBpsOf, type FillResult } from './paper.js';
+import { recordHaircut } from './logger.js';
+import { simulateFill, feeBpsOf, haircutFrom, type FillResult } from './paper.js';
 import type { RefusalReason } from './reasons.js';
 import { SIZING, type DeskEnv, type DeskMode, type Quote } from './types.js';
 
@@ -192,6 +193,12 @@ export async function openPosition(
   const firstTranche = Number((decision.sizeUsd * SIZING.splitEntry.first).toFixed(2));
   const prioFee = Number(env.DESK_PRIO_FEE_USD ?? '0.0005');
   const prioCap = Number(env.DESK_PRIO_FEE_CAP_USD ?? '0.005');
+  // The same haircut the exit will charge, resolved once from the environment so
+  // entry and exit cannot disagree about what paper mode is assuming.
+  const haircut = haircutFrom({
+    DESK_MEV_HAIRCUT_BPS: env.DESK_MEV_HAIRCUT_BPS,
+    DESK_FAILED_TX_BPS: env.DESK_FAILED_TX_BPS,
+  });
 
   const fill = simulateFill({
     side: 'buy',
@@ -201,6 +208,8 @@ export async function openPosition(
     feeBps: 30,
     priorityFeeUsd: prioFee,
     priorityFeeCapUsd: prioCap,
+    mevBps: haircut.mevBps,
+    failedTxBps: haircut.failedTxBps,
   });
 
   if (!fill.filled) {
@@ -256,6 +265,18 @@ export async function openPosition(
     now,
   });
 
+  await recordHaircut(env, {
+    positionId: id,
+    mint: args.mint,
+    side: 'buy',
+    notionalUsd: fill.notionalUsd,
+    mevBps: haircut.mevBps,
+    failedTxBps: haircut.failedTxBps,
+    mevUsd: fill.mevUsd,
+    failedTxUsd: fill.failedTxUsd,
+    now,
+  }).catch(() => undefined);
+
   return {
     opened: true,
     positionId: id,
@@ -303,6 +324,10 @@ export async function confirmEntry(
 
   const prioFee = Number(env.DESK_PRIO_FEE_USD ?? '0.0005');
   const prioCap = Number(env.DESK_PRIO_FEE_CAP_USD ?? '0.005');
+  const haircut = haircutFrom({
+    DESK_MEV_HAIRCUT_BPS: env.DESK_MEV_HAIRCUT_BPS,
+    DESK_FAILED_TX_BPS: env.DESK_FAILED_TX_BPS,
+  });
   const fill = simulateFill({
     side: 'buy',
     notionalUsd: remaining,
@@ -311,6 +336,8 @@ export async function confirmEntry(
     feeBps: 30,
     priorityFeeUsd: prioFee,
     priorityFeeCapUsd: prioCap,
+    mevBps: haircut.mevBps,
+    failedTxBps: haircut.failedTxBps,
   });
 
   if (!fill.filled) {
@@ -340,6 +367,18 @@ export async function confirmEntry(
     mode: 'paper',
     now,
   });
+
+  await recordHaircut(env, {
+    positionId: args.positionId,
+    mint: pos.mint,
+    side: 'buy',
+    notionalUsd: fill.notionalUsd,
+    mevBps: haircut.mevBps,
+    failedTxBps: haircut.failedTxBps,
+    mevUsd: fill.mevUsd,
+    failedTxUsd: fill.failedTxUsd,
+    now,
+  }).catch(() => undefined);
 
   return {
     opened: true,

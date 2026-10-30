@@ -27,8 +27,11 @@ import { armState, checkBreaker, todayRealizedPnl } from './arming.js';
 import { db, newId, realizedEquity, subrequestsUsed } from './db.js';
 import { confirmEntry, decideSize, openPosition, recordFill } from './executor.js';
 import { evaluate } from './filter.js';
-import { buildKnownAccounts, concentration, type HolderEntry } from './holders.js';import { buildCalibration, measureOutcomes, recordExit, recordKill, saveCalibration } from './logger.js';
-import { simulateFill } from './paper.js';
+import { buildKnownAccounts, concentration, type HolderEntry } from './holders.js';import { buildCalibration, measureOutcomes, recordExit, recordHaircut, recordKill, saveCalibration } from './logger.js';
+import { flowProviderFromRpc } from './flow.js';
+import { snapshotUniverseMarks } from './marks.js';
+import { haircutFrom, simulateFill } from './paper.js';
+import { registryKnownAccounts, registryOptionsFrom } from './registry.js';
 import { assess, realizedPnl, type OpenPositionState } from './risk.js';
 import { scout } from './scout.js';
 import { liveSource } from './source.js';
@@ -432,6 +435,7 @@ export async function runRiskTick(
       const sellNotional = r.qty * decision.priceUsd;
       const prioFee = Number(env.DESK_PRIO_FEE_USD ?? '0.0005');
       const prioCap = Number(env.DESK_PRIO_FEE_CAP_USD ?? '0.005');
+      const haircut = haircutFrom({ DESK_MEV_HAIRCUT_BPS: env.DESK_MEV_HAIRCUT_BPS, DESK_FAILED_TX_BPS: env.DESK_FAILED_TX_BPS });
       const fill = simulateFill({
         side: 'sell',
         notionalUsd: sellNotional,
@@ -440,6 +444,8 @@ export async function runRiskTick(
         feeBps: 30,
         priorityFeeUsd: prioFee,
         priorityFeeCapUsd: prioCap,
+        mevBps: haircut.mevBps,
+        failedTxBps: haircut.failedTxBps,
       });
 
       if (!fill.filled) {
@@ -460,9 +466,31 @@ export async function runRiskTick(
 
       // PnL: entry notional is what we actually paid (filled_usd); exit notional
       // is what the sell returned, net of the sell-side costs the model charged.
+      //
+      // The execution haircut is charged INSIDE `fill.qty` (simulateFill reduces
+      // net value by mev + failed-tx before dividing by the execution price), so it
+      // already reduces `exitUsd` here. It is deliberately NOT added to `feeUsd` as
+      // well: that would charge the same bps twice and make paper PnL pessimistic
+      // in a way the calibration report could not explain. `feeUsd` keeps exactly
+      // its previous meaning so this change cannot move an existing number except
+      // through the haircut itself.
       const exitUsd = fill.qty * fill.priceUsd;
       const feeUsd = fill.lpFeeUsd + fill.prioFeeUsd;
       const pnl = realizedPnl({ entryUsd: r.filled_usd, exitUsd, qty: r.qty, feeUsd });
+
+      // Record what the haircut cost, separately, so /calib can print the charged
+      // number rather than only the configured one.
+      await recordHaircut(env, {
+        positionId: r.id,
+        mint: r.mint,
+        side: 'sell',
+        notionalUsd: fill.notionalUsd,
+        mevBps: haircut.mevBps,
+        failedTxBps: haircut.failedTxBps,
+        mevUsd: fill.mevUsd,
+        failedTxUsd: fill.failedTxUsd,
+        now,
+      });
 
       await recordExit(env, {
         positionId: r.id,
@@ -537,11 +565,20 @@ export async function runCalibration(
  * failing must not stop the other, so the composition root runs both and
  * catches independently.
  */
-export async function deskTick(env: DeskEnv, source?: DeskSource, now = Date.now()): Promise<SweepReport & { risk: Awaited<ReturnType<typeof runRiskTick>> }> {
+export async function deskTick(env: DeskEnv, source?: DeskSource, now = Date.now()): Promise<SweepReport & { risk: Awaited<ReturnType<typeof runRiskTick>>; marks: { written: number; considered: number } }> {
   const src = source ?? liveSource(env);
   const sweep = await runSweep(env, src, now);
   const risk = await runRiskTick(env, src, now);
-  return { ...sweep, risk };
+  //
+  // The forward price series, sampled on the tick that already paid for the
+  // quotes. Deliberately AFTER the sweep and the risk tick, and wrapped so a
+  // failure here cannot cost a trade: the series is evidence, not a gate, and an
+  // evidence bug must never become a trading bug.
+  //
+  // This is the only place marks are taken, and it adds no cron slot — the desk
+  // already runs inside the existing `*/5` composition root.
+  const marks = await snapshotUniverseMarks(env, now).catch(() => ({ written: 0, considered: 0 }));
+  return { ...sweep, risk, marks };
 }
 
 /** The hourly slot: re-score what is in the universe, refresh theses. */

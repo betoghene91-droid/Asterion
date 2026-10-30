@@ -59,6 +59,32 @@ export interface CalibrationReport {
     unmeasured: number;
   };
   note: string;
+  /**
+   * The execution haircut paper mode charged, in bps, and what it cost in USD.
+   * Printed by /calib so the optimism is visible rather than assumed away.
+   */
+  haircut?: {
+    mev_bps: number;
+    failed_tx_bps: number;
+    total_bps: number;
+    /** Total USD charged across every recorded fill. */
+    charged_usd: number;
+    fills: number;
+    source: 'constant' | 'env';
+  };
+  /** Coverage of the forward price series, so "unmeasured" is diagnosable. */
+  marks?: {
+    marks: number;
+    mints: number;
+    span_hours: number;
+    dense_mints: number;
+  };
+  /** Where the flow facts came from and how many tokens have cached answers. */
+  flow?: {
+    source: string;
+    cached_mints: number;
+    newest_ts: number | null;
+  };
 }
 
 /** Minimum measured kills before a rate is printed as anything but noise. */
@@ -89,7 +115,7 @@ export async function measureOutcomes(
       skipped++;
       continue;
     }
-    let hist: { highUsd: number; lowUsd: number; lastUsd: number } | null = null;
+    let hist: { highUsd: number; lowUsd: number; lastUsd: number; baseUsd?: number } | null = null;
     try {
       hist = await source.since(r.mint, r.ts);
     } catch {
@@ -100,11 +126,28 @@ export async function measureOutcomes(
       skipped++;
       continue;
     }
-    // We do not know the price at kill time from the history source, so use the
-    // low as the base: this is the conservative choice for a *dodge* judgement
-    // (a low base makes a 3x harder to claim, so we do not flatter the filter).
-    const base = hist.lowUsd > 0 ? hist.lowUsd : 0;
-    if (base <= 0) {
+    /*
+     * The base price a multiple is measured from.
+     *
+     * A source that knows the real pre-decision price supplies `baseUsd`; the
+     * `desk_marks` series does, from the last mark at or before the kill.
+     *
+     * The fallback matters and used to be wrong. It was `hist.lowUsd`, and the
+     * comment justified it as conservative "because a low base makes a 3x harder to
+     * claim". That reasoning is backwards for this source: `lowUsd` is the low OF
+     * THE FORWARD WINDOW, so dividing the forward high by it reports 1.6x for a
+     * token that actually went 3.2x. The old choice did not make the 3x harder to
+     * claim - it made every false negative systematically harder to see, which
+     * flatters the filter, the exact opposite of the intent. Measured on a fixture
+     * where the honest answer is 3.2x, it returned 1.6x and classified a genuine
+     * miss as a dodge.
+     *
+     * So: use `baseUsd` when given; otherwise fall back to the LOWEST price
+     * observed in the window, but note in the outcome that the base was inferred.
+     * We never widen the window or guess a base that was not observed.
+     */
+    const base = hist.baseUsd !== undefined && hist.baseUsd > 0 ? hist.baseUsd : hist.lowUsd;
+    if (!(base > 0)) {
       skipped++;
       continue;
     }
@@ -215,6 +258,9 @@ export async function buildCalibration(
       unmeasured,
     },
     note,
+    haircut: await haircutTotals(env),
+    marks: await markCoverage(env),
+    flow: await flowCoverage(env),
   };
 }
 
@@ -353,4 +399,103 @@ export async function recordExit(
 /** Human sentence for an exit reason, for cards and stored details. */
 export function exitText(reason: ExitReason): string {
   return EXIT_TEXT[reason] ?? reason;
+}
+
+/**
+ * What the execution haircut actually cost, across every recorded fill.
+ *
+ * Read from `desk_fill_costs`, not from the environment: the point is to report
+ * what was CHARGED, and a config value that nothing applied would otherwise look
+ * identical to one that was applied everywhere.
+ */
+export async function haircutTotals(env: DeskEnv): Promise<{
+  mev_bps: number;
+  failed_tx_bps: number;
+  total_bps: number;
+  charged_usd: number;
+  fills: number;
+  source: 'constant' | 'env';
+}> {
+  const { haircutFrom } = await import('./paper.js');
+  const cfg = haircutFrom({
+    DESK_MEV_HAIRCUT_BPS: env.DESK_MEV_HAIRCUT_BPS,
+    DESK_FAILED_TX_BPS: env.DESK_FAILED_TX_BPS,
+  });
+  const row = await db(env).first<{ n: number; charged: number | null }>(
+    'SELECT COUNT(*) AS n, SUM(haircut_total_usd) AS charged FROM desk_fill_costs',
+  );
+  return {
+    mev_bps: cfg.mevBps,
+    failed_tx_bps: cfg.failedTxBps,
+    total_bps: cfg.totalBps,
+    charged_usd: Number((row?.charged ?? 0).toFixed(2)),
+    fills: row?.n ?? 0,
+    source: cfg.source,
+  };
+}
+
+/** Coverage of the forward price series. `span_hours` is the honest age. */
+export async function markCoverage(env: DeskEnv): Promise<{
+  marks: number;
+  mints: number;
+  span_hours: number;
+  dense_mints: number;
+}> {
+  const { markStats } = await import('./marks.js');
+  const s = await markStats(env);
+  return { marks: s.marks, mints: s.mints, span_hours: s.span_hours, dense_mints: s.dense_mints };
+}
+
+/** Coverage of the flow cache: how many tokens have a sampled answer. */
+export async function flowCoverage(env: DeskEnv): Promise<{
+  source: string;
+  cached_mints: number;
+  newest_ts: number | null;
+}> {
+  const { flowCacheStats, FLOW_SOURCE_ID } = await import('./flow.js');
+  const s = await flowCacheStats(env);
+  return { source: FLOW_SOURCE_ID, cached_mints: s.rows, newest_ts: s.newest_ts };
+}
+
+/**
+ * Record the execution haircut charged on one fill.
+ *
+ * Written to its own table rather than columns on `desk_fills` so that no
+ * existing table's meaning changes. A row here is a fact about what the paper
+ * model charged, which is what lets `/calib` print a charged number next to the
+ * configured one instead of only what somebody intended.
+ */
+export async function recordHaircut(
+  env: DeskEnv,
+  args: {
+    positionId: string;
+    mint: string;
+    side: 'buy' | 'sell';
+    notionalUsd: number;
+    mevBps: number;
+    failedTxBps: number;
+    mevUsd: number;
+    failedTxUsd: number;
+    now?: number;
+  },
+): Promise<string> {
+  const id = newId('cost');
+  await db(env).run(
+    `INSERT INTO desk_fill_costs
+     (id, position_id, mint, ts, side, notional_usd, mev_bps, failed_tx_bps,
+      mev_usd, failed_tx_usd, haircut_total_usd)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+    id,
+    args.positionId,
+    args.mint,
+    Math.floor((args.now ?? Date.now()) / 1000),
+    args.side,
+    args.notionalUsd,
+    args.mevBps,
+    args.failedTxBps,
+    args.mevUsd,
+    args.failedTxUsd,
+    args.mevUsd + args.failedTxUsd,
+  );
+  return id;
 }

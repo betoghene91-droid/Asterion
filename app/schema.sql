@@ -488,3 +488,110 @@ CREATE TABLE IF NOT EXISTS desk_calibration (
   note          TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_desk_calib_ts ON desk_calibration(ts DESC);
+
+-- ─────────────────────────────────────────────────────────────────────────
+--   desk data layer (task 7): the tables that make calibration possible
+--
+--   Why these exist and why they are shaped this way:
+--
+--   * `desk_flow` caches a FlowProvider's answer PER MINT, so the cost of
+--     establishing a token's flow facts is paid once rather than once per tick.
+--     The binding constraint on the free tier is REQUEST COUNT, not bytes: a
+--     sweep that re-samples the same pool every 5 minutes spends its whole
+--     subrequest budget re-learning a number it already had.
+--
+--   * `desk_marks` is our own forward price series, sampled every tick. It is
+--     what lets /calib stop printing "unmeasured": a killed token's aftermath is
+--     measured from marks we took ourselves, not from a paid history API and not
+--     from a backtest.
+--
+--   * No column here can move a risk number. They record what was observed.
+-- ─────────────────────────────────────────────────────────────────────────
+
+-- One row per mint: the newest complete FlowProvider answer.
+-- `fields_null` is a JSON list of the field names the provider could NOT
+-- establish. It is stored explicitly rather than inferred from NULL columns so a
+-- reader never has to guess whether NULL means "unknown" or "not recorded".
+CREATE TABLE IF NOT EXISTS desk_flow (
+  mint            TEXT PRIMARY KEY,
+  ts              INTEGER NOT NULL,           -- seconds, when sampled
+  source          TEXT NOT NULL,              -- provider id, e.g. 'rpc-sample'
+  unique_buyers   INTEGER,                    -- NULL = not established
+  total_buys      INTEGER,
+  buy_volume_usd  REAL,
+  sell_volume_usd REAL,
+  median_buy_usd  REAL,
+  avg_buy_usd     REAL,
+  unique_buyer_growth_pct REAL,
+  bundled_pct     REAL,
+  sniper20_pct    REAL,
+  dev_cluster_pct REAL,
+  smart_wallet_pct REAL,
+  atr14_pct       REAL,
+  -- provenance of the sample every derived number came from
+  sample_sigs     INTEGER NOT NULL DEFAULT 0,
+  sample_from_slot INTEGER,
+  sample_to_slot  INTEGER,
+  usd_basis       TEXT NOT NULL DEFAULT 'mid',
+  fields_null     TEXT NOT NULL DEFAULT '[]', -- JSON[] of field names left null
+  detail          TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_desk_flow_ts ON desk_flow(ts DESC);
+
+-- Forward price marks. One row per (mint, sample) — deliberately NOT one row per
+-- tick per mint: a mint is re-marked only when the tick actually sampled it.
+-- `source` distinguishes a DEX quote from an RPC pool read so a mixed series can
+-- never be read as homogeneous.
+CREATE TABLE IF NOT EXISTS desk_marks (
+  id          TEXT PRIMARY KEY,
+  mint        TEXT NOT NULL,
+  ts          INTEGER NOT NULL,               -- seconds, our clock
+  price_usd   REAL NOT NULL,
+  liq_usd     REAL,
+  mcap_usd    REAL,
+  source      TEXT NOT NULL DEFAULT 'dexscreener'
+              CHECK (source IN ('dexscreener','rpc','fixture')),
+  note        TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_desk_marks_mint ON desk_marks(mint, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_desk_marks_ts   ON desk_marks(ts DESC);
+
+-- The exact transactions the honeypot probe simulated, one row per leg.
+-- `payload_sha256` is the digest of the base64 body as submitted, which is the
+-- reproducible identity of the simulation. `signature` is base58 of the
+-- signature field: it identifies WHICH transaction was simulated and it never
+-- landed on chain (the call uses sigVerify:false), so it must not be mistaken
+-- for on-chain proof of execution.
+CREATE TABLE IF NOT EXISTS desk_probes (
+  id             TEXT PRIMARY KEY,
+  mint           TEXT NOT NULL,
+  ts             INTEGER NOT NULL,
+  leg            TEXT NOT NULL CHECK (leg IN ('entry','exit')),
+  ok             INTEGER NOT NULL,            -- 1 = simulated transfer succeeded
+  signature      TEXT NOT NULL,
+  payload_sha256 TEXT NOT NULL,
+  err            TEXT NOT NULL DEFAULT '',    -- JSON of the program error, '' when none
+  units_consumed INTEGER,
+  logs_tail      TEXT NOT NULL DEFAULT '[]'   -- JSON[]
+);
+CREATE INDEX IF NOT EXISTS idx_desk_probes_mint ON desk_probes(mint, ts DESC);
+
+-- The execution haircut actually charged on each fill: MEV and failed-transaction
+-- cost, kept in its own table so that (a) no existing table's meaning changes and
+-- (b) /calib can print what was charged rather than only what is configured.
+-- Without this a haircut is invisible, and an invisible haircut is
+-- indistinguishable from no haircut at all.
+CREATE TABLE IF NOT EXISTS desk_fill_costs (
+  id             TEXT PRIMARY KEY,
+  position_id    TEXT NOT NULL,
+  mint           TEXT NOT NULL,
+  ts             INTEGER NOT NULL,
+  side           TEXT NOT NULL CHECK (side IN ('buy','sell')),
+  notional_usd   REAL NOT NULL,
+  mev_bps        REAL NOT NULL,
+  failed_tx_bps  REAL NOT NULL,
+  mev_usd        REAL NOT NULL,
+  failed_tx_usd  REAL NOT NULL,
+  haircut_total_usd REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_desk_fill_costs_pos ON desk_fill_costs(position_id, ts);
