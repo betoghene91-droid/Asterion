@@ -1,0 +1,5 @@
+# The repo root ignores *.log because runtime logs should never be committed.
+# These two are not runtime logs: they are the RECORDED RUNS the golden fixture's
+# verdicts.json was produced from, and they are the reason that verdict is
+# evidence rather than an assertion. Re-including them is the point.
+!*.log

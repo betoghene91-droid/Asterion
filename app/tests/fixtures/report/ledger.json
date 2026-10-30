@@ -1,0 +1,86 @@
+{
+  "_comment": [
+    "Ledger rows for the report golden fixture. Shape is one-to-one with the D1",
+    "tables in app/schema.sql: assets / engagements / approvals / proofs.",
+    "The asset values here are the ONLY source of the report's affected-asset",
+    "list; the claim text in verdicts.json deliberately names a DIFFERENT address",
+    "so tests/report.test.mjs can prove the ledger wins over prose.",
+    "This fixture is not a hash-chained ledger snapshot; ledger-export.test.mjs",
+    "builds its own chain and verifies it for real."
+  ],
+  "program": {
+    "id": "acme-vault",
+    "name": "Acme Vault",
+    "platform": "self",
+    "automation": "allowed"
+  },
+  "engagement": {
+    "id": "eng_2b8f14",
+    "program_id": "acme-vault",
+    "title": "Vault reentrancy hunt",
+    "brief": "{\"program_id\":\"acme-vault\",\"title\":\"Vault reentrancy hunt\",\"cls\":\"solidity\",\"targets\":[\"https://github.com/acme/vault.git\",\"0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913\"],\"playbooks\":[\"sol.reentrancy\"],\"max_mutability\":\"simulate\",\"time_box_minutes\":360,\"authorization_ref\":\"https://acme.example/security#automated-testing\",\"stop_condition\":\"one proven verdict or the time box\",\"out_of_scope\":[\"admin.acme.example\"],\"notes\":\"contract: Vault fork_block: 18765432\"}",
+    "authorization_ref": "https://acme.example/security#automated-testing",
+    "window_start": 1793000000,
+    "window_end": 1793014400,
+    "time_box_minutes": 360,
+    "max_mutability": "simulate",
+    "status": "open",
+    "created_at": 1792999000,
+    "closed_at": null,
+    "spend_cents": 0
+  },
+  "assets": [
+    {
+      "id": "asset_1",
+      "program_id": "acme-vault",
+      "kind": "chain_address",
+      "value": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "in_scope": 1,
+      "chain_id": 8453
+    },
+    {
+      "id": "asset_2",
+      "program_id": "acme-vault",
+      "kind": "repo",
+      "value": "https://github.com/acme/vault",
+      "in_scope": 1,
+      "chain_id": null
+    },
+    {
+      "id": "asset_3",
+      "program_id": "acme-vault",
+      "kind": "host",
+      "value": "admin.acme.example",
+      "in_scope": 0,
+      "chain_id": null
+    }
+  ],
+  "approvals": [
+    {
+      "id": "appr_5d1c",
+      "fingerprint": "5d1c0a9f3b7e2c48",
+      "action": "{\"kind\":\"engagement\",\"brief\":{\"program_id\":\"acme-vault\",\"cls\":\"solidity\"}}",
+      "reason": "new engagement: Vault reentrancy hunt",
+      "status": "approved",
+      "requested_at": 1793000100,
+      "decided_at": 1793000200,
+      "operator": "operator"
+    }
+  ],
+  "proofs": [
+    {
+      "id": "proof_a1",
+      "hunt_id": "hunt_7c41e0b9",
+      "playbook": "sol.reentrancy",
+      "test_name": "test_reentrancy_118",
+      "file": "src/Vault.sol",
+      "line": 118,
+      "verdict": "proven",
+      "confidence": "confirmed",
+      "claim": "attacker-controlled ether before and after a reentrant withdrawal (delta logged)",
+      "reasons": "[\"the PoC test fails on the pinned commit with a real assertion\",\"removing the precondition makes the test pass, confirming the mechanism\"]",
+      "artifact": null,
+      "created_at": 1793002000
+    }
+  ]
+}

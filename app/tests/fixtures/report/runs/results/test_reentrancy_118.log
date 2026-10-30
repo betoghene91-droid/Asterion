@@ -1,0 +1,18 @@
+[⠊] Compiling...
+No files changed, compilation skipped
+
+Ran 1 test for test/test_reentrancy_118.t.sol:Vault_PoC
+[FAIL. Reason: REENTRANCY: extracted more than supplied] test_reentrancy_118() (gas: 148233)
+Logs:
+  attacker delta=1000000000000000000
+  IMPACT_BEFORE=100000000000000000000
+  IMPACT_AFTER=101000000000000000000
+  IMPACT_DESC=attacker-controlled ether before and after a reentrant withdrawal (delta logged)
+
+Traces:
+  [148233] Vault_PoC::test_reentrancy_118()
+    ├─ [0] VM::startPrank(0x0000000000000000000000000000000000A77ACC)
+    ...
+    └─ ← [Stop]
+
+Suite result: failed. 0 passed; 1 failed; 0 skipped; finished in 1.82s
