@@ -322,6 +322,34 @@ body[data-compose="1"] .view { padding-bottom: calc(var(--composer) + var(--s4))
 .empty-state .t { margin-top: var(--s2); color: var(--dim); }
 .empty-state .btn { margin-top: var(--s4); }
 
+/* The signed-out screen. A first-class state, not an error page: it reuses the
+   empty-state, note, alert, btn and card tokens on purpose, because a restyle
+   is a separate change. What it adds is a heading that NAMES the situation (the
+   one thing a raw 401 body could never do) and a secondary detail that stays
+   collapsed so the machine code is available without leading the screen. */
+.signed-out { padding-top: var(--s4); }
+.signed-out .empty-state { padding-top: var(--s6); }
+.signed-out .heading {
+  margin-top: var(--s3);
+  font-size: var(--fs-xl); line-height: 1.25; color: var(--ink);
+}
+.signed-out .t { max-width: 34ch; margin: var(--s2) auto 0; line-height: 1.6; }
+.signed-out .note { max-width: 34ch; margin: var(--s3) auto 0; text-align: left; }
+.signed-out .actions { justify-content: center; margin-top: var(--s4); }
+.signed-out .actions .btn { margin-top: 0; }
+.signed-out .alert.bad { max-width: 46ch; margin: var(--s3) auto var(--s2); text-align: left; }
+/* An anchor styled as a button still has to LOOK like one and clear 44px. */
+a.btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-height: 44px; text-decoration: none;
+}
+.actions.centre { justify-content: center; }
+.code { margin-top: var(--s4); color: var(--faint); font-size: var(--fs-xs); }
+.code > summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; justify-content: center; list-style: none; }
+.code > summary::-webkit-details-marker { display: none; }
+.code > summary:hover { color: var(--dim); }
+.code .code-body { padding: var(--s2) 0; color: var(--faint); word-break: break-word; font-size: var(--fs-2xs); }
+
 .note { border-left: 2px solid var(--line); padding: var(--s1) 0 var(--s1) var(--s3); color: var(--dim); font-size: var(--fs-sm); }
 .alert {
   border: 1px solid color-mix(in srgb, var(--med) 45%, transparent);

@@ -153,6 +153,159 @@ function recallLaunchInitData() {
   }
 }
 
+/**
+ * The fragment with Telegram's launch parameters REMOVED and any route kept.
+ *
+ *   #/queue/ap-1&tgWebAppData=...&tgWebAppVersion=7.10  ->  #/queue/ap-1
+ *   #tgWebAppData=...&tgWebAppVersion=7.10              ->  (nothing)
+ *
+ * initData is a signed credential, so it must not sit in the address bar where a
+ * screenshot, a shared link or a browser history entry can carry it. Only the
+ * `tgWebApp` namespace is dropped: an id that happens to contain `=` survives,
+ * because it is not a launch parameter.
+ */
+function hashWithoutLaunchParams(hash) {
+  const raw = String(hash || '').replace(/^#/, '');
+  if (!raw) return '';
+  const keep = [];
+  for (const segment of raw.split('&')) {
+    if (!segment) continue;
+    const eq = segment.indexOf('=');
+    let key = segment;
+    if (eq !== -1) {
+      key = segment.slice(0, eq);
+      try {
+        key = decodeURIComponent(key.replace(/\+/g, ' '));
+      } catch {
+        // A malformed escape is not a launch parameter name either way.
+      }
+    }
+    if (eq !== -1 && key.startsWith('tgWebApp')) continue;
+    keep.push(segment);
+  }
+  return keep.length ? '#' + keep.join('&') : '';
+}
+
+/**
+ * Take the launch parameters out of the address bar once they have been read.
+ *
+ * Wrapped in one try/catch on purpose: some WebViews expose no `history` at all,
+ * and `replaceState` can be refused in a sandboxed frame. A payload left in the
+ * URL is a smaller problem than a console that will not boot, so this never
+ * throws and never reports.
+ */
+function forgetLaunchFragment() {
+  try {
+    const current = String(location.hash);
+    const next = hashWithoutLaunchParams(current);
+    if (next === current) return;
+    const path = String(location.pathname || '') + String(location.search || '') + next;
+    if (typeof history === 'object' && history && typeof history.replaceState === 'function') {
+      history.replaceState(null, '', path);
+    }
+  } catch {
+    // No history, or the host refused the write: nothing else to do here.
+  }
+}
+
+/** The SDK's own copy of the session, when a host provides one. Never assumed. */
+function sdkInitData() {
+  try {
+    return TG && typeof TG.initData === 'string' && TG.initData ? TG.initData : '';
+  } catch {
+    // A host shim that throws on property access must not take the page down.
+    return '';
+  }
+}
+
+/**
+ * Resolve the Telegram session from EVERY source this page can have, or ''.
+ *
+ * The sources, and why the order is what it is:
+ *
+ *   1. `Telegram.WebApp.initData`, when a host provides one and it is non-empty.
+ *   2. `#tgWebAppData=` in the fragment - the launch parameters Telegram actually
+ *      appends, and the ONLY source the shipped shell has, because the CSP loads
+ *      no SDK at all.
+ *   3. `?tgWebAppData=` in the query string, which some clients have used.
+ *   4. This tab's own earlier read, which is what survives boot replacing the
+ *      launch fragment with the route.
+ *   5. `globalThis.ASTERION_INIT_DATA`, the seam the browser harness injects.
+ *
+ * (a) and (b) are NOT independent in a real client: the SDK derives its initData
+ * from the very fragment in the URL. So the SDK value is taken when it agrees
+ * with the launch parameters, and the launch parameters win when the two
+ * DISAGREE - a `startapp` re-entry into an already-open WebView navigates with a
+ * fresh fragment while the SDK still holds the older session, and honouring the
+ * stale one would present an expired credential over a valid one. Where the SDK
+ * is absent, empty, or was never loaded (the shipped shell), the fragment is
+ * what makes the real client work at all.
+ */
+function readInitData() {
+  const launch = launchInitData();
+  const sdk = sdkInitData();
+  if (sdk && (!launch || sdk === launch)) return sdk;
+  if (launch) return launch;
+  const remembered = recallLaunchInitData();
+  if (remembered) return remembered;
+  try {
+    if (typeof globalThis.ASTERION_INIT_DATA === 'string' && globalThis.ASTERION_INIT_DATA) {
+      return globalThis.ASTERION_INIT_DATA;
+    }
+  } catch {
+    // A frozen or throwing global: no seam, no session.
+  }
+  return '';
+}
+
+/** True once the document has reached DOMContentLoaded (or is already past it). */
+function domReady() {
+  if (DOM_READY) return true;
+  try {
+    return typeof document !== 'undefined' && document.readyState !== 'loading';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The session, resolved AT REQUEST TIME. Never frozen, never cached.
+ *
+ * The module used to evaluate this once at load: `const INIT_DATA = readInitData()`.
+ * That made a cold load permanent - if the first read ran before the host had put
+ * the payload anywhere this page can see, the page then sent an empty header for
+ * the rest of its life and the server answered `missing` forever. Two things fix
+ * that: every request re-reads, and a first read that comes up empty gets ONE
+ * second look once DOMContentLoaded has fired, which is when a host that
+ * initialises its SDK asynchronously has finished doing so.
+ */
+function resolveInitDataNow() {
+  let value = readInitData();
+  if (!value && !S.initDataRetried && domReady()) {
+    S.initDataRetried = true;
+    value = readInitData();
+  }
+  if (value) {
+    rememberLaunchInitData(value);
+    forgetLaunchFragment();
+  }
+  S.initDataPresent = Boolean(value);
+  return value;
+}
+
+/**
+ * The auth header, or NOTHING AT ALL.
+ *
+ * An empty `x-telegram-init-data` header is not a safer request than no header:
+ * the server maps both to `missing`, so sending one only makes the console look
+ * like it tried while the cause it reports stays the same. The header is
+ * therefore built from the payload and omitted when there is none.
+ */
+function initDataHeader(payload) {
+  const value = typeof payload === 'string' ? payload.trim() : '';
+  return value ? { 'x-telegram-init-data': value } : {};
+}
+
 const HAPTIC = {
   select() { haptic('light'); },
   tap() { haptic('medium'); },
@@ -186,7 +339,14 @@ const S = {
   version: '2',
   ready: false,
   signedIn: false,
-  reason: null,
+  /** The machine reason the gate denied with, e.g. 'missing' | 'stale'. */
+  reasonCode: null,
+  /** The server's body copy for that reason, unformatted. */
+  reasonMessage: null,
+  /** The whole session payload, so the signed-out screen can read runtime state. */
+  session: null,
+  /** The server's own nav model: which destinations need a session. */
+  tabsList: [],
   operator: null,
   scheme: 'dark',
   theme: null,
@@ -196,6 +356,10 @@ const S = {
   fetches: 0,
   decisions: 0,
   chatTurns: 0,
+  /** True when the LAST request could present a payload at all. */
+  initDataPresent: false,
+  /** One-shot: whether the post-DOMContentLoaded second look has happened. */
+  initDataRetried: false,
   errors: [],
   viewsVisited: [],
   platform: {
@@ -210,6 +374,18 @@ const S = {
   },
 };
 globalThis.__ASTERION = S;
+
+/**
+ * Whether the document has finished parsing. Set from the real event so a host
+ * that loads the script before the body is complete still gets its second look
+ * at exactly the right moment - not on a timer, and not on a guess.
+ */
+let DOM_READY = false;
+try {
+  document.addEventListener('DOMContentLoaded', () => { DOM_READY = true; });
+} catch {
+  // No document at all (a non-browser harness): `domReady` falls back to readyState.
+}
 
 function noteError(kind, detail) {
   S.errors.push({ kind, detail: String(detail).slice(0, 400), at: Date.now() });
@@ -380,28 +556,6 @@ function skeleton(kind) {
 
 // ── transport ───────────────────────────────────────────────────────────────
 
-function readInitData() {
-  // 1. Telegram's launch parameters. This is the session the real client ships:
-  //    the SDK is not loaded, so nothing else can present one at all.
-  const fromLaunch = launchInitData();
-  if (fromLaunch) {
-    rememberLaunchInitData(fromLaunch);
-    return fromLaunch;
-  }
-  // 2. The SDK, when a host happens to provide it.
-  try {
-    if (TG && typeof TG.initData === 'string' && TG.initData) return TG.initData;
-  } catch { /* a host shim that throws on access must not take the page down */ }
-  // 3. This tab's own earlier read: boot swaps the launch fragment for the
-  //    route, so a reload inside the Mini App no longer carries it.
-  const remembered = recallLaunchInitData();
-  if (remembered) return remembered;
-  if (typeof globalThis.ASTERION_INIT_DATA === 'string') return globalThis.ASTERION_INIT_DATA;
-  return '';
-}
-
-const INIT_DATA = readInitData();
-
 class ApiError extends Error {
   constructor(message, status, payload) {
     super(message);
@@ -417,7 +571,11 @@ async function api(path, opts) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), o.timeoutMs || 20000);
   try {
-    const headers = { 'x-telegram-init-data': INIT_DATA };
+    // Resolved HERE, per request, and never from a module-level constant: a
+    // session that appears after load must be able to turn the console on, and a
+    // session that was missing at load must not be remembered as missing forever.
+    const session = resolveInitDataNow();
+    const headers = initDataHeader(session);
     if (o.body) headers['content-type'] = 'application/json';
     const res = await fetch(path, {
       method: o.method || 'GET',
@@ -681,22 +839,40 @@ function renderRoute() {
   S.depth = rest.length;
   if (S.viewsVisited[S.viewsVisited.length - 1] !== S.path) S.viewsVisited.push(S.path);
 
+  /**
+   * A destination that needs a session, without one, renders the signed-out
+   * screen instead of its own view. That is the whole fix: the Hunt tab used to
+   * render a skeleton, fire an authenticated request, and put the resulting 401
+   * BODY on screen. There is nothing to fetch signed out, so nothing is fetched
+   * and no skeleton is painted - a skeleton implies data is coming.
+   */
+  const gated = !S.signedIn && tabNeedsAuth(tab);
+
   selectTab(tab);
-  setBack(rest.length > 0);
+  setBack(rest.length > 0 && !gated);
   titleEl.textContent = TAB_LABELS[tab] || 'Asterion';
-  const composing = (tab === 'hunt' && rest.length === 0) || (tab === 'ask' && rest.length === 0);
+  const composing = !gated && ((tab === 'hunt' && rest.length === 0) || (tab === 'ask' && rest.length === 0));
   composerEl.hidden = !composing;
   document.body.setAttribute('data-compose', composing ? '1' : '0');
+  document.body.setAttribute('data-signed-in', S.signedIn ? '1' : '0');
   // The MainButton is cleared for EVERY render and then set by the view that has
   // a primary action. Clearing only on some paths left the Queue's "Authorize"
   // showing on Ask, which is a button that does nothing where it is.
   setMainButton(null, null);
 
-  if (tab === 'hunt' && rest.length === 0) {
+  if (gated) {
+    // No badge is painted and the main action stays empty: a signed-out console
+    // must not show chrome that implies a live session.
+    hideBadges();
+  } else {
+    updateBadges();
+  }
+
+  if (composing && tab === 'hunt') {
     setMainButton('Propose', submitComposer);
   }
 
-  const built = buildView(tab, rest);
+  const built = gated ? signedOutView() : buildView(tab, rest);
   clear(viewEl);
   viewEl.appendChild(built);
   try { viewEl.focus({ preventScroll: true }); } catch { /* ignore */ }
@@ -753,21 +929,292 @@ function swr(path, render, opts) {
 const messageOf = (e) =>
   (e && e.status ? 'HTTP ' + e.status + ': ' : '') + ((e && e.message) || 'request failed');
 
+// ── the signed-out state ────────────────────────────────────────────────────
+//
+// WHAT WENT WRONG. `/api/ui/*` answers a request with no verified Telegram
+// session in `{ ok:false, error, message }` and status 401 (503 when the Worker
+// has no bot token at all). That is the correct server behaviour - the gate
+// fails closed - but the console used to have no state for it: the response was
+// rendered as a view, so the operator saw the raw body, "asterion" and
+// "HTTP 401: No Telegram session was presented." on the Hunt tab.
+//
+// A missing session is NOT an error in the console. It is a normal state with
+// two possible causes - the user is not in Telegram, or the Worker is not
+// configured - and each has a different remedy, so each gets its own screen.
+// The raw body is never shown: the server's message is body COPY, with the
+// transport prefix stripped, and the machine reason is kept as a secondary
+// detail an operator can copy into a bug report.
+
+/** Machine reasons initdata.ts can deny with, in the order the gate can reach them. */
+const SIGNED_OUT_REASONS = [
+  'no_bot_token',
+  'missing',
+  'malformed',
+  'no_hash',
+  'bad_hash',
+  'no_auth_date',
+  'stale',
+  'future',
+];
+
+/**
+ * Strip the transport decoration off a server message.
+ *
+ * The body the operator saw carried three things that are not copy: a leading
+ * "asterion" (the page title, pasted into the string by whatever rendered it),
+ * an "HTTP 401:"/"HTTP 503:" transport prefix, and possibly both in either
+ * order. The message itself is the only part a human should read, so the rest
+ * is removed - repeatedly, because the two can nest.
+ */
+function stripServerPrefixes(text) {
+  let s = String(text === null || text === undefined ? '' : text).trim();
+  for (let i = 0; i < 4; i++) {
+    const next = s.replace(/^(?:asterion\b\s*[:.\u2014-]?\s*|HTTP\s*\d{3}\s*:\s*)/i, '').trim();
+    if (next === s) break;
+    s = next;
+  }
+  return s;
+}
+
+/**
+ * The copy for a signed-out reason. PURE, so a test can drive every reason
+ * without a DOM.
+ *
+ * `tone` is 'fault' only for a deployment fault - something the OPERATOR must
+ * fix and the visitor cannot. `retry` is false exactly where retrying cannot
+ * possibly help, because a Retry that always fails is worse than no button.
+ */
+function signedOutCopy(reason, message) {
+  const code = SIGNED_OUT_REASONS.indexOf(reason) === -1 ? 'missing' : reason;
+  const said = stripServerPrefixes(message);
+  if (code === 'no_bot_token') {
+    return {
+      code,
+      tone: 'fault',
+      glyph: '\u2699',
+      heading: 'Console not configured',
+      body: 'This Worker has no TELEGRAM_BOT_TOKEN, so it cannot verify anyone. '
+        + 'The bot keeps working in chat. An operator has to set the secret and redeploy.',
+      detail: said || 'TELEGRAM_BOT_TOKEN is not set on this Worker.',
+      action: 'Set TELEGRAM_BOT_TOKEN on the Worker, then redeploy.',
+      retry: false,
+    };
+  }
+  if (code === 'stale') {
+    return {
+      code,
+      tone: 'read',
+      glyph: '\u23F3',
+      heading: 'Session expired',
+      body: 'Your Telegram session is older than the 24-hour window the gate accepts. '
+        + 'Nothing is lost - reopen the console and it will sign you in again.',
+      detail: said || 'The session is past its freshness window.',
+      action: null,
+      retry: true,
+    };
+  }
+  if (code === 'future') {
+    return {
+      code,
+      tone: 'read',
+      glyph: '\u23F1',
+      heading: 'Session not yet valid',
+      body: 'The signed timestamp is ahead of this server\u2019s clock, which is either a '
+        + 'device clock that is wrong or a server clock that is. Check the device first.',
+      detail: said || 'The session timestamp is in the future.',
+      action: null,
+      retry: true,
+    };
+  }
+  if (code === 'missing') {
+    return {
+      code,
+      tone: 'read',
+      glyph: '\u25CB',
+      heading: 'Not signed in',
+      body: 'The console needs the Telegram session that only the client can present. '
+        + 'A plain browser tab cannot produce one, and neither can a cold load before '
+        + 'Telegram has handed the launch parameters over.',
+      detail: said || 'No Telegram session was presented.',
+      action: null,
+      retry: true,
+    };
+  }
+  return {
+    code,
+    tone: 'read',
+    glyph: '\u26A0',
+    heading: 'Session not accepted',
+    body: 'Telegram sent something, but the signature or the payload did not survive '
+      + 'verification. Reopening from the bot chat issues a fresh one.',
+    detail: said || 'The session could not be verified.',
+    action: null,
+    retry: true,
+  };
+}
+
+/**
+ * The bot's PUBLIC username, from whatever the runtime actually exposes.
+ *
+ * Deliberately not hardcoded and deliberately strict: a `t.me/<name>?startapp`
+ * link to a username that is not this bot is a dead button that looks alive, and
+ * a link to somebody else's bot is worse. Every candidate is reduced to a bare
+ * handle and must match Telegram's bot-username shape, which always ends in
+ * "bot". Nothing found means no link - the screen then explains where to find
+ * the console instead of pretending to offer a shortcut.
+ */
+function botUsername(session) {
+  const candidates = [];
+  const add = (v) => {
+    if (typeof v === 'string' && v.trim()) candidates.push(v.trim());
+  };
+  if (session) {
+    add(session.bot);
+    add(session.botUsername);
+    add(session.bot_username);
+  }
+  try {
+    add(globalThis.ASTERION_BOT);
+  } catch { /* a locked-down global is simply no hint */ }
+  for (const c of candidates) {
+    const handle = c
+      .replace(/^https?:\/\/t\.me\//i, '')
+      .replace(/^@/, '')
+      .split(/[/?#]/)[0];
+    if (/^[A-Za-z][A-Za-z0-9_]{2,30}[Bb][Oo][Tt]$/.test(handle)) return handle;
+  }
+  return '';
+}
+
+/** Where "Reopen in Telegram" points, or '' when no bot is discoverable. */
+function reopenHref(session) {
+  const name = botUsername(session);
+  return name ? 'https://t.me/' + name + '?startapp' : '';
+}
+
+/** True when a tab's data is behind the gate, per the server's own nav model. */
+function tabNeedsAuth(tab) {
+  const list = S.tabsList || [];
+  for (const t of list) if (t && t.id === tab) return t.auth !== false;
+  // No model yet: only Ops is documented as session-free.
+  return tab !== 'ops';
+}
+
+/**
+ * The screen itself. Non-error by construction: an empty state, not an alert -
+ * except for `no_bot_token`, which IS a fault and says so in red to the one
+ * person who can fix it.
+ */
+function signedOutView() {
+  const copy = signedOutCopy(S.reasonCode, S.reasonMessage);
+  const wrap = h('div', { class: 'signed-out', id: 'signed-out', 'data-code': copy.code });
+
+  // A deployment fault is the ONE variant that is an error, because it is one:
+  // the visitor cannot fix it and the operator must. Everything else is a state.
+  if (copy.tone === 'fault') {
+    wrap.appendChild(h('div', { class: 'alert bad', text: copy.body }));
+    wrap.appendChild(h('div', { class: 'note', text: copy.action }));
+    wrap.appendChild(h('details', { class: 'code' }, [
+      h('summary', { text: 'Reason code' }),
+      h('div', { class: 'code-body', text: copy.code + ' \u00b7 ' + copy.detail }),
+    ]));
+    return wrap;
+  }
+
+  const box = h('div', { class: 'empty-state' }, [
+    h('div', { class: 'g', text: copy.glyph, 'aria-hidden': 'true' }),
+    h('div', { class: 'heading', role: 'heading', 'aria-level': '2', text: copy.heading }),
+    h('div', { class: 't', text: copy.body }),
+  ]);
+
+  const href = reopenHref(S.session);
+  if (href) {
+    const actions = h('div', { class: 'actions centre' });
+    actions.appendChild(h('a', { class: 'btn go', href, rel: 'noopener noreferrer', text: 'Reopen in Telegram' }));
+    if (copy.retry) actions.appendChild(retryButton());
+    box.appendChild(actions);
+  } else {
+    // No discoverable bot username: say where the session comes from instead of
+    // rendering a link to a bot that may not be this one.
+    box.appendChild(h('div', { class: 'note', text: 'Open the console from the button inside the bot chat - that is the only place a session comes from.' }));
+    if (copy.retry) box.appendChild(h('div', { class: 'actions centre' }, [retryButton()]));
+  }
+
+  wrap.appendChild(box);
+  wrap.appendChild(h('details', { class: 'code' }, [
+    h('summary', { text: 'Reason code' }),
+    h('div', { class: 'code-body', text: copy.code + ' \u00b7 ' + copy.detail }),
+  ]));
+  return wrap;
+}
+
+/** "Retry" re-probes without a reload. Never rendered where it cannot succeed. */
+function retryButton() {
+  const retry = h('button', { class: 'btn quiet', type: 'button', text: 'Retry' });
+  retry.addEventListener('click', () => {
+    retry.disabled = true;
+    retry.textContent = 'Retrying\u2026';
+    void retrySession();
+  });
+  return retry;
+}
+
+/**
+ * Take the session payload and put the console in a state that matches it.
+ * Split out of boot so that Retry re-probes through the SAME path boot uses and
+ * cannot drift into a second, more forgiving reading of the endpoint.
+ */
+function applySession(session) {
+  S.session = session || null;
+  S.signedIn = Boolean(session && session.signedIn);
+  S.reasonCode = (session && session.reason) || (S.signedIn ? null : 'missing');
+  S.reasonMessage = (session && session.message) || null;
+  S.operator = (session && session.operator) || null;
+  S.tabsList = (session && session.tabs) || [];
+  if (session) applyServerNav(session);
+  setLink(S.signedIn ? 'live' : 'off');
+  updateBadges((session && session.counts) || null);
+}
+
+/**
+ * Re-resolve the launch parameters and ask the server again, WITHOUT a reload.
+ *
+ * A reload is the wrong tool: it discards the tab, and on a cold load it is
+ * exactly what produced the empty session in the first place. Retry clears the
+ * one-shot flag so the second look at DOMContentLoaded is available again, then
+ * re-renders from whatever the server now says.
+ */
+async function retrySession() {
+  S.initDataRetried = false;
+  let session = null;
+  try {
+    session = await api('/api/ui/session');
+  } catch (e) {
+    noteError('session', messageOf(e));
+    toast('Could not reach the console. ' + messageOf(e), 'bad');
+    S.initDataPresent = false;
+  }
+  applySession(session);
+  renderRoute();
+  if (S.signedIn) {
+    HAPTIC.ok();
+    toast('Signed in', 'ok');
+  } else {
+    HAPTIC.select();
+  }
+  return S.signedIn;
+}
+
 // ── Hunt ────────────────────────────────────────────────────────────────────
 
 let threadEl = null;
 let lastBrief = null;
 
 function viewHunt() {
+  // Signed out, Hunt has nothing to show: `renderRoute` paints the signed-out
+  // screen instead of calling this at all. The thread is not built until there is
+  // a session, so a signed-out console has no thread skeleton behind it either.
   const wrap = h('div', {});
-  if (!S.signedIn) {
-    wrap.appendChild(
-      h('div', {
-        class: 'alert',
-        text: (S.reason ? S.reason + ' ' : '') + 'Open the console from the button inside the bot chat to compile a hunt.',
-      }),
-    );
-  }
   if (!threadEl) {
     threadEl = h('div', { class: 'thread', id: 'thread' });
     greet();
@@ -1709,7 +2156,14 @@ async function decide(id, approve, actionsEl, stateEl) {
   }
 }
 
+function hideBadges() {
+  for (const el of tabsEl.querySelectorAll('[data-badge]')) el.hidden = true;
+}
+
 function updateBadges(counts) {
+  // Signed out there are no counts to show, and a stale badge from an earlier
+  // session would imply work is waiting.
+  if (!S.signedIn) { hideBadges(); return; }
   const pending = counts && typeof counts.pending === 'number' ? counts.pending : null;
   if (pending !== null) S.pending = pending;
   const open = readQuestions().length;
@@ -1782,6 +2236,10 @@ async function boot() {
   initPlatform();
   applyTheme();
 
+  // Read the launch parameters BEFORE the first request, so the fragment is
+  // stripped and remembered even when the request itself fails.
+  forgetLaunchFragment();
+
   let session = null;
   try {
     session = await api('/api/ui/session');
@@ -1789,30 +2247,17 @@ async function boot() {
     noteError('session', messageOf(e));
   }
 
-  S.signedIn = Boolean(session && session.signedIn);
-  S.reason = (session && session.message) || null;
-  S.operator = (session && session.operator) || null;
-  applyServerNav(session);
-  setLink(S.signedIn ? 'live' : 'off');
-  updateBadges((session && session.counts) || null);
+  applySession(session);
 
   const parts = pathParts();
   if (!parts.length) go('/hunt', { replace: true });
-  // A fragment that carried BOTH a route and the launch parameters is
-  // normalised to the plain route, so the raw launch string does not stay in
-  // the URL. `go` already does this for the launch-only case above.
-  else if (launchInitData()) go('/' + parts.join('/'), { replace: true });
   else renderRoute();
-
-  if (!S.signedIn) {
-    const alert = h('div', { class: 'alert', text: (S.reason || 'No Telegram session was presented.') + ' Read-only surfaces under Ops still work.' });
-    viewEl.insertBefore(alert, viewEl.firstChild);
-  }
 
   // Keep the two surfaces that change on their own honest, and only while the
   // tab is actually visible and the operator is looking at them.
   setInterval(() => {
     if (document.visibilityState !== 'visible') return;
+    if (!S.signedIn) return;
     const parts2 = pathParts();
     const tab = parts2[0];
     if (tab === 'queue') { cache.delete('/api/ui/work'); renderRoute(); }

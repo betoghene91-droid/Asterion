@@ -18,6 +18,16 @@ export interface UiEnv {
   DB: D1Database;
   /** Required for Mini App auth. Absent means every /api/ui/* call is refused. */
   TELEGRAM_BOT_TOKEN?: string;
+  /**
+   * The bot's PUBLIC @username, without the leading '@'.
+   *
+   * Only used to build the `https://t.me/<bot>?startapp` link the signed-out
+   * screen offers. It is not derivable from the bot token (Telegram returns the
+   * username from `getMe`, which is a network call), it is not a secret, and it
+   * grants nothing: the link only opens the chat, and the link's absence
+   * degrades the screen to instructions rather than to a dead button.
+   */
+  TELEGRAM_BOT_USERNAME?: string;
   /** Where a UI-initiated decision is ALSO announced, when configured. */
   TELEGRAM_CHAT_ID?: string;
   OPERATOR_NAME?: string;
