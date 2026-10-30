@@ -53,6 +53,106 @@ function tg(method, ...args) {
   }
 }
 
+// -- launch parameters -------------------------------------------------------
+//
+// Telegram opens a Mini App by appending its launch parameters to the FRAGMENT:
+//
+//   https://host/ui#tgWebAppData=<urlencoded initData>&tgWebAppVersion=7.10
+//                &tgWebAppPlatform=android&tgWebAppThemeParams=<urlencoded json>
+//
+// Some clients have used the query string instead, so both are read. The shell
+// deliberately loads no SDK - the shipped CSP allows only same-origin script -
+// so in the real Telegram client `Telegram.WebApp` does not exist at all and
+// this fragment is the ONLY thing that can present a session. Two separate
+// things depend on reading it correctly:
+//
+//   * the ROUTER must not resolve `tgWebAppData=...` as a view name, which is
+//     what rendered "Unknown view: tgWebAppData=..." on the operator's phone;
+//   * the TRANSPORT must present the initData the Worker already validates in
+//     the `x-telegram-init-data` header, so the server needs no change.
+
+/** The launch parameters: fragment first, query string second, SDK namespace only. */
+function launchParamsFrom(hash, search) {
+  const out = new URLSearchParams();
+  for (const raw of [String(hash || '').replace(/^#/, ''), String(search || '').replace(/^\?/, '')]) {
+    if (!raw) continue;
+    let params;
+    try {
+      params = new URLSearchParams(raw);
+    } catch {
+      continue;
+    }
+    for (const pair of params) {
+      if (pair[0].startsWith('tgWebApp') && !out.has(pair[0])) out.append(pair[0], pair[1]);
+    }
+  }
+  return out;
+}
+
+/** The initData Telegram signed, in the exact form the SDK would expose it. */
+function launchInitData() {
+  return launchParamsFrom(location.hash, location.search).get('tgWebAppData') || '';
+}
+
+/**
+ * The ROUTE part of the fragment, which the launch parameters share.
+ *
+ * `#tgWebAppData=...&tgWebAppVersion=...` carries no route at all and resolves
+ * to the default view. A fragment that carries BOTH - a route plus the launch
+ * parameters, which is what a `startapp` re-entry looks like - keeps the route
+ * and drops the parameters. A segment that is not in Telegram's `tgWebApp`
+ * namespace is never treated as a parameter, so an id that happens to contain
+ * `=` still routes, and a genuinely unknown route still reaches the alert.
+ */
+function routePartsFrom(hash) {
+  const raw = String(hash || '').replace(/^#\/?/, '').trim();
+  if (!raw) return [];
+  const parts = [];
+  for (const segment of raw.split('&')) {
+    if (!segment) continue;
+    const eq = segment.indexOf('=');
+    let key = segment;
+    if (eq !== -1) {
+      key = segment.slice(0, eq);
+      try {
+        key = decodeURIComponent(key.replace(/\+/g, ' '));
+      } catch {
+        // A malformed escape is simply not a launch parameter name.
+      }
+    }
+    if (eq !== -1 && key.startsWith('tgWebApp')) continue;
+    for (const piece of segment.split('/')) if (piece) parts.push(piece);
+  }
+  return parts;
+}
+
+/**
+ * The launch initData is remembered for THIS TAB while the app runs. Boot
+ * replaces the launch fragment with the route so the raw launch string does not
+ * sit in the URL, which means a reload inside the Mini App would otherwise
+ * reload a URL with no session in it. sessionStorage, not localStorage: the
+ * grant belongs to this WebView session and must not outlive it - and the
+ * Worker still verifies signature and age on every single request.
+ */
+const LAUNCH_STORE = 'asterion.launch.initData';
+
+function rememberLaunchInitData(value) {
+  try {
+    sessionStorage.setItem(LAUNCH_STORE, value);
+  } catch {
+    // No storage available (private mode): the fragment itself still works.
+  }
+}
+
+function recallLaunchInitData() {
+  try {
+    const v = sessionStorage.getItem(LAUNCH_STORE);
+    return typeof v === 'string' ? v : '';
+  } catch {
+    return '';
+  }
+}
+
 const HAPTIC = {
   select() { haptic('light'); },
   tap() { haptic('medium'); },
@@ -281,9 +381,21 @@ function skeleton(kind) {
 // ── transport ───────────────────────────────────────────────────────────────
 
 function readInitData() {
+  // 1. Telegram's launch parameters. This is the session the real client ships:
+  //    the SDK is not loaded, so nothing else can present one at all.
+  const fromLaunch = launchInitData();
+  if (fromLaunch) {
+    rememberLaunchInitData(fromLaunch);
+    return fromLaunch;
+  }
+  // 2. The SDK, when a host happens to provide it.
   try {
     if (TG && typeof TG.initData === 'string' && TG.initData) return TG.initData;
   } catch { /* a host shim that throws on access must not take the page down */ }
+  // 3. This tab's own earlier read: boot swaps the launch fragment for the
+  //    route, so a reload inside the Mini App no longer carries it.
+  const remembered = recallLaunchInitData();
+  if (remembered) return remembered;
   if (typeof globalThis.ASTERION_INIT_DATA === 'string') return globalThis.ASTERION_INIT_DATA;
   return '';
 }
@@ -530,8 +642,7 @@ function initPlatform() {
 // ── navigation ──────────────────────────────────────────────────────────────
 
 function pathParts() {
-  const raw = (location.hash || '').replace(/^#\/?/, '').trim();
-  return raw ? raw.split('/').filter(Boolean) : [];
+  return routePartsFrom(location.hash);
 }
 
 function go(path, opts) {
@@ -1687,6 +1798,10 @@ async function boot() {
 
   const parts = pathParts();
   if (!parts.length) go('/hunt', { replace: true });
+  // A fragment that carried BOTH a route and the launch parameters is
+  // normalised to the plain route, so the raw launch string does not stay in
+  // the URL. `go` already does this for the launch-only case above.
+  else if (launchInitData()) go('/' + parts.join('/'), { replace: true });
   else renderRoute();
 
   if (!S.signedIn) {
