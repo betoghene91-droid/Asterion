@@ -145,7 +145,18 @@ async function drive(env, path, { method = 'POST', body, headers = {} } = {}) {
       headers: { 'content-type': 'application/json' },
     });
   };
-  console.error = (...a) => errors.push(a.map((x) => (x && x.message) || String(x)).join(' '));
+  // Only errors from the code under test count. Node prints process-level
+  // warnings to stderr -- notably `ExperimentalWarning: SQLite is an
+  // experimental feature` on node 22, which CI runs and node 24 (local) does
+  // not emit -- and a warning about the runtime is not the handler failing.
+  // Capturing that as an error made these assertions environment-dependent:
+  // green locally, red in CI, for a reason unrelated to the code under test.
+  // Filter at the source so every assertion below still tests what it claims.
+  console.error = (...a) => {
+    const line = a.map((x) => (x && x.message) || String(x)).join(' ');
+    if (/ExperimentalWarning|DeprecationWarning|TraceWarning/.test(line)) return;
+    errors.push(line);
+  };
 
   const pending = [];
   try {
