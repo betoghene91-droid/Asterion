@@ -1,30 +1,54 @@
 #!/usr/bin/env python3
 """
-Eval harness — turns "the bot is learning" into a number.
+Eval harness — turns "the bot is learning" into a number, and says where each
+number came from.
 
-Measured against the real corpus schema (verified, not assumed):
-  findings.jsonl.gz -> 180,907 rows.
-  Useful fields: vuln_group, vuln_leaf, severity, project, firm,
-                 audit_year, title, body_text, original_url.
+WHAT CHANGED AND WHY
+--------------------
+v1 of this file reported:
 
-It reports two different things, kept strictly apart:
+    "detection": {"sampled": 60, "measured": 0,
+                  "note": "v1 ships discovery + monitoring; per-project checkouts are v2"}
 
-  1. CORPUS SUPPORT — how many expert-labelled severe findings exist for a
-     bug class, so we know whether that class can be validated at all.
+That was honest and it was useless. "0 measured" reads like a placeholder waiting
+for an engineer, so nobody acted on it, and the class priors in learn.ts stayed
+fed only by the digest. The truth was worse than a placeholder: nothing was
+computing tp/fp/fn at all.
+
+This version does compute them, at CLASS granularity, and labels every number:
+
+    live: <tool> @ <commit>   produced by running the tool on that checkout NOW
+    fixture: <path>           produced by scoring a committed capture of a real run
+
+Those two are never averaged. `live` is what the machine can do today; `fixture`
+is what was reproducible on the day the capture was taken. A reader who cannot
+tell them apart cannot tell a fresh measurement from a stale one.
+
+TWO THINGS THIS STILL DOES NOT CLAIM
+------------------------------------
+1. It does not claim instance-level detection ("the tool found THE audited bug at
+   line N"). The corpus pins findings to a report, not to a file+line in a pinned
+   commit, so that claim is unsupportable here. See eval-class-scoring.md.
+2. It does not claim a general precision for any tool. The sample is 3 projects.
+   `n_projects` is printed next to every ratio so the numbers cannot be quoted
+   without their sample size.
+
+WHAT IT REPORTS
+---------------
+  1. CORPUS SUPPORT — how many expert-labelled severe findings exist per class.
      Ground-truth availability, nothing more.
+  2. CLASS DETECTION — per class per tool tp/fp/fn, plus pooled precision.
+  3. WEB2 GROUND TRUTH — GHSA CWE → web.* counts, when a fixture is present.
+     The web3 corpus cannot supply this (see web2_ground_truth.py).
 
-  2. DETECTION — did a detector find a known finding cold from pre-fix
-     code. This needs a repo checkout per project; v1 does not wire that,
-     so it is reported as 0 measured with the reason stated.
-
-One finding that shaped this file: the corpus is entirely web3. Fifteen
-web2 playbooks therefore have NO ground truth here. They are listed with an
-empty group so the gap is explicit instead of silently borrowing coverage
-from a same-named Solidity class.
+Usage:
+    python3 eval/harness.py                     # score the committed fixture
+    python3 eval/harness.py --live --root /tmp   # re-run the tools on checkouts
 """
 
 from __future__ import annotations
 
+import argparse
 import gzip
 import json
 import os
@@ -33,8 +57,18 @@ import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-OUT = Path("eval/out")
-DATA = Path(os.environ.get("CORPUS", "../.corpus/findings.jsonl.gz"))
+HERE = Path(__file__).resolve().parent
+APP = HERE.parent
+sys.path.insert(0, str(HERE))
+
+import scoring  # noqa: E402
+import web2_ground_truth  # noqa: E402
+
+OUT = APP / "eval" / "out"
+FIXTURE = HERE / "fixtures" / "live-detector-runs.json"
+GHSA_FIXTURE = HERE / "fixtures" / "ghsa-advisories.json"
+PROJECTS = HERE / "projects.json"
+DATA = Path(os.environ.get("CORPUS", str(APP.parent / ".corpus" / "findings.jsonl.gz")))
 SEED = 1337
 MAX_SCAN = 250_000
 SEVERE = {"critical", "high", "medium"}
@@ -213,16 +247,67 @@ def detection_sample(rows: list[Row], n: int) -> list[Row]:
         if r.uid in seen:
             continue
         seen.add(r.uid)
-        r.measured = False
-        r.detected = False
-        r.reason = "no per-project checkout wired yet; class measurable, instance not"
+        r.reason = "sampled for instance-level scoring, which this harness does not claim"
         out.append(r)
         if len(out) >= n:
             break
     return out
 
 
-def main() -> int:
+# ──────────────────────────────────────────────────── detection scoring ─────
+
+
+def score_fixture() -> tuple[dict, str]:
+    """Score the committed capture. Provenance: fixture:<path>."""
+    if not FIXTURE.is_file():
+        return {"error": f"missing fixture {FIXTURE}", "per_class": []}, f"fixture:{FIXTURE}"
+    capture = json.loads(FIXTURE.read_text())
+    result = scoring.score_capture(capture)
+    result["captured_at"] = capture.get("captured_at", "")
+    return result, f"fixture:{FIXTURE.relative_to(APP)}"
+
+
+def score_live(root: Path) -> tuple[dict, str]:
+    """Re-run every available detector on the pinned checkouts. Provenance: live."""
+    import capture_live
+
+    manifest = json.loads(PROJECTS.read_text())
+    captured = []
+    for entry in manifest["projects"]:
+        checkout = root / entry["checkout"]
+        if not (checkout / ".git").exists():
+            print(f"WARNING: no checkout at {checkout} — {entry['id']} not measured", file=sys.stderr)
+            continue
+        try:
+            captured.append(capture_live.capture_project(checkout, entry))
+        except SystemExit as exc:
+            print(f"WARNING: {exc}", file=sys.stderr)
+    if not captured:
+        return {"error": "no checkouts available for a live run", "per_class": []}, "live:none"
+    result = scoring.score_capture({"projects": captured})
+    commits = ", ".join(f"{p['id']}@{p['commit'][:12]}" for p in captured)
+    return result, f"live:{commits}"
+
+
+# ──────────────────────────────────────────────────────── web2 ground truth ─────
+
+
+def score_web2() -> dict:
+    if not GHSA_FIXTURE.is_file():
+        return {"available": False, "reason": f"missing fixture {GHSA_FIXTURE}"}
+    payload = json.loads(GHSA_FIXTURE.read_text())
+    result = web2_ground_truth.ingest(iter(payload.get("advisories") or []))
+    result["available"] = True
+    result["provenance"] = f"fixture:{GHSA_FIXTURE.relative_to(APP)}"
+    return result
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--live", action="store_true", help="re-run the detectors instead of scoring the fixture")
+    ap.add_argument("--root", default=".", help="directory holding the pinned checkouts (for --live)")
+    args = ap.parse_args(argv)
+
     OUT.mkdir(parents=True, exist_ok=True)
     n = int(os.environ.get("SAMPLE_SIZE", "60"))
 
@@ -230,23 +315,44 @@ def main() -> int:
     support = corpus_support(rows)
     sample = detection_sample(rows, n)
 
+    if args.live:
+        det, provenance = score_live(Path(args.root).resolve())
+    else:
+        det, provenance = score_fixture()
+    web2 = score_web2()
+
     sol = {k: v for k, v in support.items() if k not in WEB2_PLAYBOOKS}
     weak = sorted(sol.items(), key=lambda kv: kv[1]["recent_severe"])[:5]
     strong = sorted(sol.items(), key=lambda kv: -kv[1]["recent_severe"])[:5]
     unsupported = sorted(k for k, v in sol.items() if v["severe"] == 0)
 
+    measured_tools = [t for t in det.get("tools", {}).values() if t.get("projects_measured", 0) > 0]
+    per_class = det.get("per_class", [])
+
     scoreboard = {
         "corpus_rows": len(rows),
+        "corpus_present": DATA.is_file(),
         "playbooks_total": len(PLAYBOOK_MAP),
         "playbooks_validatable": len(sol),
         "playbooks_unmeasurable_here": sorted(WEB2_PLAYBOOKS),
         "unsupported_solidity_playbooks": unsupported,
         "support": support,
         "detection": {
-            "sampled": len(sample),
-            "measured": 0,
-            "note": "v1 ships discovery + monitoring; per-project checkouts are v2",
+            "provenance": provenance,
+            "mode": "live" if args.live else "fixture",
+            "n_projects": det.get("n_projects", 0),
+            "tools_measured": len(measured_tools),
+            "per_class": per_class,
+            "tools": det.get("tools", {}),
+            "error": det.get("error", ""),
+            "note": (
+                "CLASS-level tp/fp/fn, not instance-level. A hit means the tool fired "
+                "on that class somewhere in the checkout; it does NOT mean it found the "
+                "specific audited bug. Sample is small — read n_projects."
+            ),
         },
+        "web2_ground_truth": web2,
+        "sampled": len(sample),
     }
     (OUT / "scoreboard.json").write_text(json.dumps(scoreboard, indent=2))
     (OUT / "sample.json").write_text(json.dumps([asdict(r) for r in sample], indent=2))
@@ -254,7 +360,8 @@ def main() -> int:
     lines = [
         "# Eval scoreboard",
         "",
-        f"corpus rows read: **{len(rows):,}**",
+        f"corpus rows read: **{len(rows):,}**"
+        + ("" if DATA.is_file() else "  _(corpus ABSENT — support columns are not measurements)_"),
         f"playbooks: **{len(PLAYBOOK_MAP)}** "
         f"({len(sol)} validatable against this corpus, {len(WEB2_PLAYBOOKS)} not)",
         "",
@@ -268,18 +375,83 @@ def main() -> int:
 
     lines += [
         "",
-        "## Strongest ground truth",
+        "## Detection — per class",
         "",
-        *[f"- `{k}` — {v['recent_severe']:,} recent severe" for k, v in strong],
+        f"**provenance: `{provenance}`**  ·  projects: **{det.get('n_projects', 0)}**  ·  "
+        f"tools measured: **{len(measured_tools)}**",
         "",
-        "## Weakest ground truth",
+        "| class | tp | fp | fn | precision | measured | tools |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for row in per_class:
+        prec = row.get("precision")
+        lines.append(
+            f"| `{row['cls']}` | {row['tp']} | {row['fp']} | {row['fn']} | "
+            f"{'—' if prec is None else prec} | {row['measured']} | "
+            f"{','.join(row.get('tools') or []) or '—'} |"
+        )
+
+    # Unavailable runs are named explicitly. A tool that did not compile a project
+    # is not a tool with 0% recall, and the difference must survive into the report.
+    unavail = []
+    for tool, body in (det.get("tools") or {}).items():
+        for proj, why in (body.get("unavailability") or {}).items():
+            unavail.append(f"- `{tool}` on `{proj}` — **did not run**: {why[:160]}")
+    if unavail:
+        lines += ["", "### Detectors that DID NOT RUN (excluded from every ratio)", ""] + unavail
+
+    lines += [
         "",
-        *[f"- `{k}` — {v['recent_severe']:,} recent severe" for k, v in weak],
+        "## Tool totals",
+        "",
+        "| tool | precision | recall | projects measured | unavailable |",
+        "|---|---|---|---|---|",
+    ]
+    for tool, body in (det.get("tools") or {}).items():
+        p, r = body.get("precision"), body.get("recall")
+        lines.append(
+            f"| `{tool}` | {'—' if p is None else p} | {'—' if r is None else r} | "
+            f"{body.get('projects_measured', 0)} | {body.get('projects_unavailable', 0)} |"
+        )
+
+    lines += [
+        "",
+        "> Class-level, not instance-level. A hit is a firing somewhere in the "
+        "checkout, not a located instance of the audited bug. Read `n_projects` "
+        "before quoting a ratio.",
+        "",
+        "## Web2 ground truth (GHSA → web.*)",
+        "",
+    ]
+    if web2.get("available"):
+        lines += [
+            f"provenance: `{web2['provenance']}`  ·  advisories seen: "
+            f"**{web2['advisories_seen']}**  ·  mapped: **{web2['advisories_mapped']}**",
+            "",
+            "| class | n | severe | weight | validatable |",
+            "|---|---|---|---|---|",
+        ]
+        for cls, s in sorted(web2["classes"].items(), key=lambda kv: (-kv[1]["n"], kv[0])):
+            lines.append(
+                f"| `{cls}` | {s['n']} | {s['severe']} | {s['weight']} | {s['validatable']} |"
+            )
+        if web2.get("skipped"):
+            lines += ["", "Skipped: " + ", ".join(f"`{k}` {v}" for k, v in web2["skipped"].items())]
+        lines += [
+            "",
+            "> This is a 67-advisory SAMPLE, not the full database. It proves the "
+            "mapper works and gives `web.*` a real (small) ground truth. It does "
+            "not replace a full ingest, and a class still at n=0 stays unmeasured.",
+        ]
+    else:
+        lines.append(f"not available: {web2.get('reason', 'unknown')}")
+
+    lines += [
         "",
         "## Not measurable with this corpus",
         "",
         f"The corpus is web3-only. {len(WEB2_PLAYBOOKS)} web2 playbooks have zero",
-        "ground truth here, so they are validated by live testing instead:",
+        "ground truth here; their section above is the separate GHSA path:",
         "",
         *[f"- `{p}`" for p in sorted(WEB2_PLAYBOOKS)],
     ]
@@ -289,12 +461,12 @@ def main() -> int:
 
     lines += [
         "",
-        "## Detection",
+        "## Strongest / weakest ground truth",
         "",
-        f"sampled **{len(sample)}** severe findings our playbooks target.",
-        "measured **0** — per-project checkouts are a v2 capability.",
+        *[f"- strongest: `{k}` — {v['recent_severe']:,} recent severe" for k, v in strong],
+        *[f"- weakest: `{k}` — {v['recent_severe']:,} recent severe" for k, v in weak],
         "",
-        "> Unmeasured is not undetected. This run makes no recall claim.",
+        "> Unmeasured is not undetected. A class with no measurement makes no recall claim.",
     ]
 
     (OUT / "scoreboard.md").write_text("\n".join(lines) + "\n")
