@@ -30,6 +30,119 @@ CREATE TABLE IF NOT EXISTS programs (
 CREATE INDEX IF NOT EXISTS idx_programs_next   ON programs(status, next_check);
 CREATE INDEX IF NOT EXISTS idx_programs_auto   ON programs(automation, status);
 
+-- ─────────────────────────────────────────────────────────────────────────────
+-- discovery candidates: the lead record, with the two facts that were missing
+-- ─────────────────────────────────────────────────────────────────────────────
+-- One row per discovered target. This is a LEAD LIST, NOT A PERMISSION LIST.
+-- A row here has been FOUND, not PERMITTED: `has_programme` is informational,
+-- `automation_allowed` gates dispatch, and roeFromBrief() gates the engagement.
+-- Nothing may be probed on the strength of a rank.
+--
+-- WHY fund_addresses IS SEPARATE FROM address
+--   `address` is what the inventory feed published, and for roughly half the
+--   feed that is the protocol's own ERC-20 token rather than the pool holding
+--   the money (Aave V3: tvl=$14.6B, address=the AAVE token, and seven protocol
+--   entries share that one address). `address_is_token` records that and
+--   `fork_target` is the only column a fork may read. `fork_target` is NULL when
+--   no adapter address survived the token filter — NULL is the guard, so a
+--   consumer that falls back to `address` is a bug this schema makes visible.
+CREATE TABLE IF NOT EXISTS candidates (
+  id                 TEXT PRIMARY KEY,       -- evm:<chain>:<addr-lower> | svm:<cluster>:<addr>
+  family             TEXT NOT NULL CHECK (family IN ('evm','svm')),
+  chain_id           INTEGER,                -- NULL only for family='svm'; never invented
+  address            TEXT NOT NULL,          -- as published, casing preserved
+  name               TEXT NOT NULL,
+  kind               TEXT NOT NULL DEFAULT 'protocol',  -- protocol|token
+  category           TEXT,
+  tvl_usd            REAL,                   -- display ONLY; not a ranking input
+  -- first-class: alerts and the UI rank and filter on this without re-joining
+  has_programme      INTEGER NOT NULL DEFAULT 0 CHECK (has_programme IN (0,1)),
+  programme_id       TEXT,
+  payout_cap_usd     REAL,                   -- NULL = unmeasured, NOT zero
+  automation_allowed INTEGER NOT NULL DEFAULT 0 CHECK (automation_allowed IN (0,1)),
+  automation_reason  TEXT NOT NULL DEFAULT 'no-programme',
+  automation_class   TEXT CHECK (automation_class IN ('allowed','not_mentioned','prohibited','unknown')),
+  fund_addresses     TEXT NOT NULL DEFAULT '[]',   -- JSON array, filtered
+  fork_target        TEXT,                   -- NULL unless a non-token address survived
+  fund_state         TEXT NOT NULL DEFAULT 'pending',
+  address_is_token   INTEGER NOT NULL DEFAULT 0 CHECK (address_is_token IN (0,1)),
+  class_weights      TEXT NOT NULL DEFAULT '{}',   -- JSON {class: weight} from the digest
+  ev                 REAL NOT NULL DEFAULT 0,      -- 0 is a refusal, not a small number
+  ev_zero_reason     TEXT,
+  ev_why             TEXT,
+  updated_at         INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cand_ev      ON candidates(ev DESC);
+CREATE INDEX IF NOT EXISTS idx_cand_uncovered ON candidates(has_programme, ev DESC);
+CREATE INDEX IF NOT EXISTS idx_cand_auto    ON candidates(automation_allowed, ev DESC);
+CREATE INDEX IF NOT EXISTS idx_cand_chain   ON candidates(chain_id, address);
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- fund queue: the resumable, D1-backed adapter crawl
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Keyed on the ADAPTER (raw_url), not the protocol, because adapters are shared:
+-- 635 protocols above $10M TVL name only 438 distinct adapters, so one fetch
+-- serves every protocol that points at it. Without that dedupe the crawl is 635
+-- requests and 118 MB; with it, 438 requests and 3.7 MB (measured 2026-10-30).
+--
+-- STATE IS NOT A BOOLEAN, and the distinction is the point:
+--   queued     never fetched
+--   fetched    fetched; bytes/addresses_n/fund_addresses are real
+--   empty      fetched and it names no 0x… address (145 of 437 adapters)
+--   failed     transport failure awaiting retry
+--   no-adapter no tvlCodePath, or retries exhausted — nothing to fetch, ever
+-- A single `done` column would make "empty adapter" and "404" the same row, and
+-- every tick would re-fetch the empties forever.
+CREATE TABLE IF NOT EXISTS fund_queue (
+  id               TEXT PRIMARY KEY,      -- slug:<name>@<chain-key>
+  name             TEXT NOT NULL,
+  tvl_code_path    TEXT NOT NULL DEFAULT '',
+  raw_url          TEXT NOT NULL DEFAULT '',
+  symbol           TEXT,
+  address          TEXT,
+  tvl_usd          REAL,
+  state            TEXT NOT NULL DEFAULT 'queued'
+                   CHECK (state IN ('queued','fetched','empty','failed','no-adapter')),
+  attempts         INTEGER NOT NULL DEFAULT 0,
+  bytes            INTEGER NOT NULL DEFAULT 0,
+  addresses_n      INTEGER NOT NULL DEFAULT 0,
+  dropped_as_token INTEGER NOT NULL DEFAULT 0,
+  fund_addresses   TEXT NOT NULL DEFAULT '[]',
+  fork_target      TEXT,
+  last_error       TEXT,
+  next_attempt     INTEGER NOT NULL DEFAULT 0,
+  fetched_at       INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_fundq_due  ON fund_queue(state, next_attempt, tvl_usd DESC);
+CREATE INDEX IF NOT EXISTS idx_fundq_url  ON fund_queue(raw_url);
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- scope snapshots: what a programme's terms said, and when
+-- ─────────────────────────────────────────────────────────────────────────────
+-- `programs.automation` holds the CURRENT verdict. This holds the history, so a
+-- terms change that turns a permitted programme into a prohibited one is a diff
+-- an operator can see instead of a silent behaviour change — and so a verdict can
+-- be re-derived from the text that produced it.
+CREATE TABLE IF NOT EXISTS scope_snapshots (
+  id                 TEXT PRIMARY KEY,
+  program_id         TEXT NOT NULL REFERENCES programs(id) ON DELETE CASCADE,
+  platform           TEXT NOT NULL,
+  kind               TEXT NOT NULL DEFAULT 'unknown',
+  payout_cap_usd     REAL,                -- NULL = the platform publishes no per-finding cap
+  automation_allowed INTEGER NOT NULL DEFAULT 0 CHECK (automation_allowed IN (0,1)),
+  automation_class   TEXT NOT NULL DEFAULT 'unknown'
+                     CHECK (automation_class IN ('allowed','not_mentioned','prohibited','unknown')),
+  automation_reason  TEXT NOT NULL DEFAULT 'field-absent',
+  -- the exact sentence the verdict rests on, so a refusal is checkable
+  evidence           TEXT,
+  terms_sha          TEXT,
+  terms_text         TEXT,
+  assets_n           INTEGER NOT NULL DEFAULT 0,
+  fetched_at         INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_scope_prog ON scope_snapshots(program_id, fetched_at DESC);
+CREATE INDEX IF NOT EXISTS idx_scope_auto ON scope_snapshots(automation_allowed, fetched_at DESC);
+
 CREATE TABLE IF NOT EXISTS assets (
   id          TEXT PRIMARY KEY,
   program_id  TEXT NOT NULL REFERENCES programs(id) ON DELETE CASCADE,
