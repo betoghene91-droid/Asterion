@@ -104,10 +104,9 @@ export function rank(
  */
 export function planAttempts(
   leads: Lead[],
-  opts: { contract: string; forkBlock: number },
+  opts: { contract: string; forkBlock: number; chainId?: number | null },
   limit = 6,
-): { attempts: { lead: Lead; spec: PocSpec }[]; unprovable: Lead[] } {
-  const attempts: { lead: Lead; spec: PocSpec }[] = [];
+): { attempts: { lead: Lead; spec: PocSpec }[]; unprovable: Lead[] } {  const attempts: { lead: Lead; spec: PocSpec }[] = [];
   const unprovable: Lead[] = [];
   const seen = new Set<string>();
 

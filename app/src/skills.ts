@@ -26,7 +26,21 @@
 
 import { SKILLS_EMBED } from './skills-embed.js';
 
-export type SkillCls = 'web2' | 'solidity' | 'infra';
+/**
+ * The class a skill PACK may declare.
+ *
+ * Wider than it used to be by exactly one member, `solana`. That is not the same
+ * statement as "a Solana proof plane exists" — it does not (see dispatch.ts).
+ * It says these three packs are Solana methodology, which they are: their
+ * questions, preconditions and PoC requirements are all Anchor/SVM-specific. The
+ * previous arrangement declared them `'solidity'`, which is what let them pass
+ * deriveProveInputs and queue a Foundry job against an Anchor program: a
+ * guaranteed `inconclusive` that looked like a legitimate run.
+ *
+ * So: pack class and proof plane are DIFFERENT facts, and keeping the packs
+ * loadable while refusing them at dispatch is the honest combination.
+ */
+export type SkillCls = 'web2' | 'solidity' | 'infra' | 'solana';
 
 /** The short form, safe to list in a UI or a Telegram message. */
 export interface SkillMeta {
@@ -192,8 +206,8 @@ function parseSkill(raw: unknown, dirName: string, body: string): { skill?: Skil
   const family = o['family'];
   const impact = o['impact_bar'];
   if (typeof name !== 'string' || !name.trim()) return { issue: `${dirName}: "name" must be a string` };
-  if (cls !== 'web2' && cls !== 'solidity' && cls !== 'infra') {
-    return { issue: `${dirName}: "cls" must be web2 | solidity | infra` };
+  if (cls !== 'web2' && cls !== 'solidity' && cls !== 'infra' && cls !== 'solana') {
+    return { issue: `${dirName}: "cls" must be web2 | solidity | infra | solana` };
   }
   if (typeof family !== 'string' || !family.trim()) return { issue: `${dirName}: "family" must be a string` };
   if (typeof impact !== 'string' || !impact.trim()) return { issue: `${dirName}: "impact_bar" must be a string` };

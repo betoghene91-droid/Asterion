@@ -2,7 +2,7 @@
   "id": "sol.svm-cpi",
   "version": 1,
   "name": "Solana: arbitrary CPI where the caller chooses the target program",
-  "cls": "solidity",
+  "cls": "solana",
   "family": "cpi-confused-deputy",
   "requires": [
     "an Anchor program that performs a CPI and takes the target program id, or its account list, from the caller",

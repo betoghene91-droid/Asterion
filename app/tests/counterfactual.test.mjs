@@ -25,6 +25,7 @@ import { join } from 'node:path';
 
 import { judge } from '../build/proof.js';
 import { synthesize, HARNESSED } from '../build/poc.js';
+import { PLAYBOOKS, byId, dispatchablePlaybookIds } from '../build/playbooks.js';
 import { synthesizeFromFuzz } from '../build/fuzzseed.js';
 import { derivePatch } from '../build/patch.js';
 import { adjudicatePlan, resolveCounterfactual, MECHANISMS } from '../build/judge.mjs';
@@ -476,6 +477,35 @@ test('every harness reports whether it deploys its own contract', () => {
   }
   assert.equal(synthesize(lead('sol.upgrade'), { contract: 'V', forkBlock: 1 }).self_deployed, true);
   assert.equal(synthesize(lead('sol.reentrancy'), { contract: 'V', forkBlock: 1 }).self_deployed, false);
+});
+
+// ── 7b. dispatch coverage: a dispatchable class must have a harness ───────
+
+test('dispatchable is a subset of HARNESSED (no dead dispatch can return)', () => {
+  // THE BUG THIS PINS. `HARNESSED` had 7 classes while 10 sol.* EVM classes were
+  // dispatchable. sol.signature, sol.delegatecall and sol.flashloan passed
+  // deriveProveInputs, queued a Foundry job, ran for minutes, and could never
+  // produce a finding because synthesize() returned null. Nothing failed; the run
+  // simply could not conclude. The set is computed from DISPATCHER_CLASSES, which
+  // is what the dispatcher itself reads, so a future class cannot be made
+  // dispatchable without a harness without failing here.
+  const dispatchable = dispatchablePlaybookIds();
+  assert.ok(dispatchable.length > 0);
+  for (const id of dispatchable) {
+    assert.ok(HARNESSED.has(id), `${id} is dispatchable but has no harness: dead dispatch`);
+    assert.ok(synthesize(lead(id), { contract: 'V', forkBlock: 1 }), `${id}: synthesize returned null`);
+  }
+});
+
+test('every HARNESSED class is a playbook, and every solidity playbook is harnessed', () => {
+  // Both directions, so HARNESSED cannot inflate rank() with an id nobody can
+  // select, and no solidity class can be queued with nothing to express it.
+  for (const id of HARNESSED) {
+    assert.ok(byId(id), `${id} is in HARNESSED but is not a playbook`);
+  }
+  const solidity = PLAYBOOKS.filter((p) => p.cls === 'solidity').map((p) => p.id);
+  const unharnessed = solidity.filter((id) => !HARNESSED.has(id));
+  assert.deepEqual(unharnessed, [], `solidity classes with no harness: ${unharnessed.join(', ')}`);
 });
 
 // ── 8. the measurement is emitted by the generated Solidity ────────────

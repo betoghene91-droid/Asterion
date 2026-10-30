@@ -221,7 +221,11 @@ test('a non-solidity brief is refused before listing inputs', () => {
   const d = deriveProveInputs(provableBrief({ cls: 'web2' }));
   assert.equal(d.ok, false);
   assert.deepEqual(d.missing, ['cls']);
-  assert.match(d.why[0], /forge test/);
+  // The refusal must NAME the missing plane, not merely the class. "forge test"
+  // was the old wording; naming the plane is what makes the refusal actionable.
+  assert.match(d.why[0], /no web2\/HTTP proof plane/);
+  assert.match(d.why[0], /Foundry\/EVM/);
+  assert.match(d.why[0], /inconclusive/);
 });
 
 test('a non-solidity brief reports not_provable_class, not underivable_inputs', async () => {
@@ -988,4 +992,109 @@ test('roeFromBrief refuses an over-wide brief instead of narrowing it', () => {
       }),
     /scope refused/,
   );
+});
+
+// ── B8: a Solana brief must never queue a Foundry job ────────────────────────
+
+/**
+ * The B8 gate, end to end.
+ *
+ * `sol.svm-*` used to declare cls 'solidity', so they passed deriveProveInputs
+ * and dispatched a FOUNDRY job at an Anchor program: guaranteed `inconclusive`,
+ * and it looked like a legitimate run. The assertion that matters is that
+ * `fetch` is NEVER CALLED — a refusal that still POSTs would be the bug wearing
+ * a different hat.
+ */
+test('dispatching an sol.svm-* brief refuses by name and never calls fetch', async () => {
+  for (const [i, playbook] of ['sol.svm-signer', 'sol.svm-account', 'sol.svm-cpi'].entries()) {
+    const brief = provableBrief({
+      cls: 'solana',
+      playbooks: [playbook],
+      // Deliberately complete provenance: repo, a pinned sha and a contract name
+      // are all present, so the ONLY reason this can be refused is the missing
+      // Solana plane. If derivation were failing for an unrelated reason the test
+      // would pass for the wrong reason, which is why the message is asserted.
+      targets: [`${GIT_URL}@${SHA}`, 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'],
+      notes: `contract:Vault repo:${GIT_URL} commit:${SHA}`,
+    });
+    const db = makeDb();
+    seedApproval(db, brief, `appr-svm-${i}`);
+    const rec = recorder();
+    const fetched = [];
+
+    const out = await approveAndDispatch(
+      `appr-svm-${i}`,
+      true,
+      rec.deps(db, { GITHUB_DISPATCH_TOKEN: 'tok', GITHUB_REPO: 'me/asterion' }, okFetch(fetched)),
+    );
+
+    // 1. refused, with the documented reason code
+    assert.equal(out.dispatched, false, `${playbook}: must not dispatch`);
+    assert.equal(out.reason, 'not_provable_class', `${playbook}: refusal reason`);
+    assert.deepEqual(out.missing, ['cls']);
+
+    // 2. NO workflow dispatch was attempted. This is the load-bearing assertion.
+    assert.equal(fetched.length, 0, `${playbook}: a Foundry job was queued for a Solana brief`);
+    assert.ok(
+      !rec.ledgers.some((l) => l.kind === 'dispatch.sent'),
+      `${playbook}: the ledger must not record a dispatch`,
+    );
+
+    // 3. no hunts row: a hunt that no compute was asked to run is a lie
+    assert.equal(hunts(db).length, 0, `${playbook}: a hunts row was created`);
+
+    // 4. the operator was told WHY, naming the missing plane
+    const msg = rec.msgs.join('\n');
+    assert.match(msg, /Solana \(SVM\)/, `${playbook}: message must name the missing plane`);
+    assert.match(msg, /NOT DISPATCHED/);
+    assert.match(msg, /no proof path for this class/);
+
+    // 5. and it is on the ledger, so the refusal is auditable
+    assert.ok(
+      rec.ledgers.some((l) => l.kind === 'dispatch.blocked' && l.payload.gate === 'allow'),
+      `${playbook}: refusal must be recorded on the ledger`,
+    );
+  }
+});
+
+test('the solana refusal message is stable and names the plane verbatim', async () => {
+  const brief = provableBrief({
+    cls: 'solana',
+    playbooks: ['sol.svm-signer'],
+    notes: `contract:Vault repo:${GIT_URL} commit:${SHA}`,
+  });
+  const db = makeDb();
+  seedApproval(db, brief);
+  const rec = recorder();
+  const fetched = [];
+  await approveAndDispatch(
+    'appr-1',
+    true,
+    rec.deps(db, { GITHUB_DISPATCH_TOKEN: 'tok', GITHUB_REPO: 'me/asterion' }, okFetch(fetched)),
+  );
+  assert.equal(fetched.length, 0);
+  // eslint-disable-next-line no-console
+  console.log('B8 dispatch refusal (operator view):\n' + rec.msgs.join('\n'));
+});
+
+test('a solidity brief with the SAME targets still dispatches (the control)', async () => {
+  // Proves the refusal above is about the CLASS and not about the fixture: the
+  // exact same repo/sha/contract, reclassified as solidity, must still dispatch.
+  const brief = provableBrief({
+    cls: 'solidity',
+    targets: [`${GIT_URL}@${SHA}`],
+    notes: `contract:Vault repo:${GIT_URL} commit:${SHA}`,
+  });
+  const db = makeDb();
+  seedApproval(db, brief);
+  const rec = recorder();
+  const fetched = [];
+  const out = await approveAndDispatch(
+    'appr-1',
+    true,
+    rec.deps(db, { GITHUB_DISPATCH_TOKEN: 'tok', GITHUB_REPO: 'me/asterion' }, okFetch(fetched)),
+  );
+  assert.equal(out.dispatched, true, 'the solidity control must dispatch');
+  assert.equal(fetched.length, 1, 'exactly one workflow_dispatch');
+  assert.equal(hunts(db).length, 1);
 });

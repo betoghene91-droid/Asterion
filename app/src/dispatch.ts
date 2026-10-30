@@ -27,6 +27,7 @@
 import { PolicyEngine, roeFromBrief, type Decision } from './policy.js';
 import { esc } from './telegram.js';
 import type { Brief } from './intake.js';
+import { chainSpec, describeChain, parseChainToken, DEFAULT_FORK_RPC_ENV } from './chains.js';
 import {
   METHODOLOGY_INPUT,
   describeMethodology,
@@ -39,12 +40,53 @@ import {
 export const WORKFLOW_FILE = 'prove.yml';
 
 /**
- * `prove.yml` runs Foundry: it clones the target, writes PoCs into `test/`,
- * runs `forge test` and judges the result. There is no proof path for a web2
- * or infra brief, so those are refused rather than dispatched into a job that
- * cannot possibly succeed.
+ * The classes `prove.yml` can actually prove: it clones the target, writes PoCs
+ * into `test/`, runs `forge test` and judges the result. That is a FOUNDRY plane,
+ * so `solidity` is the only class in it today.
+ *
+ * A SET, not a string. It used to be `const PROVABLE_CLASS = 'solidity'`, which
+ * is the same predicate but reads as "there is one class in the world". The
+ * refusal is the security-relevant behaviour and it must keep firing for every
+ * class that has no plane — see `planeNameFor` and the message built below.
  */
-const PROVABLE_CLASS = 'solidity';
+export const PROVABLE_CLASSES: ReadonlySet<string> = new Set(['solidity']);
+
+/**
+ * The plane a class would need, for a refusal that names what is MISSING.
+ *
+ * "no proof path for sol.svm-signer" is not actionable. "there is no Solana (SVM)
+ * proof plane" tells the operator whether to wait for a plane or re-classify the
+ * brief — and, critically, tells a later reader why the run was refused instead
+ * of run.
+ */
+export function planeNameFor(cls: string): string {
+  switch (cls) {
+    case 'solana':
+      return 'Solana (SVM)';
+    case 'web2':
+      return 'web2/HTTP';
+    case 'infra':
+      return 'infrastructure/DNS';
+    case 'mobile':
+      return 'mobile (APK/IPA)';
+    default:
+      return `a ${cls}`;
+  }
+}
+
+/**
+ * Why a class cannot be dispatched, in one sentence that names the missing plane.
+ *
+ * Exported so the exact wording is asserted in a test rather than drifting.
+ */
+export function noPlaneReason(cls: string): string {
+  return (
+    `this brief is class "${cls}" but there is no ${planeNameFor(cls)} proof plane yet; ` +
+    `the only plane that exists is the Foundry/EVM one, which proves ${[...PROVABLE_CLASSES].join(', ')}. ` +
+    'Dispatching it anyway would queue a Foundry job against a target that plane cannot ' +
+    'execute, which can only ever come back inconclusive.'
+  );
+}
 
 /**
  * Technique recorded on the gate decision. Distinct from any live-target
@@ -63,6 +105,15 @@ export interface ProveInputs {
   commit: string;
   contract: string;
   fork_block: string;
+  /**
+   * EVM chain the fork must be taken from, as `cast chain-id` would report it.
+   *
+   * Optional only because a repo-only brief has no chain to pin. prove.yml
+   * resolves this to a `FORK_RPC_<id>` secret and asserts `cast chain-id` agrees
+   * with it, so a wrong-chain fork is red rather than silently measured against
+   * unrelated state.
+   */
+  chain_id?: string;
   /**
    * Deployed instance the PoC attaches to, as a 20-byte hex address.
    *
@@ -160,17 +211,15 @@ export function deriveProveInputs(brief: Brief): Derivation {
   const why: string[] = [];
   const partial: Record<string, string> = {};
 
-  // A non-solidity brief has no proof path at all; say that before listing
-  // inputs, or the operator will go hunting for a repo that would not help.
-  if (brief.cls !== PROVABLE_CLASS) {
+  // A brief whose class has no plane has no proof path at all; say that before
+  // listing inputs, or the operator will go hunting for a repo that would not
+  // help. The reason names the MISSING PLANE, not just the class.
+  if (!PROVABLE_CLASSES.has(brief.cls)) {
     return {
       ok: false,
       inputs: null,
       missing: ['cls'],
-      why: [
-        `this brief is class "${brief.cls}" but prove.yml only proves ${PROVABLE_CLASS} ` +
-          `(it clones a repo and runs forge test); there is no proof path for ${brief.cls}`,
-      ],
+      why: [noPlaneReason(brief.cls)],
       partial,
     };
   }
@@ -242,6 +291,16 @@ export function deriveProveInputs(brief: Brief): Derivation {
   const forkBlock = token(brief.notes ?? '', ['fork_block', 'forkblock', 'fork', 'block']) ?? '0';
   const fork_block = /^\d+$/.test(forkBlock) ? forkBlock : '0';
 
+  // chain_id: carried whenever the brief pinned one. A brief that carries a bare
+  // `0x…` target MUST name a chain, and `roeFromBrief` refuses it otherwise —
+  // but that refusal happens in the gate, which runs before derivation. So this
+  // lookup is for the ordinary case, and the gate is the guarantee.
+  const pinnedChain =
+    brief.chain_id != null && Number.isInteger(brief.chain_id)
+      ? brief.chain_id
+      : parseChainToken(brief.notes ?? '');
+  if (pinnedChain != null) partial.chain_id = String(pinnedChain);
+
   // address: the deployed instance to attach the PoC to. Taken ONLY from an
   // explicit 0x target (or an explicit `address:` note token) — the same
   // explicit-intent rule this function already uses for repo and commit. We do
@@ -270,6 +329,7 @@ export function deriveProveInputs(brief: Brief): Derivation {
       commit: commit!,
       contract: contract!,
       fork_block,
+      ...(pinnedChain != null ? { chain_id: String(pinnedChain) } : {}),
       ...(address ? { address } : {}),
     },
     missing: [],
@@ -303,8 +363,24 @@ export async function authorizeProof(
     mutability: 'simulate',
     adapter: 'foundry',
     is_fork: true,
-    chain_id: null,
+    // The chain the fork must be taken from, when the brief pinned one. Passed
+    // through so the decision fingerprint covers it: two runs of the same repo
+    // on different chains are different actions, and a fingerprint that ignored
+    // the chain would let one approval cover both.
+    chain_id: brief.chain_id ?? null,
   });
+}
+
+/**
+ * One line describing the chain a run is pinned to, for the operator message.
+ *
+ * Never empty and never throws: a blank line there is exactly the "which chain
+ * did this run on?" blindness this work exists to remove.
+ */
+function chainLine(chainId: string | undefined): string {
+  if (!chainId) return `unpinned - ${DEFAULT_FORK_RPC_ENV} (no chain_id in the brief)`;
+  const id = Number(chainId);
+  return Number.isInteger(id) ? describeChain(id) : `${chainId} (unparseable chain_id)`;
 }
 
 // ─── the GitHub call ─────────────────────────────────────────────────────────
@@ -350,13 +426,17 @@ export async function dispatchProveWorkflow(
         'x-github-api-version': '2022-11-28',
         'user-agent': 'asterion-worker',
       },
-      body: JSON.stringify({
+        body: JSON.stringify({
         ref: args.ref,
         inputs: {
           repo: args.inputs.repo,
           commit: args.inputs.commit,
           contract: args.inputs.contract,
           fork_block: args.inputs.fork_block,
+          // Only sent when the brief pinned a chain. prove.yml declares this
+          // input; a dispatch carrying an undeclared input is a 422, which is
+          // why the workflow had to gain the declaration in the same change.
+          ...(args.inputs.chain_id ? { chain_id: args.inputs.chain_id } : {}),
           // Only sent when known: an empty string would set TARGET="" and make
           // vm.envAddress revert rather than cleanly leave it unset.
           ...(args.inputs.address ? { address: args.inputs.address } : {}),
@@ -561,8 +641,7 @@ export async function approveAndDispatch(
   }
 
   // 3. Environment. Name the exact missing variable, never a generic failure.
-  const missingVars: string[] = [];
-  if (!deps.env.GITHUB_DISPATCH_TOKEN) missingVars.push('GITHUB_DISPATCH_TOKEN');
+  const missingVars: string[] = [];  if (!deps.env.GITHUB_DISPATCH_TOKEN) missingVars.push('GITHUB_DISPATCH_TOKEN');
   if (!deps.env.GITHUB_REPO) missingVars.push('GITHUB_REPO');
   if (missingVars.length) {
     await deps.ledger('dispatch.blocked', { approval: approvalId, missing_env: missingVars });
@@ -693,6 +772,7 @@ export async function approveAndDispatch(
       `repo      <code>${esc(shortRepo)}</code>`,
       `commit    <code>${esc(inputs.commit.slice(0, 12))}</code>`,
       `contract  <code>${esc(inputs.contract)}</code>   fork block ${esc(inputs.fork_block)}`,
+      `chain     ${esc(chainLine(inputs.chain_id))}`,
       `method    ${esc(methodology.skill_id ? `${methodology.skill_id} (${methodology.block.length} chars)` : 'none — ' + methodology.reason)}`,
       '',
       `GitHub returned ${res.status}. Verdicts arrive at /hook/proof when the run finishes.`,

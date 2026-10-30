@@ -14,6 +14,8 @@
  */
 
 import { PLAYBOOKS, route, type Cls, type Mut, type Playbook } from './playbooks.js';
+import { parseChainToken } from './chains.js';
+import { isSolanaPubkey } from './solana.js';
 
 export interface Brief {
   program_id: string;
@@ -27,6 +29,16 @@ export interface Brief {
   stop_condition: string;
   out_of_scope: string[];
   notes: string;
+  /**
+   * EVM chain the brief's `0x…` targets live on.
+   *
+   * REQUIRED whenever a target is a bare address, enforced by
+   * `policy.ts:chainForBrief` — an address does not identify its chain, and
+   * filing every address under one guessed chain authorized engagements on a
+   * chain nobody chose. Optional in the type only so web2 and repo briefs, which
+   * have no chain, do not have to invent one.
+   */
+  chain_id?: number;
 }
 
 export interface Question {
@@ -35,10 +47,22 @@ export interface Question {
   options: { label: string; value: string }[];
 }
 
+/**
+ * Words that settle a class. Ordered by specificity, and every entry is a whole
+ * word that appears in a real engagement sentence.
+ *
+ * `solana` is here so the three sol.svm-* classes are REACHABLE from text: they
+ * used to declare `cls: 'solidity'`, which let them pass deriveProveInputs and
+ * queue a Foundry job against an Anchor program. Now that they are their own
+ * class, a brief must be able to become that class or the packs are decoration.
+ * Deliberately NOT `ios` or `ipa` for a future mobile class: those substring
+ * match scenarios, violations, participant and principal.
+ */
 const CLASS_WORDS: Record<Cls, string[]> = {
   web2: ['web', 'api', 'url', 'http', 'site', 'app', 'endpoint', 'graphql', 'login', 'site'],
   solidity: ['contract', 'solidity', 'vault', 'token', 'defi', 'protocol', 'evm', '0x'],
   infra: ['dns', 'subdomain', 'takeover', 'tls', 'port', 'host', 'infra'],
+  solana: ['solana', 'anchor', 'svm', 'spl', 'program id', 'pda', 'lamport'],
 };
 
 const DEPTHS: Record<string, { minutes: number; mut: Mut; label: string }> = {
@@ -74,7 +98,14 @@ export function inferClass(targets: string[], raw: string): Cls {
       bestScore = score;
     }
   }
-  if (targets.some((t) => t.startsWith('0x'))) best = 'solidity';
+  // Target SHAPE beats keyword scoring, in this order, and unconditionally: a
+  // 20-byte hex address IS an EVM contract and a 32-44 char base58 pubkey IS a
+  // Solana account, whatever words happen to appear inside them. Keyword scoring
+  // alone got this wrong — "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" (the SPL
+  // Token program) contains the substring "token", so a solidity word hit beat
+  // the far stronger structural signal.
+  if (targets.some((t) => t.startsWith('0x'))) return 'solidity';
+  if (targets.some((t) => isSolanaPubkey(t))) return 'solana';
   return best;
 }
 
@@ -138,6 +169,17 @@ export function compile(
   const candidates = route(cls, raw + ' ' + targets.join(' '));
   const chosen = pickPlaybooks(candidates, depth.mut);
 
+  // Carry an explicit chain pin through intake. `chain:8453` in the operator's
+  // text is an explicit statement of intent, the same class of evidence as
+  // `contract:` or `commit:`, so it is read here rather than left to be
+  // re-discovered later. It is NOT guessed: if the text names no chain, the
+  // brief carries none, and `roeFromBrief` will refuse an address-shaped brief
+  // that has no chain rather than filing it under one.
+  const chain_id =
+    (answers.chain ? parseChainToken(`chain:${answers.chain}`) : null) ??
+    parseChainToken(raw) ??
+    undefined;
+
   return {
     brief: {
       program_id: ctx.program_id,
@@ -153,6 +195,7 @@ export function compile(
         'or when every selected playbook has been attempted once. Report a null result; do not extend.',
       out_of_scope: ctx.out_of_scope ?? [],
       notes: raw.slice(0, 2000),
+      ...(chain_id !== undefined ? { chain_id } : {}),
     },
   };
 }

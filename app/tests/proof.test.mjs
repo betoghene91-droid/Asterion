@@ -207,8 +207,15 @@ test('every harnessed class produces a compilable-looking test', () => {
 });
 
 test('an unharnessed class returns null rather than a guess', () => {
-  assert.equal(synthesize(lead('sol.signature'), { contract: 'V', forkBlock: 1 }), null);
+  // sol.signature USED to be the example here: it was dispatchable, ran for
+  // minutes, and could never produce a finding because it had no harness. It
+  // now has one (see HARNESSED). The assertion's intent is unchanged - a class
+  // with no harness must synthesise nothing rather than guess - so the example
+  // moves to classes that still have no harness.
   assert.equal(synthesize(lead('web.idor'), { contract: 'V', forkBlock: 1 }), null);
+  assert.equal(synthesize(lead('sol.svm-signer'), { contract: 'V', forkBlock: 1 }), null);
+  // And the class that used to be the example is now genuinely harnessed.
+  assert.ok(synthesize(lead('sol.signature'), { contract: 'V', forkBlock: 1 }));
 });
 
 test('generated tests assert a measured effect, never the vulnerability', () => {
@@ -219,11 +226,14 @@ test('generated tests assert a measured effect, never the vulnerability', () => 
 });
 
 test('planAttempts skips unprovable leads and reports them', () => {
-  const leads = [lead('sol.reentrancy'), lead('sol.signature'), lead('sol.oracle')];
+  // Same intent: a lead whose class has no harness is SKIPPED and REPORTED, never
+  // silently dropped. sol.signature is harnessed now, so an svm class - which has
+  // no EVM plane and no harness - takes its place as the unprovable example.
+  const leads = [lead('sol.reentrancy'), lead('sol.svm-signer'), lead('sol.oracle')];
   const { attempts, unprovable } = planAttempts(leads, { contract: 'Vault', forkBlock: 1 });
   assert.equal(attempts.length, 2);
   assert.equal(unprovable.length, 1);
-  assert.equal(unprovable[0].playbook, 'sol.signature');
+  assert.equal(unprovable[0].playbook, 'sol.svm-signer');
 });
 
 test('planAttempts dedupes per class and file', () => {

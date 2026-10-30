@@ -2,7 +2,7 @@
   "id": "sol.svm-signer",
   "version": 1,
   "name": "Solana: account accepted without the signer or authority it requires",
-  "cls": "solidity",
+  "cls": "solana",
   "family": "signer-authority",
   "requires": [
     "an Anchor program whose instruction takes an authority or owner account",
