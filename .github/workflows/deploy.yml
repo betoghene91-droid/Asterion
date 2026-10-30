@@ -88,20 +88,30 @@ jobs:
       # The 181k corpus is distilled into src/corpus-digest.json and the Worker
       # reads it at runtime from D1 (corpus_digest, ORDER BY loaded_at DESC).
       # Without this step the digest is never loaded, getCorpus() returns null,
-      # and every precedence/prior signal silently degrades to "no precedent" —
-      # the bot still runs, it is just blind. Non-fatal: a missing corpus must
-      # not block shipping a working bot.
+      # and every precedence/prior signal silently degrades to "no precedent".
+      #
+      # THIS STEP MUST BE ABLE TO FAIL THE DEPLOY. It used to carry
+      # `continue-on-error: true` with the reasoning that "a missing corpus must
+      # not block shipping a working bot". That reasoning was wrong in practice:
+      # the load was 10.7x over D1's per-statement cap, failed on every run, and
+      # the swallow turned a hard error into a silent one. Every prior in
+      # production was 0.0 with validatable:false while the deploy reported
+      # success. A digest that cannot be loaded is a real regression, so it is
+      # now fatal - a broken corpus must not reach production looking healthy.
+      #
+      # The loader emits 18 bounded statements (1 seed + 17 appends, largest
+      # 65,604 escaped bytes) instead of one ~1.07 MB literal; the check below
+      # then proves the row is really there AND is the version we shipped.
       - name: load the distilled corpus digest into D1
-        continue-on-error: true
         run: |
           if [ ! -f src/corpus-digest.json ]; then
-            echo 'no corpus digest present; skipping (bot runs without precedent)'
-            exit 0
+            echo '::error::no corpus-digest.json; the Worker would run blind (every prior 0.0)'
+            exit 1
           fi
           node scripts/load-corpus.mjs --apply
           echo '--- verify it landed ---'
           npx wrangler d1 execute asterion --remote --yes \
-            --command "SELECT COUNT(*) AS rows, MAX(loaded_at) AS newest FROM corpus_digest"
+            --command "SELECT version, source_rows, length(digest) AS digest_bytes, loaded_at FROM corpus_digest ORDER BY loaded_at DESC LIMIT 1"
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
