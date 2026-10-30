@@ -17,7 +17,24 @@ export interface Env {
   ALERT_FLOOR?: string;
 }
 
-export type Btn = { text: string; callback_data: string };
+export type Btn = {
+  text: string;
+  /**
+   * Omitted ONLY by the Mini App button below. Telegram's InlineKeyboardButton
+   * requires exactly one action field, and `callback_data` combined with
+   * `web_app` makes the button silently inert - it renders and does nothing when
+   * tapped. Every existing button still sets this, so the widening is invisible
+   * to them; `send()` and `editText()` pass the object straight through to
+   * `reply_markup.inline_keyboard`, and `JSON.stringify` drops an undefined value.
+   */
+  callback_data?: string;
+  /**
+   * Opens the Mini App in Telegram with a signed `initData` payload. Needs an
+   * absolute https URL, which a Worker cannot know on its own - see
+   * `setWebAppOrigin` below.
+   */
+  web_app?: { url: string };
+};
 
 export const SEV = {
   critical: { glyph: '\u25C6', label: 'CRIT' },
@@ -49,6 +66,36 @@ export function rule(n = 22): string {
   return `<code>${'\u2500'.repeat(n)}</code>`;
 }
 
+/**
+ * The Mini App's public origin, recorded from the incoming request URL.
+ *
+ * A `web_app` button needs an absolute https URL and a Worker has no binding that
+ * tells it its own hostname. The one place that is always available is the
+ * request the webhook arrived on, so `index.ts` records `url.origin` when a
+ * request comes in for the Worker's own paths - see the additive branch in its
+ * fetch handler. Nothing else reads this and nothing else writes it.
+ *
+ * It is a module-level value because `KEYBOARDS.main()` takes no arguments today
+ * and this change may not alter its signature or any existing call site.
+ */
+let webAppOrigin: string | null = null;
+
+/**
+ * Record the origin the Mini App is reachable at. Only a bare https origin is
+ * accepted: a value with a path, a scheme we will not serve, or anything that
+ * does not look like one host is dropped, because an unusable URL here would
+ * produce a button Telegram refuses and take the WHOLE keyboard down with it.
+ */
+export function setWebAppOrigin(origin: string): void {
+  const candidate = origin.replace(/\/+$/, '');
+  if (/^https:\/\/[a-z0-9.-]+(:\d+)?$/i.test(candidate)) webAppOrigin = candidate;
+}
+
+/** The Mini App URL, or null when the origin has not been observed yet. */
+export function webAppUrl(): string | null {
+  return webAppOrigin ? `${webAppOrigin}/ui` : null;
+}
+
 export const KEYBOARDS = {
   main: (): Btn[][] => [
     [
@@ -65,6 +112,12 @@ export const KEYBOARDS = {
     ],
     [{ text: '\u2691  Discovery', callback_data: 'disc:list' }, { text: '\u2691  Briefing', callback_data: 'br:daily' }],
     [{ text: '\u25A6  Corpus', callback_data: 'corp:list' }],
+    // One new entry, one row. The Mini App is additive: before the Worker has
+    // seen a request it cannot build an absolute URL, and a web_app button with
+    // an empty url is rejected by Telegram - which would break this entire
+    // keyboard, not just the new button. So the row is OMITTED until then, and
+    // the array is byte-identical to the pre-Mini-App keyboard on that path.
+    ...(webAppUrl() ? ([[{ text: '\u25A6  Console', web_app: { url: webAppUrl() as string } }]] as Btn[][]) : []),
   ],
   back: (): Btn[][] => [[{ text: '\u2190  Menu', callback_data: 'm:main' }]],
 };

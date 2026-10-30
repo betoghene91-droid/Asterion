@@ -40,11 +40,13 @@ import {
   KEYBOARDS,
   rule,
   send,
+  setWebAppOrigin,
   SEV,
   statusScreen,
   type Btn,
   type Sev,
 } from './telegram.js';
+import { uiRoute } from './ui/shell.js';
 
 export interface Env {
   DB: D1Database;
@@ -91,6 +93,34 @@ export interface Env {
 export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
+
+    // -- Mini App (additive; see src/ui/) -------------------------------------
+    // Three new statements. None of them alters a branch below.
+    //
+    // 1. Record the Worker's own public origin. A Telegram `web_app` button needs
+    //    an absolute https URL and a Worker has no binding that reports its own
+    //    hostname; the URL the request arrived on is the one value that is always
+    //    correct. It has to be learned HERE, above the `/tg` handler, because that
+    //    handler RETURNS - an origin recorded further down would never run for the
+    //    webhook, which is the request that precedes the operator seeing the
+    //    button. Nothing below this comments out or short-circuits: the /tg
+    //    handler still runs exactly as it did.
+    //
+    // 2. The console. Matched before the `startsWith('/api/')` branch so
+    //    `/api/ui/*` never reaches dashboardApi, which would answer it "unknown
+    //    endpoint". The only requests whose behaviour changes here are requests
+    //    that previously got exactly that 404.
+    if (url.pathname === '/tg') {
+      setWebAppOrigin(url.origin);
+    }
+    if (
+      url.pathname === '/ui' ||
+      url.pathname.startsWith('/ui/') ||
+      url.pathname.startsWith('/api/ui/')
+    ) {
+      setWebAppOrigin(url.origin);
+      return uiRoute(env, req, url);
+    }
 
     if (url.pathname === '/health') {
       return json({ ok: true, ts: Date.now() });
@@ -145,7 +175,7 @@ export default {
       return json({ ok: true });
     }
 
-    // ── read-only dashboard API ─────────────────────────────────────────
+    // -- read-only dashboard API ── read-only dashboard API ─────────────────────────────────────────
     // These endpoints answer GET only and never mutate. The dashboard is
     // served separately from /dashboard/index.html.
     if (url.pathname.startsWith('/api/')) {

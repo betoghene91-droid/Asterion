@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="color-scheme" content="dark light" />
+<meta name="referrer" content="no-referrer" />
+<title>Asterion</title>
+<link rel="stylesheet" href="/ui/ui.css" />
+</head>
+<body>
+<div class="app" id="app">
+
+  <header class="bar">
+    <button class="icon-btn" id="back" type="button" aria-label="Back" hidden>
+      <span aria-hidden="true">&#8249;</span>
+    </button>
+    <div class="bar-title" id="bar-title">Hunt</div>
+    <div class="link" id="link" data-state="idle"><i aria-hidden="true"></i><span id="link-text">starting</span></div>
+  </header>
+
+  <main class="view" id="view" tabindex="-1" aria-live="polite"></main>
+
+  <form class="composer" id="composer" autocomplete="off" hidden>
+    <label class="sr" for="say">Message Asterion</label>
+    <textarea id="say" rows="1" placeholder="Type a target, or anything. It gets compiled."></textarea>
+    <button id="send" type="submit" aria-label="Compile and propose">
+      <span aria-hidden="true">&#9654;</span>
+    </button>
+  </form>
+
+  <nav class="tabs" id="tabs" role="tablist" aria-label="Sections">
+    <button class="tab" type="button" role="tab" data-tab="hunt" aria-selected="true">
+      <span class="tg" aria-hidden="true">&#9654;</span><span class="tl">Hunt</span>
+      <span class="badge" data-badge hidden></span>
+    </button>
+    <button class="tab" type="button" role="tab" data-tab="queue" aria-selected="false">
+      <span class="tg" aria-hidden="true">&#9638;</span><span class="tl">Queue</span>
+      <span class="badge" data-badge hidden></span>
+    </button>
+    <button class="tab" type="button" role="tab" data-tab="ask" aria-selected="false">
+      <span class="tg" aria-hidden="true">&#9998;</span><span class="tl">Ask</span>
+      <span class="badge" data-badge hidden></span>
+    </button>
+    <button class="tab" type="button" role="tab" data-tab="library" aria-selected="false">
+      <span class="tg" aria-hidden="true">&#8801;</span><span class="tl">Library</span>
+      <span class="badge" data-badge hidden></span>
+    </button>
+    <button class="tab" type="button" role="tab" data-tab="ops" aria-selected="false">
+      <span class="tg" aria-hidden="true">&#9881;</span><span class="tl">Ops</span>
+      <span class="badge" data-badge hidden></span>
+    </button>
+  </nav>
+
+  <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+
+  <div class="sheet" id="sheet" hidden>
+    <div class="sheet-card" role="alertdialog" aria-modal="true" aria-labelledby="sheet-title">
+      <h2 class="sheet-title" id="sheet-title"></h2>
+      <p class="sheet-body" id="sheet-body"></p>
+      <div class="sheet-actions">
+        <button class="btn" id="sheet-no" type="button">Cancel</button>
+        <button class="btn go" id="sheet-yes" type="button">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+<script src="/ui/ui.js" type="module"></script>
+</body>
+</html>
