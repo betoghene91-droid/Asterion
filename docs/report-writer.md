@@ -280,7 +280,7 @@ python3 -c "import json;d=json.load(open('package.json'));print(d.get('dependenc
 
 | File | Tests | What it pins |
 | --- | --- | --- |
-| `tests/fixtures/report/expected-report.md` | — | the golden document, 228 lines |
+| `tests/fixtures/report/expected-report.md` | — | the golden document, 227 lines |
 | `tests/report.test.mjs` | 40 | shape, ledger-over-prose, `claims NOT verified`, refusals |
 | `tests/cvss.test.mjs` | 25 | spec arithmetic, determinism, least-severe defaults, refusals |
 | `tests/ledger-export.test.mjs` | 26 | determinism, real chain verification, refusal |
@@ -311,8 +311,9 @@ that never happened.
 - **No merge, no PR, no workflow dispatch.** The branch is pushed and stops there.
 - **No route or import from the Worker.** `report.ts`, `cvss.ts`,
   `ledger-export.ts` and `scope-monitor.ts` are pure modules with no `index.ts`
-  edge, so nothing in the deployed Worker changed. Verified: `grep -c report
-  app/src/index.ts` is unchanged.
+  edge, so nothing in the deployed Worker changed. Verified: `grep -c` for any
+  of the four against `app/src/index.ts` is `0`, and the only file in `app/src`
+  that imports another of the four is `report.ts` importing `cvss.ts`.
 - **No schema change.** The CVSS record is returned on `ReportRecord.cvss` for
   the caller to store. Adding a column is a `schema.sql` edit, and `schema.sql`
   is contended by two other workstreams in this change set.
