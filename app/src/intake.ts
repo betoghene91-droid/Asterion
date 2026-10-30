@@ -15,6 +15,7 @@
 
 import { PLAYBOOKS, route, type Cls, type Mut, type Playbook } from './playbooks.js';
 import { parseChainToken } from './chains.js';
+import { isSolanaPubkey } from './solana.js';
 
 export interface Brief {
   program_id: string;
@@ -46,10 +47,22 @@ export interface Question {
   options: { label: string; value: string }[];
 }
 
+/**
+ * Words that settle a class. Ordered by specificity, and every entry is a whole
+ * word that appears in a real engagement sentence.
+ *
+ * `solana` is here so the three sol.svm-* classes are REACHABLE from text: they
+ * used to declare `cls: 'solidity'`, which let them pass deriveProveInputs and
+ * queue a Foundry job against an Anchor program. Now that they are their own
+ * class, a brief must be able to become that class or the packs are decoration.
+ * Deliberately NOT `ios` or `ipa` for a future mobile class: those substring
+ * match scenarios, violations, participant and principal.
+ */
 const CLASS_WORDS: Record<Cls, string[]> = {
   web2: ['web', 'api', 'url', 'http', 'site', 'app', 'endpoint', 'graphql', 'login', 'site'],
   solidity: ['contract', 'solidity', 'vault', 'token', 'defi', 'protocol', 'evm', '0x'],
   infra: ['dns', 'subdomain', 'takeover', 'tls', 'port', 'host', 'infra'],
+  solana: ['solana', 'anchor', 'svm', 'spl', 'program id', 'pda', 'lamport'],
 };
 
 const DEPTHS: Record<string, { minutes: number; mut: Mut; label: string }> = {
@@ -85,7 +98,14 @@ export function inferClass(targets: string[], raw: string): Cls {
       bestScore = score;
     }
   }
-  if (targets.some((t) => t.startsWith('0x'))) best = 'solidity';
+  // Target SHAPE beats keyword scoring, in this order, and unconditionally: a
+  // 20-byte hex address IS an EVM contract and a 32-44 char base58 pubkey IS a
+  // Solana account, whatever words happen to appear inside them. Keyword scoring
+  // alone got this wrong — "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" (the SPL
+  // Token program) contains the substring "token", so a solidity word hit beat
+  // the far stronger structural signal.
+  if (targets.some((t) => t.startsWith('0x'))) return 'solidity';
+  if (targets.some((t) => isSolanaPubkey(t))) return 'solana';
   return best;
 }
 

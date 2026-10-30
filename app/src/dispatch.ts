@@ -40,12 +40,53 @@ import {
 export const WORKFLOW_FILE = 'prove.yml';
 
 /**
- * `prove.yml` runs Foundry: it clones the target, writes PoCs into `test/`,
- * runs `forge test` and judges the result. There is no proof path for a web2
- * or infra brief, so those are refused rather than dispatched into a job that
- * cannot possibly succeed.
+ * The classes `prove.yml` can actually prove: it clones the target, writes PoCs
+ * into `test/`, runs `forge test` and judges the result. That is a FOUNDRY plane,
+ * so `solidity` is the only class in it today.
+ *
+ * A SET, not a string. It used to be `const PROVABLE_CLASS = 'solidity'`, which
+ * is the same predicate but reads as "there is one class in the world". The
+ * refusal is the security-relevant behaviour and it must keep firing for every
+ * class that has no plane — see `planeNameFor` and the message built below.
  */
-const PROVABLE_CLASS = 'solidity';
+export const PROVABLE_CLASSES: ReadonlySet<string> = new Set(['solidity']);
+
+/**
+ * The plane a class would need, for a refusal that names what is MISSING.
+ *
+ * "no proof path for sol.svm-signer" is not actionable. "there is no Solana (SVM)
+ * proof plane" tells the operator whether to wait for a plane or re-classify the
+ * brief — and, critically, tells a later reader why the run was refused instead
+ * of run.
+ */
+export function planeNameFor(cls: string): string {
+  switch (cls) {
+    case 'solana':
+      return 'Solana (SVM)';
+    case 'web2':
+      return 'web2/HTTP';
+    case 'infra':
+      return 'infrastructure/DNS';
+    case 'mobile':
+      return 'mobile (APK/IPA)';
+    default:
+      return `a ${cls}`;
+  }
+}
+
+/**
+ * Why a class cannot be dispatched, in one sentence that names the missing plane.
+ *
+ * Exported so the exact wording is asserted in a test rather than drifting.
+ */
+export function noPlaneReason(cls: string): string {
+  return (
+    `this brief is class "${cls}" but there is no ${planeNameFor(cls)} proof plane yet; ` +
+    `the only plane that exists is the Foundry/EVM one, which proves ${[...PROVABLE_CLASSES].join(', ')}. ` +
+    'Dispatching it anyway would queue a Foundry job against a target that plane cannot ' +
+    'execute, which can only ever come back inconclusive.'
+  );
+}
 
 /**
  * Technique recorded on the gate decision. Distinct from any live-target
@@ -170,17 +211,15 @@ export function deriveProveInputs(brief: Brief): Derivation {
   const why: string[] = [];
   const partial: Record<string, string> = {};
 
-  // A non-solidity brief has no proof path at all; say that before listing
-  // inputs, or the operator will go hunting for a repo that would not help.
-  if (brief.cls !== PROVABLE_CLASS) {
+  // A brief whose class has no plane has no proof path at all; say that before
+  // listing inputs, or the operator will go hunting for a repo that would not
+  // help. The reason names the MISSING PLANE, not just the class.
+  if (!PROVABLE_CLASSES.has(brief.cls)) {
     return {
       ok: false,
       inputs: null,
       missing: ['cls'],
-      why: [
-        `this brief is class "${brief.cls}" but prove.yml only proves ${PROVABLE_CLASS} ` +
-          `(it clones a repo and runs forge test); there is no proof path for ${brief.cls}`,
-      ],
+      why: [noPlaneReason(brief.cls)],
       partial,
     };
   }

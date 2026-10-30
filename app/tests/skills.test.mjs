@@ -134,7 +134,14 @@ test('every skill.json parses and carries every required key', () => {
     assert.equal(s.id, dir, `${dir}: id does not match directory`);
     assert.equal(typeof s.version, 'number');
     assert.equal(typeof s.name, 'string');
-    assert.ok(['web2', 'solidity', 'infra'].includes(s.cls), `${dir}: bad cls`);
+    // The allowlist gains 'solana' because the three sol.svm-* packs are Solana
+    // methodology. That is a statement about the PACK, not about a proof plane:
+    // dispatch.ts still refuses them by name because svm-harness.ts does not
+    // exist. Declaring them 'solidity' is what made that refusal impossible.
+    assert.ok(
+      ['web2', 'solidity', 'infra', 'solana'].includes(s.cls),
+      `${dir}: bad cls ${JSON.stringify(s.cls)}`,
+    );
     assert.equal(typeof s.family, 'string');
     assert.ok(Array.isArray(s.requires) && s.requires.length >= 1, `${dir}: requires`);
     assert.ok(Array.isArray(s.questions), `${dir}: questions must be an array`);
@@ -145,13 +152,34 @@ test('every skill.json parses and carries every required key', () => {
   }
 });
 
-test('skill ids are exactly the sol.* playbook ids in playbooks.ts', () => {
-  const playbookSol = PLAYBOOKS.filter((p) => p.cls === 'solidity')
-    .map((p) => p.id)
-    .sort();
-  const skillSol = dirs().filter((d) => d.startsWith('sol.'));
-  assert.deepEqual(skillSol.sort(), playbookSol, 'skill set must equal sol.* playbook set');
-  assert.deepEqual(skillSol.sort(), [...EXPECTED_SOL].sort());
+test('skill ids are exactly the sol.* playbook ids in playbooks.ts, per class', () => {
+  // This used to compare "every sol.* skill dir" against "every solidity
+  // playbook", which held only because the three sol.svm-* packs wrongly
+  // declared cls: 'solidity'. They are Solana programs with no EVM plane, so
+  // they now declare 'solana' — and the comparison becomes per-class, which is
+  // STRICTER: a pack that declares the wrong class fails here instead of
+  // blending in.
+  for (const cls of ['solidity', 'solana']) {
+    const playbookIds = PLAYBOOKS.filter((p) => p.cls === cls)
+      .map((p) => p.id)
+      .sort();
+    const skillIds = dirs()
+      .filter((d) => d.startsWith('sol.'))
+      .filter((d) => rawSkill(d).cls === cls)
+      .sort();
+    assert.deepEqual(skillIds, playbookIds, `${cls}: skill set must equal its playbook set`);
+  }
+
+  // And nothing sol.*-shaped may declare a class outside the two.
+  const all = dirs().filter((d) => d.startsWith('sol.'));
+  for (const d of all) {
+    assert.ok(
+      ['solidity', 'solana'].includes(rawSkill(d).cls),
+      `${d}: sol.* pack declared unexpected cls ${rawSkill(d).cls}`,
+    );
+  }
+  assert.deepEqual(all.sort(), [...EXPECTED_SOL].sort());
+  assert.equal(all.length, 13, 'the sol.* pack set is 13 ids and must not drift');
 });
 
 test('every non-solidity digest class with a playbook now has a pack', () => {
@@ -502,9 +530,24 @@ test('selectSkills honours corpusWeight for the exact playbook only', () => {
 });
 
 test('selectSkills filter by cls returns only that class', () => {
+  // Counted per class rather than against EXPECTED_SOL: the 13 sol.* packs are
+  // now split 10 solidity + 3 solana, so "every sol.* pack is solidity" is no
+  // longer true and asserting it would force the svm packs back into a class
+  // whose plane cannot run them.
+  const solIds = EXPECTED_SOL;
+  const solidityIds = solIds.filter((id) => rawSkill(id).cls === 'solidity');
+  const solanaIds = solIds.filter((id) => rawSkill(id).cls === 'solana');
+  assert.equal(solidityIds.length + solanaIds.length, solIds.length, 'every sol.* pack has a class');
+  assert.equal(solanaIds.length, 3, 'the three svm packs are the solana class');
+
   const got = selectSkills({ cls: 'solidity' });
-  assert.equal(got.length, EXPECTED_SOL.length);
+  assert.deepEqual(got.map((s) => s.id).sort(), [...solidityIds].sort());
   assert.ok(got.every((s) => s.cls === 'solidity'));
+
+  // And the solana filter returns exactly the three svm packs, nothing else.
+  const svm = selectSkills({ cls: 'solana' });
+  assert.deepEqual(svm.map((s) => s.id).sort(), [...solanaIds].sort());
+  assert.ok(svm.every((s) => s.cls === 'solana'));
 
   // web2 is a real class now: 14 web.* packs belong to it, and web.takeover does not.
   const web = selectSkills({ cls: 'web2' });

@@ -10,7 +10,7 @@
  * Adding a capability to Asterion means adding a playbook here. Nothing else.
  */
 
-export type Cls = 'web2' | 'solidity' | 'infra';
+export type Cls = 'web2' | 'solidity' | 'infra' | 'solana';
 export type Mut = 'read' | 'simulate' | 'mutate' | 'destructive';
 export type EvidenceType =
   | 'http_exchange'
@@ -348,7 +348,7 @@ export const PLAYBOOKS: Playbook[] = [
   {
     id: 'sol.svm-signer',
     name: 'Solana: account accepted without the signer or authority it requires',
-    cls: 'solidity',
+    cls: 'solana',
     family: 'signer-authority',
     mut: 'simulate',
     requires: [
@@ -367,7 +367,7 @@ export const PLAYBOOKS: Playbook[] = [
   {
     id: 'sol.svm-account',
     name: 'Solana: unvalidated account substituted for a program-owned PDA',
-    cls: 'solidity',
+    cls: 'solana',
     family: 'account-validation',
     mut: 'simulate',
     requires: [
@@ -386,7 +386,7 @@ export const PLAYBOOKS: Playbook[] = [
   {
     id: 'sol.svm-cpi',
     name: 'Solana: arbitrary CPI where the caller chooses the target program',
-    cls: 'solidity',
+    cls: 'solana',
     family: 'cpi-confused-deputy',
     mut: 'simulate',
     requires: [
@@ -456,6 +456,36 @@ export const PLAYBOOKS: Playbook[] = [
     evidence: 'tx_trace',
   },
 ];
+
+/**
+ * Classes with a real PoC executor BEHIND THE DISPATCHER.
+ *
+ * This is the single source of truth for "may this class be dispatched at all".
+ * It is deliberately NOT the same thing as `poc.ts:HARNESSED`: HARNESSED says "a
+ * harness exists", this says "a plane exists that could run it". A class in this
+ * list with no harness dispatches a job that can never produce a finding — the
+ * exact dead-dispatch bug that made sol.signature / sol.delegatecall /
+ * sol.flashloan run for minutes and report nothing. `tests/dispatch-coverage.test.mjs`
+ * asserts `DISPATCHER_CLASSES ⊆ HARNESSED`, computed from THIS list, so that
+ * class of bug cannot come back.
+ *
+ * `mobile` is absent on purpose: three mob.* packs exist and load, but there is
+ * no mobile plane, so intake cannot even infer the class and dispatch refuses by
+ * name. Listing it here would advertise a capability that does not exist.
+ *
+ * `solana` is absent on purpose TOO, and for a stronger reason: the three
+ * sol.svm-* classes declare `cls: 'solana'` and their harness (svm-harness.ts)
+ * does not exist. Before that was made a distinct class they declared
+ * `'solidity'`, which meant they passed deriveProveInputs and queued a FOUNDRY
+ * job against an Anchor program: a guaranteed `inconclusive` that looked like a
+ * legitimate run. They are now refused by name instead. See dispatch.ts.
+ */
+export const DISPATCHER_CLASSES: ReadonlySet<Cls> = new Set<Cls>(['solidity']);
+
+/** Every playbook id the dispatcher may queue work for. */
+export function dispatchablePlaybookIds(): string[] {
+  return PLAYBOOKS.filter((p) => DISPATCHER_CLASSES.has(p.cls)).map((p) => p.id);
+}
 
 export function byId(id: string): Playbook | undefined {
   return PLAYBOOKS.find((p) => p.id === id);

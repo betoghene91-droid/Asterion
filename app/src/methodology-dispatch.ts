@@ -101,7 +101,7 @@ export interface MethodologyForDispatch {
   matched_targets: string[];
 }
 
-const KNOWN_CLASSES: Cls[] = ['web2', 'solidity', 'infra'];
+const KNOWN_CLASSES: Cls[] = ['web2', 'solidity', 'infra', 'solana'];
 
 /** A deployed contract instance. Only Solidity packs can act on one. */
 const ADDRESS = /^0x[a-fA-F0-9]{40}$/;
@@ -164,6 +164,26 @@ export function supportsClass(target: string, cls: Cls): boolean {
         isRepo ||
         /\b(solidity|contract|\.sol\b|defi|evm|mainnet)/i.test(lower)
       );
+    case 'solidity':
+    case 'solana':
+      // Kept adjacent deliberately: a Solana pack selects on the same target
+      // SHAPES as an EVM one (a deployed program id, a repo checkout, or an
+      // explicit platform word). What differs is the proof plane, and that is
+      // refused in dispatch.ts by name rather than here by target shape.
+      if (cls === 'solana') {
+        return (
+          isRepo ||
+          /\b(solana|anchor|\.rs\b|svm|spl|pda)/i.test(lower) ||
+          // A base58 program id is 32-44 chars of base58; checked as "not an
+          // EVM address, not a URL, and long enough to be a pubkey".
+          (!isAddress && !isHttp && !isRepo && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(t))
+        );
+      }
+      return (
+        isAddress ||
+        isRepo ||
+        /\b(solidity|contract|\.sol\b|defi|evm|mainnet)/i.test(lower)
+      );
     case 'web2':
       return isHttp || hostOnly;
     case 'infra':
@@ -176,7 +196,15 @@ export function supportsClass(target: string, cls: Cls): boolean {
   }
 }
 
-/** Map a skill's class onto the brief taxonomy. */
+/**
+ * Map a skill's class onto the brief taxonomy.
+ *
+ * The two sets are deliberately different sizes: `SkillCls` is what a skill pack
+ * may declare, `Cls` is what a brief may be. `solana` is a brief class with no
+ * pack of its own class yet (the sol.svm-* packs still declare 'solidity' until
+ * their plane exists), so this is one-directional and stays honest about it
+ * rather than widening SkillCls to cover a plane that does not run.
+ */
 function briefClassOf(skillCls: SkillCls): Cls {
   return skillCls;
 }
@@ -309,7 +337,12 @@ export function methodologyForBrief(brief: Brief): MethodologyForDispatch {
     const skill = selectSkills({ playbook: pick.skill_id, limit: 1 }).find((s) => s.id === pick.skill_id);
     if (!skill) return none(`skill-not-resolvable:${pick.skill_id}`);
 
-    const gate = checkInclusion(brief, briefClassOf(skill.cls));
+    // `checkInclusion` compares the PACK class against the BRIEF class, and the
+    // pack class is a SkillCls (narrower than Cls — `solana` is a brief class
+    // with no pack of its own class yet). `checkInclusion` accepts the narrow
+    // type and widens internally, so the pack class is passed through unchanged
+    // rather than round-tripped through briefClassOf() and re-widened.
+    const gate = checkInclusion(brief, skill.cls);
     if (!gate.ok) {
       if (gate.code === 'no-target-of-class') {
         // The headline case this gate exists for.

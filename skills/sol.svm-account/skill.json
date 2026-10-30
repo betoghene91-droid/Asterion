@@ -2,7 +2,7 @@
   "id": "sol.svm-account",
   "version": 1,
   "name": "Solana: unvalidated account substituted for a program-owned PDA",
-  "cls": "solidity",
+  "cls": "solana",
   "family": "account-validation",
   "requires": [
     "an Anchor program that reads state from an account it is supposed to own",
