@@ -19,12 +19,13 @@
  *    is the same `renderBrief()` output. If the UI ever grew its own compiler,
  *    that fails.
  *
- * 3. A PRE-EXISTING DEFECT IS PINNED, NOT FIXED. `authorizationFor` in index.ts
- *    builds `... WHERE id=?` and never binds `programId`, so no authorisation
- *    anchor can ever be resolved and the shipped free-text hunt path cannot reach
- *    the compiler at all. This change may not edit that function, so the defect is
- *    pinned here and reported. The test below documents the exact consequence
- *    rather than asserting a message text that depends on the SQLite driver.
+ * 3. THE B1 DEFECT IS FIXED, AND THIS FILE PROVES IT AT THE SHIPPED ENTRYPOINT.
+ *    `authorizationFor` in index.ts used to build `... WHERE id=?` without
+ *    binding `programId`, so no authorisation anchor could ever resolve and the
+ *    shipped free-text hunt path could not reach the compiler at all. The bind is
+ *    applied on branch `task3/hunt-loop`; the test that used to pin the defect now
+ *    pins the FIXED behaviour, and `hunt-loop.test.mjs` walks the whole loop
+ *    including the two negatives (401 without a session, no hunt row on denial).
  *
  * 4. APPROVAL RUNS THE SAME DISPATCH. `approveAndDispatch` is imported by both
  *    paths; the UI decision is checked against its ordering guarantees.
@@ -320,43 +321,50 @@ test('the UI refuses a target with no policy anchor, in the same words as the ch
   );
 });
 
-// ── claim 3: the pre-existing defect, pinned ───────────────────────────────
+// ── claim 3: B1 is fixed, and the shipped path proves it ────────────────
 
-test('[EXISTING DEFECT, PINNED] the shipped free-text hunt path can never reach the compiler', async () => {
-  // The program IS allowed and DOES carry a policy_url, so `authorizationFor`
-  // ought to return an anchor. It cannot: index.ts builds `... WHERE id=?` and
-  // never binds `programId`, so the anchor is never produced. Nothing in this
-  // change is permitted to edit that function - this test exists so the defect is
-  // recorded in executable form and its fix is visible when someone applies it.
+test('[B1 FIXED] the shipped free-text hunt path reaches the compiler for an authorised target', async () => {
+  // Before the fix this program was allowed and carried a policy_url, and was
+  // still refused: `authorizationFor` built `... WHERE id=?` and never bound
+  // `programId`, so the anchor could not resolve for ANY program. This assertion
+  // is deliberately the OPPOSITE of the one that recorded the defect, and it is
+  // strictly stronger than "returns non-null": it pins the anchor's own text, the
+  // Authorize button, and the queued row.
   const { raw, env } = makeEnv(chatEnv());
   seedProgram(raw);
 
   const { sent, errors } = await postTelegram(env, { message: { chat: { id: CHAT }, text: RAW } });
 
-  // The consequence that holds whichever way the driver treats an unbound
-  // placeholder: no engagement is ever created from the chat path, for a target
-  // that is fully authorised.
-  assert.equal(
-    raw.prepare('SELECT COUNT(*) AS n FROM approvals').get().n,
-    0,
-    'the webhook cannot queue an engagement for an authorised target',
-  );
+  assert.deepEqual(errors, [], 'the update must not fail; a binding error here would BE the old defect');
 
   const card = sent.find((s) => s.url.includes('/sendMessage'));
-  if (card) {
-    assert.match(card.body.text, /NO AUTHORIZATION ON FILE/);
-    assert.ok(!/ENGAGEMENT/.test(card.body.text), 'a brief must never be produced here');
-  } else {
-    // node:sqlite raises on the unbound parameter instead of returning no rows, so
-    // the update dies before any message is sent. Cloudflare D1 has its own
-    // binding error. Either way the operator gets nothing.
-    assert.ok(errors.length > 0, 'if nothing was sent, the update must have failed loudly');
-  }
+  assert.ok(card, 'the webhook must answer an authorised target');
+  assert.match(card.body.text, /ENGAGEMENT/);
+  assert.ok(
+    !/NO AUTHORIZATION ON FILE/.test(card.body.text),
+    'an authorised program must never be refused',
+  );
+  // The anchor that resolved is THIS program's policy URL, not another row's.
+  assert.match(card.body.text, /app\.example\.com\/security permits automated testing/);
+
+  // The Authorize button the operator taps next.
+  const buttons = card.body.reply_markup.inline_keyboard.flat();
+  assert.ok(
+    buttons.some((b) => /^ok:/.test(String(b.callback_data))),
+    'the brief must render an Authorize button',
+  );
+
+  assert.equal(
+    raw.prepare('SELECT COUNT(*) AS n FROM approvals').get().n,
+    1,
+    'exactly one engagement may be queued for one request',
+  );
 });
 
-test('the UI reaches the compiler for the target the webhook cannot', async () => {
-  // Same seeds, same text, same authorisation - only the entry point differs.
-  // This is the whole point of the UI: a working path to the existing engine.
+test('the UI reaches the compiler for the same target, over the same seeds', async () => {
+  // Same seeds, same text, same authorisation, different entry point. Both
+  // paths must produce a brief and exactly one queued approval; the webhook's
+  // half of that is claim 3 above, so the two are now truly in parity.
   const { raw, env } = makeEnv(chatEnv());
   seedProgram(raw);
   const ui = await (await postUi(env, '/api/ui/engage', { text: RAW })).json();

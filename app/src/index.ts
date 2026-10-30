@@ -560,9 +560,15 @@ async function ensureSelfProgram(env: Env, raw: string): Promise<string> {
 }
 
 async function authorizationFor(env: Env, programId: string): Promise<string | null> {
+  // B1. `WHERE id=?` without `.bind(programId)` is not a query for this program:
+  // D1 rejects the unbound placeholder and node:sqlite raises, so the anchor was
+  // never resolved for ANY program and the free-text path was 100% dead. The
+  // bind is the whole fix; the branch logic below was always correct.
   const row = await env.DB.prepare(
     'SELECT automation, policy_url, policy_text FROM programs WHERE id=?',
-  ).first<{ automation: string; policy_url: string | null; policy_text: string | null }>();
+  )
+    .bind(programId)
+    .first<{ automation: string; policy_url: string | null; policy_text: string | null }>();
   if (!row) return null;
   if (row.automation === 'prohibited') return null;
   if (row.automation === 'allowed' && row.policy_url) {
