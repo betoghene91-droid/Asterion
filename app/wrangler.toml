@@ -47,6 +47,13 @@ ALERT_FLOOR = "medium"
 DAILY_LLM_BUDGET = "200000"
 DAILY_SUBREQUEST_BUDGET = "40000"
 OPERATOR_NAME = "jennifer"
+# The bot whose chat the Mini App is launched from. shell.ts serves it in
+# /api/ui/session as `bot`, and ui.js turns it into the signed-out screen's
+# primary action: https://t.me/<bot>?startapp . Without it the console renders
+# instruction text instead of a tappable deep link, so an operator on a plain
+# browser tab has no path back into Telegram. This is a PUBLIC handle, not a
+# secret: it is visible in every t.me link. The token stays a Worker secret.
+TELEGRAM_BOT_USERNAME = "Mayor_own_bot"
 # Local-first LLM. Empty means "use hosted free tiers".
 # Point LLM_LOCAL_BASE at your own tabbyapi / vLLM / Ollama OpenAI endpoint.
 LLM_LOCAL_BASE = ""
