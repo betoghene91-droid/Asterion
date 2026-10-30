@@ -1,0 +1,9 @@
+[⠊] Compiling...
+No files changed, compilation skipped
+
+Ran 1 test for test/test_reentrancy_118.t.sol:Vault_PoC
+[PASS] test_reentrancy_118_nocond() (gas: 96214)
+Logs:
+  nocond delta=-1000000000000000000
+
+Suite result: ok. 1 passed; 0 failed; 0 skipped; finished in 1.11s

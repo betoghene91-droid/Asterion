@@ -1,0 +1,45 @@
+{
+  "hunt_id": "hunt_7c41e0b9",
+  "contract": "Vault",
+  "commit": "9f2c1ab4d6e8570c3b1e9a4d5f60718293a4b5c6",
+  "corpus_rows": 181357,
+  "corpus_error": null,
+  "leads_found": 0,
+  "attempts": 1,
+  "proven": 1,
+  "partial": 0,
+  "disproved": 0,
+  "inconclusive": 0,
+  "unprovable": 0,
+  "verdicts": [
+    {
+      "test_name": "test_reentrancy_118",
+      "playbook": "sol.reentrancy",
+      "file": "src/Vault.sol",
+      "line": 118,
+      "claim": {
+        "kind": "value_transfer",
+        "description": "attacker withdraws more than deposited via reentrant callback"
+      },
+      "verdict": "proven",
+      "confidence": "confirmed",
+      "reasons": [
+        "the PoC test fails on the pinned commit with a real assertion",
+        "removing the precondition makes the test pass, confirming the mechanism",
+        "measured effect: 100000000000000000000 -> 101000000000000000000"
+      ],
+      "proven_claim": "attacker-controlled ether before and after a reentrant withdrawal (delta logged)",
+      "exit_code": 1,
+      "counterfactual": {
+        "mechanism": "without_precondition",
+        "test_name": "test_reentrancy_118_nocond"
+      },
+      "impact": {
+        "kind": "value_transfer",
+        "before": "100000000000000000000",
+        "after": "101000000000000000000"
+      }
+    }
+  ],
+  "limitations": []
+}
