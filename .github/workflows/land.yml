@@ -1,0 +1,480 @@
+name: land
+
+# ---------------------------------------------------------------------------
+# land.yml — ADDITIVE payload installer for this repository.
+#
+# What it is for
+#   Landing new work (a "payload" zip) into an existing repo WITHOUT changing
+#   anything already there. fix-tree.yml does the opposite: it wipes the whole
+#   tree and restores a fixed snapshot. Running fix-tree.yml after landing new
+#   work would destroy that work. This workflow is the safe counterpart.
+#
+# The one property that matters
+#   It only ever OVERWRITES/ADDS the files listed in the payload's MANIFEST.
+#   It never deletes a file, never removes a directory, never runs `git clean`,
+#   `git reset --hard`, or `rm -rf` over the tree, and never writes inside .git.
+#   A file that exists before the run and is absent from the payload is still
+#   there afterwards — byte for byte.
+#
+# Fail closed
+#   The identical gate that deploy.yml runs must be green, on the applied tree,
+#   BEFORE anything is committed. If a single gate step is red, the job fails,
+#   prints which step was red, and commits nothing.
+#
+# Reusable
+#   It takes the payload URL as an input, so the SAME workflow (this file,
+#   unchanged) lands the builds payload today and the UI payload later.
+#   See payload/REPORT-installer.md for the bootstrap + usage steps.
+# ---------------------------------------------------------------------------
+
+on:
+  workflow_dispatch:
+    inputs:
+      payload_url:
+        description: 'Direct URL of the payload zip (e.g. a Neo unlisted file URL)'
+        required: true
+        type: string
+      payload_name:
+        description: 'Short label for this payload, e.g. builds-v1 or ui-v1'
+        required: true
+        type: string
+      base_commit:
+        description: 'Full 40-char sha of the commit main must be at (refuses otherwise)'
+        required: true
+        type: string
+      target_branch:
+        description: 'Branch to commit onto. Keep "main" for a normal land.'
+        required: false
+        default: main
+        type: string
+      allow_workflow_overwrite:
+        description: 'Allow overwriting an EXISTING .github/workflows file. fix-tree.yml and land.yml are protected regardless.'
+        required: false
+        default: false
+        type: boolean
+
+# One landing at a time per branch, and do not cancel a landing half way through
+# a commit. A second landing waits.
+concurrency:
+  group: land-${{ inputs.target_branch }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  land:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ---------------------------------------------------------------------
+      # 1. Refuse to start unless the repo is exactly at the expected base.
+      # ---------------------------------------------------------------------
+      - name: Verify the base commit
+        id: basecheck
+        env:
+          EXPECTED_BASE: ${{ inputs.base_commit }}
+          TARGET_BRANCH: ${{ inputs.target_branch }}
+        run: |
+          set -euo pipefail
+          refuse() { echo "REFUSED: $*" >&2; exit 1; }
+
+          case "$EXPECTED_BASE" in
+            *[!0-9a-f]*|'') refuse "base_commit must be a full lowercase 40-char sha (got: '$EXPECTED_BASE')" ;;
+          esac
+          [ "${#EXPECTED_BASE}" -eq 40 ] || refuse "base_commit must be 40 characters, got ${#EXPECTED_BASE}"
+
+          head_sha=$(git rev-parse HEAD)
+          echo "HEAD          = $head_sha"
+          echo "expected base = $EXPECTED_BASE"
+          [ "$head_sha" = "$EXPECTED_BASE" ] || \
+            refuse "checkout is at $head_sha but you asked for base $EXPECTED_BASE. Nothing was changed."
+
+          # The base must also still be the tip of the target branch: if someone
+          # pushed in the meantime, applying onto a stale base would be wrong.
+          git fetch --quiet --no-tags origin "$TARGET_BRANCH" || true
+          remote_sha=$(git rev-parse --verify --quiet "origin/$TARGET_BRANCH" || echo "")
+          if [ -n "$remote_sha" ]; then
+            echo "origin/$TARGET_BRANCH = $remote_sha"
+            [ "$remote_sha" = "$EXPECTED_BASE" ] || \
+              refuse "origin/$TARGET_BRANCH has moved to $remote_sha; re-run with that sha or rebase the payload. Nothing was changed."
+          else
+            echo "origin/$TARGET_BRANCH not found (branch does not exist yet) - skipping the tip check"
+          fi
+
+          # A clean starting tree makes the later "only the payload may be staged"
+          # proof meaningful. The runner checkout is always clean; assert it.
+          dirty=$(git status --porcelain | wc -l)
+          [ "$dirty" -eq 0 ] || refuse "working tree is not clean ($dirty entries). Nothing was changed."
+          echo "base verified: clean tree at $head_sha, $(git ls-files | wc -l) tracked files"
+
+      # ---------------------------------------------------------------------
+      # 2. Fetch the payload.
+      # ---------------------------------------------------------------------
+      - name: Download the payload zip
+        id: download
+        env:
+          PAYLOAD_URL: ${{ inputs.payload_url }}
+        run: |
+          set -euo pipefail
+          refuse() { echo "REFUSED: $*" >&2; exit 1; }
+          zip=/tmp/payload.zip
+          curl -fsSL --retry 3 --retry-delay 2 -o "$zip" "$PAYLOAD_URL" \
+            || refuse "download failed: $PAYLOAD_URL"
+          bytes=$(stat -c%s "$zip")
+          [ "$bytes" -gt 0 ] || refuse "downloaded an empty file from $PAYLOAD_URL"
+          unzip -tq "$zip" >/dev/null || refuse "downloaded file is not a valid zip"
+          echo "payload bytes : $bytes"
+          echo "payload sha256: $(sha256sum "$zip" | cut -d' ' -f1)"
+
+      # ---------------------------------------------------------------------
+      # 3. Unpack to a staging area OUTSIDE the repo and refuse anything unsafe.
+      #    Nothing in the payload has touched the repo at this point.
+      # ---------------------------------------------------------------------
+      - name: Stage and inspect the payload (refuse anything unsafe)
+        id: inspect
+        env:
+          STAGE_DIR: ${{ runner.temp }}/payload-stage
+          ENTRIES_FILE: ${{ runner.temp }}/payload-entries.txt
+          PATHS_FILE: ${{ runner.temp }}/payload-paths.txt
+          META_FILE: ${{ runner.temp }}/payload-meta.txt
+          EXPECTED_NAME: ${{ inputs.payload_name }}
+          EXPECTED_BASE: ${{ inputs.base_commit }}
+          ALLOW_WF_OVERWRITE: ${{ inputs.allow_workflow_overwrite }}
+        run: |
+          set -euo pipefail
+          refuse() { echo "REFUSED: $*" >&2; exit 1; }
+
+          rm -rf "$STAGE_DIR"; mkdir -p "$STAGE_DIR"
+          unzip -q -o /tmp/payload.zip -d "$STAGE_DIR" || refuse "unzip failed"
+
+          [ -f "$STAGE_DIR/MANIFEST" ] || \
+            refuse "payload has no MANIFEST at its root; it was not built by pack-payload.sh. Nothing was changed."
+
+          # --- the payload itself must be plain: no .git, no symlinks, no dirs-into-nothing
+          if [ -n "$(find "$STAGE_DIR" -name '.git' -print -quit)" ]; then
+            refuse "payload contains a .git entry - refusing to touch git metadata"
+          fi
+          links=$(find "$STAGE_DIR" -type l -print)
+          [ -z "$links" ] || refuse "payload contains symlinks, which this workflow will not install: $links"
+
+          # --- validate the manifest shape and every declared path
+          grep -v '^#' "$STAGE_DIR/MANIFEST" | sed '/^[[:space:]]*$/d' > "$ENTRIES_FILE"
+          [ -s "$ENTRIES_FILE" ] || refuse "MANIFEST lists no files"
+          grep -vE '^[0-9a-f]{64}  [A-Za-z0-9._/-]+$' "$ENTRIES_FILE" > "$ENTRIES_FILE.bad" || true
+          if [ -s "$ENTRIES_FILE.bad" ]; then
+            echo "--- malformed MANIFEST lines ---"; cat "$ENTRIES_FILE.bad"
+            refuse "MANIFEST has lines that are not '<64-hex sha256>  <relative/path>'"
+          fi
+          awk '{print $2}' "$ENTRIES_FILE" | LC_ALL=C sort > "$PATHS_FILE"
+          dupes=$(uniq -d "$PATHS_FILE")
+          [ -z "$dupes" ] || refuse "MANIFEST lists the same path twice: $dupes"
+          real_count=$(wc -l < "$PATHS_FILE" | tr -d ' ')
+
+          while IFS= read -r p; do
+            case "$p" in
+              /*)          refuse "MANIFEST path is absolute: $p" ;;
+              ..|../*|*/../*|*/..) refuse "MANIFEST path escapes the repo root: $p" ;;
+              .git|.git/*) refuse "MANIFEST path touches .git: $p" ;;
+            esac
+            case "$p" in
+              *[!A-Za-z0-9._/-]*) refuse "MANIFEST path has characters outside [A-Za-z0-9._/-]: $p" ;;
+            esac
+            [ -f "$STAGE_DIR/$p" ] || refuse "MANIFEST declares a file the zip does not contain: $p"
+            if [ -d "$p" ]; then refuse "MANIFEST path collides with a directory already in the repo: $p"; fi
+            # if the destination exists it must be a regular file (never write
+            # through a symlink or into a fifo/device)
+            if [ -e "$p" ] && [ ! -f "$p" ]; then refuse "destination exists and is not a regular file: $p"; fi
+          done < "$PATHS_FILE"
+
+          # --- prove the zip content matches its own MANIFEST BEFORE writing
+          #     anything into the repository. A tampered or truncated zip is
+          #     refused here, with the repo still untouched.
+          if ! ( cd "$STAGE_DIR" && sha256sum -c "$ENTRIES_FILE" ) > /tmp/precheck.out 2>&1; then
+            echo "--- pre-apply integrity output ---"; cat /tmp/precheck.out
+            refuse "payload content does not match its own MANIFEST"
+          fi
+          echo "pre-apply integrity: all $real_count declared file(s) match the MANIFEST"
+
+          # --- refuse surprise files: everything regular in the zip must be declared
+          find "$STAGE_DIR" -type f -print | sed "s|^$STAGE_DIR/||" \
+            | grep -v '^MANIFEST$' | LC_ALL=C sort > "$ENTRIES_FILE.actual"
+          undeclared=$(comm -23 "$ENTRIES_FILE.actual" "$PATHS_FILE")
+          if [ -n "$undeclared" ]; then
+            echo "--- files in the zip that the MANIFEST does not declare ---"; echo "$undeclared"
+            refuse "payload would write files it does not declare; rebuild it with pack-payload.sh"
+          fi
+
+          # --- never overwrite an existing workflow file
+          protected=""
+          while IFS= read -r p; do
+            case "$p" in
+              .github/workflows/*)
+                case "$p" in
+                  .github/workflows/fix-tree.yml|.github/workflows/land.yml)
+                    protected="$protected $p" ;;
+                  *)
+                    if [ -e "$p" ] && [ "$ALLOW_WF_OVERWRITE" != "true" ]; then
+                      protected="$protected $p"
+                    fi ;;
+                esac ;;
+            esac
+          done < "$PATHS_FILE"
+          if [ -n "$protected" ]; then
+            refuse "payload would overwrite protected workflow file(s):$protected"
+          fi
+
+          # --- cross-check the manifest metadata against the inputs
+          meta=$(grep '^#' "$STAGE_DIR/MANIFEST" | sed 's/^# *//')
+          printf '%s\n' "$meta" > "$META_FILE"
+          m_name=$(printf '%s\n' "$meta"  | sed -n 's/^payload-name: *//p')
+          m_base=$(printf '%s\n' "$meta"  | sed -n 's/^base-commit: *//p')
+          m_count=$(printf '%s\n' "$meta" | sed -n 's/^file-count: *//p')
+          echo "manifest payload-name: ${m_name:-<none>}"
+          echo "manifest base-commit : ${m_base:-<none>}"
+          echo "manifest file-count  : ${m_count:-<none>} (declared paths: $real_count)"
+          [ -z "$m_name" ] || [ "$m_name" = "$EXPECTED_NAME" ] || \
+            refuse "payload_name input is '$EXPECTED_NAME' but the manifest says '$m_name'"
+          if [ -n "$m_base" ] && [ "$m_base" != "unknown" ]; then
+            if [ "$m_base" = "$EXPECTED_BASE" ]; then
+              echo "payload base-commit matches the requested base"
+            else
+              # Deliberately NOT fatal. base_commit already pins the tree (it is
+              # checked against both HEAD and the origin tip), and a payload
+              # stops matching its own recorded base the moment it lands once --
+              # which is precisely the re-run / idempotency case. The apply step
+              # still refuses this run if it would change anything at all.
+              echo "NOTE: this payload was built against $m_base and you asked for"
+              echo "      base $EXPECTED_BASE, so this run may only confirm it is"
+              echo "      already applied. The apply step refuses if it would change"
+              echo "      any file."
+            fi
+          fi
+          if [ -n "$m_count" ]; then
+            [ "$m_count" = "$real_count" ] || \
+              refuse "manifest file-count $m_count does not match its $real_count declared paths"
+          fi
+
+          echo "OK: payload inspected, $real_count declared file(s), nothing applied yet"
+
+      # ---------------------------------------------------------------------
+      # 4. Apply. Copy declared files over their repo paths. Delete nothing.
+      # ---------------------------------------------------------------------
+      - name: Apply the payload - additive, overwrite and add only
+        id: apply
+        env:
+          STAGE_DIR: ${{ runner.temp }}/payload-stage
+          PATHS_FILE: ${{ runner.temp }}/payload-paths.txt
+          META_FILE: ${{ runner.temp }}/payload-meta.txt
+          EXPECTED_BASE: ${{ inputs.base_commit }}
+        run: |
+          set -euo pipefail
+          refuse() { echo "REFUSED: $*" >&2; exit 1; }
+
+          # If the payload was cut from a base other than the one requested, it
+          # was built against a different tree. It could silently revert newer
+          # content, so in that case this run may ONLY confirm the payload is
+          # already applied. This is what makes a re-run a no-op instead of a
+          # refusal, without letting a stale payload overwrite newer work.
+          m_base=$(sed -n 's/^# *base-commit: *//p' "$META_FILE")
+          if [ -n "$m_base" ] && [ "$m_base" != "unknown" ] && [ "$m_base" != "$EXPECTED_BASE" ]; then
+            echo "payload base $m_base != requested base $EXPECTED_BASE -> no-op-only mode"
+            would_change=""
+            while IFS= read -r p; do
+              if [ ! -f "$p" ]; then
+                would_change="$would_change $p(new)"
+              elif ! cmp -s -- "$STAGE_DIR/$p" "$p"; then
+                would_change="$would_change $p(differs)"
+              fi
+            done < "$PATHS_FILE"
+            if [ -n "$would_change" ]; then
+              echo "--- this payload would change ---"
+              printf '%s\n' $would_change
+              refuse "payload was built against $m_base and would change the tree at $EXPECTED_BASE. Rebuild it against the current base instead (pack-payload.sh -b $EXPECTED_BASE)."
+            fi
+            echo "already applied: every declared file already matches this payload - nothing to do"
+          fi
+
+          # There is deliberately no rm, no git clean, no git reset, no prune in
+          # this step. Files not named in the payload cannot be reached by it.
+          applied=0
+          identical=0
+          while IFS= read -r p; do
+            if [ -f "$p" ] && cmp -s -- "$STAGE_DIR/$p" "$p"; then
+              identical=$((identical + 1))
+              continue
+            fi
+            mkdir -p -- "$(dirname -- "$p")"
+            cp -f -- "$STAGE_DIR/$p" "$p" || refuse "copy failed for $p"
+            # carry the recorded mode across (git tracks the executable bit)
+            chmod --reference="$STAGE_DIR/$p" "$p" 2>/dev/null || true
+            applied=$((applied + 1))
+          done < "$PATHS_FILE"
+
+          echo "files copied/updated : $applied"
+          echo "files already identical: $identical"
+          echo "--- git sees ---"
+          git status --porcelain --untracked-files=all -- $(tr '\n' ' ' < "$PATHS_FILE") || true
+
+      # ---------------------------------------------------------------------
+      # 5. Verify the manifest really landed (presence AND content).
+      # ---------------------------------------------------------------------
+      - name: Verify the MANIFEST landed
+        id: verify
+        env:
+          STAGE_DIR: ${{ runner.temp }}/payload-stage
+          ENTRIES_FILE: ${{ runner.temp }}/payload-entries.txt
+        run: |
+          set -euo pipefail
+          refuse() { echo "REFUSED: $*" >&2; exit 1; }
+          cp -- "$ENTRIES_FILE" /tmp/manifest-check.txt
+          if ! sha256sum -c /tmp/manifest-check.txt > /tmp/manifest-check.out 2>&1; then
+            echo "--- manifest verification output ---"
+            cat /tmp/manifest-check.out
+            refuse "the applied files do not match the payload MANIFEST"
+          fi
+          total=$(wc -l < /tmp/manifest-check.txt | tr -d ' ')
+          ok=$(grep -c ': OK$' /tmp/manifest-check.out || true)
+          echo "manifest verified: $ok/$total declared file(s) present with the expected content"
+          [ "$ok" = "$total" ] || refuse "only $ok of $total declared files verified"
+
+      # ---------------------------------------------------------------------
+      # 6. THE GATE. These are the exact commands deploy.yml runs, in the same
+      #    order, with the same working directory (app/) and the same Node
+      #    version + npm cache settings. Anything committed here has already
+      #    passed what a deploy would require.
+      # ---------------------------------------------------------------------
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: install
+        id: install
+        working-directory: app
+        run: npm ci --no-audit --no-fund
+
+      - name: typecheck
+        id: typecheck
+        working-directory: app
+        run: npx tsc --noEmit
+
+      - name: full test suite
+        id: tests
+        working-directory: app
+        run: npm test
+
+      - name: digest invariant check
+        id: digest
+        working-directory: app
+        run: node scripts/load-corpus.mjs --check
+
+      - name: detector tests
+        id: detector
+        working-directory: app
+        run: python3 tools/test_detect.py
+
+      - name: normaliser tests
+        id: normaliser
+        working-directory: app
+        run: python3 tools/normalize.py --selftest
+
+      - name: eval arithmetic self-test
+        id: eval
+        working-directory: app
+        run: python3 eval/ingest-more.py --selftest
+
+      - name: Report which gate step failed
+        id: gateresult
+        if: failure()
+        env:
+          OUTCOME_INSTALL:    ${{ steps.install.outcome }}
+          OUTCOME_TYPECHECK:  ${{ steps.typecheck.outcome }}
+          OUTCOME_TESTS:      ${{ steps.tests.outcome }}
+          OUTCOME_DIGEST:     ${{ steps.digest.outcome }}
+          OUTCOME_DETECTOR:   ${{ steps.detector.outcome }}
+          OUTCOME_NORMALISER: ${{ steps.normaliser.outcome }}
+          OUTCOME_EVAL:       ${{ steps.eval.outcome }}
+        run: |
+          set -o pipefail
+          echo "GATE IS RED - refusing to commit. Nothing has been committed or pushed."
+          for pair in \
+            "install=${OUTCOME_INSTALL:-not-run}" \
+            "typecheck=${OUTCOME_TYPECHECK:-not-run}" \
+            "full test suite=${OUTCOME_TESTS:-not-run}" \
+            "digest invariant check=${OUTCOME_DIGEST:-not-run}" \
+            "detector tests=${OUTCOME_DETECTOR:-not-run}" \
+            "normaliser tests=${OUTCOME_NORMALISER:-not-run}" \
+            "eval arithmetic self-test=${OUTCOME_EVAL:-not-run}"
+          do
+            name=${pair%%=*}
+            outcome=${pair#*=}
+            printf '  %-26s %s\n' "$name" "$outcome"
+          done
+          red=$(for pair in "${OUTCOME_INSTALL:-skip}" "${OUTCOME_TYPECHECK:-skip}" "${OUTCOME_TESTS:-skip}" "${OUTCOME_DIGEST:-skip}" "${OUTCOME_DETECTOR:-skip}" "${OUTCOME_NORMALISER:-skip}" "${OUTCOME_EVAL:-skip}"; do
+                  [ "$pair" = failure ] && echo x; done | wc -l | tr -d ' ')
+          echo "failing step count: $red"
+          exit 1
+
+      # ---------------------------------------------------------------------
+      # 7. Commit ONLY on green, and only the payload's own paths.
+      # ---------------------------------------------------------------------
+      - name: Commit and push (green gate only)
+        id: commit
+        if: success()
+        env:
+          PATHS_FILE: ${{ runner.temp }}/payload-paths.txt
+          ENTRIES_FILE: ${{ runner.temp }}/payload-entries.txt
+          PAYLOAD_NAME: ${{ inputs.payload_name }}
+          TARGET_BRANCH: ${{ inputs.target_branch }}
+          BASE_COMMIT: ${{ inputs.base_commit }}
+        run: |
+          set -euo pipefail
+          refuse() { echo "REFUSED: $*" >&2; exit 1; }
+
+          git config user.name  'land'
+          git config user.email 'land@users.noreply.github.com'
+
+          # Stage ONLY what the payload declared. Deliberately not `git add -A`:
+          # build output, caches, and any unrelated local change must not ride
+          # along into this commit.
+          mapfile -t paths < "$PATHS_FILE"
+          git add -- "${paths[@]}"
+
+          staged=$(git diff --cached --name-only | LC_ALL=C sort)
+          if [ -z "$staged" ]; then
+            echo "NO-OP: the payload is already applied - every declared file already matched."
+            echo "Nothing staged, nothing committed, nothing pushed."
+            exit 0
+          fi
+
+          # Safety proof: nothing outside the payload may be staged.
+          outside=$(comm -23 <(printf '%s\n' "$staged") "$PATHS_FILE")
+          if [ -n "$outside" ]; then
+            echo "--- staged but not declared by the payload ---"; echo "$outside"
+            refuse "refusing to commit files that are not part of the payload"
+          fi
+
+          changed=$(printf '%s\n' "$staged" | wc -l | tr -d ' ')
+          total=$(wc -l < "$PATHS_FILE" | tr -d ' ')
+          echo "staging $changed of $total declared file(s):"
+          printf '  %s\n' $staged
+
+          {
+            printf 'land(%s): apply payload onto %s\n\n' "$PAYLOAD_NAME" "${BASE_COMMIT:0:12}"
+            printf 'Additive payload install: %s of %s declared file(s) changed.\n' "$changed" "$total"
+            printf 'Gate passed on the applied tree before this commit. That is the same\n'
+            printf 'gate deploy.yml runs: npm ci, npx tsc --noEmit, npm test,\n'
+            printf 'load-corpus --check, test_detect.py, normalize.py --selftest,\n'
+            printf 'and ingest-more.py --selftest.\n\n'
+            printf 'No file was deleted: only paths listed in the payload MANIFEST were written.\n'
+          } | git commit -q -F -
+
+          git --no-pager log -1 --stat --oneline
+          git push origin "HEAD:${TARGET_BRANCH}"
+          echo "LANDED $PAYLOAD_NAME onto $TARGET_BRANCH: $(git rev-parse HEAD)"
