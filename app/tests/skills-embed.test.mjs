@@ -48,12 +48,19 @@ function packsOnDisk() {
     .sort();
 }
 
-test('all 25 packs exist on disk and every one is loadable', () => {
+test('every pack on disk exists and every one is loadable', () => {
   const packs = packsOnDisk();
-  assert.equal(packs.length, 25, `expected 25 packs on disk, found ${packs.length}`);
+  // The count is derived from disk, not a literal. A hardcoded 25 was correct
+  // once and then silently pinned the catalog to a stale size: adding three
+  // honest packs (sol.svm-signer / sol.svm-account / sol.svm-cpi) made this
+  // fail for no defect. What must be true is that disk and the loader AGREE,
+  // which the deepEqual below checks; the absolute number is deliberately not
+  // asserted here (skills.test.mjs owns EXPECTED_ALL, where an intentional
+  // addition is supposed to be a deliberate edit).
+  assert.ok(packs.length > 0, 'no pack directories found — wrong SKILLS_ROOT?');
 
   const loaded = listSkills({ root: SKILLS_ROOT });
-  assert.equal(loaded.length, 25, `expected 25 loadable packs, got ${loaded.length}`);
+  assert.equal(loaded.length, packs.length, `expected ${packs.length} loadable packs, got ${loaded.length}`);
   assert.deepEqual(
     loaded.map((s) => s.id).sort(),
     packs,
@@ -79,13 +86,17 @@ test('the probe really is what disables the filesystem path', () => {
   assert.equal(getSkill('web.cors', { root: NO_ROOT }), null);
 });
 
-test('the same 25 packs load with NO filesystem, from the embedded bundle', async () => {
+test('the same packs load with NO filesystem, from the embedded bundle', async () => {
   const embedded = await loadFsLess('bundle');
   const packs = packsOnDisk();
 
   // No root and no filesystem: SKILLS_EMBED is the only reachable source.
+  // Count comes from disk so the assertion is "embed matches disk", which is
+  // the property that actually matters — a stale embed shipping 25 bodies while
+  // 28 packs exist is the failure this file was written to catch, and it is
+  // caught by the deepEqual below rather than by a literal.
   const fromEmbed = embedded.listSkills();
-  assert.equal(fromEmbed.length, 25, `expected 25 embedded packs, got ${fromEmbed.length}`);
+  assert.equal(fromEmbed.length, packs.length, `expected ${packs.length} embedded packs, got ${fromEmbed.length}`);
   assert.deepEqual(fromEmbed.map((s) => s.id).sort(), packs, 'embedded catalog must match disk exactly');
 
   for (const id of packs) {
@@ -124,7 +135,12 @@ test('the embedded bundle carries SKILL.md body text, not just metadata', () => 
   // prompt got no methodology — the exact half-fix this guards against.
   const src = readFileSync(join(APP, 'src', 'skills-embed.ts'), 'utf8');
   const bodies = (src.match(/body:/g) ?? []).length;
-  assert.ok(bodies >= 25, `skills-embed.ts must carry >= 25 bodies, found ${bodies}`);
+  // One body per pack on disk. Derived, so this cannot rot into a literal that
+  // under-counts a growing catalog, and still catches a metadata-only embed.
+  assert.ok(
+    bodies >= packsOnDisk().length,
+    `skills-embed.ts must carry one body per pack (>= ${packsOnDisk().length}), found ${bodies}`,
+  );
 
   const md = readFileSync(join(SKILLS_ROOT, 'sol.reentrancy', 'SKILL.md'), 'utf8');
   const firstLine = md.trim().split('\n')[0].replace(/^#\s*/, '');

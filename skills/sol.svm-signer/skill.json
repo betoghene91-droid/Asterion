@@ -1,0 +1,36 @@
+{
+  "id": "sol.svm-signer",
+  "version": 1,
+  "name": "Solana: account accepted without the signer or authority it requires",
+  "cls": "solidity",
+  "family": "signer-authority",
+  "requires": [
+    "an Anchor program whose instruction takes an authority or owner account",
+    "the program id, deployed on a cluster a local validator can reach",
+    "instruction data built from the IDL, because Solana has no ABI-less fallback",
+    "a funded payer keypair, and a validator cloned from the cluster under test",
+    "STATE_ACCOUNT (the PDA holding the authority field) and the authority it records"
+  ],
+  "questions": [
+    "Does the instruction declare the authority as `Signer<'info>` in the Accounts struct, or as `UncheckedAccount` with the check done by hand in the handler body?",
+    "When the handler validates the authority, does it compare the key against the authority stored in an account, or only assert `authority.is_signer`?",
+    "Can an account that signs its own transaction satisfy the check without being the account the program recorded at initialization time?",
+    "Is the authority constraint expressed as `has_one = authority` on the state account, which Anchor enforces before the handler runs?",
+    "Does any instruction in the program accept an optional authority (`Option<Signer>`) where None skips the comparison entirely?",
+    "If a PDA signs via `invoke_signed`, does the seed list include a field the caller can choose, letting an attacker derive a signing PDA?",
+    "After the suspect instruction succeeds, which account's bytes record the new authority, and can that write be read back without a second transaction?"
+  ],
+  "false_positives": [
+    "`Signer<'info>` plus `has_one = authority` on the state account: Anchor enforces both before any handler code executes",
+    "The authority is compared with `require_keys_eq!` inside the handler, which is a real check even though it is not a struct constraint",
+    "The instruction is reachable only through a program-derived address that the program signs for with seeds the caller cannot influence",
+    "The program records the authority but the suspect path only reads it, so a wrong signer can observe state and change nothing",
+    "A test-only instruction gated behind `#[cfg(feature = \"testing\")]` that is absent from the deployed bytecode"
+  ],
+  "poc_must_show": [
+    "a keypair the program has never seen, signing a real transaction the cluster accepts, that leaves the recorded authority field equal to the attacker key",
+    "the authority index measured before and after on the same local validator, with the fixture asserting it started at the victim's key",
+    "the error code the correctly-guarded control run returns, so a 2002 ConstraintSigner or 3010 AccountNotSigner is named as the guard working rather than reported as a failure"
+  ],
+  "impact_bar": "Reportable when an account holding no role can make the program record it as authority, or can move value the recorded authority controls, with the instruction and the resulting state read back. Informational when the wrong signer can only read state, or when the check exists and the harness simply passed the wrong account."
+}

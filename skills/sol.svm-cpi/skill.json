@@ -1,0 +1,36 @@
+{
+  "id": "sol.svm-cpi",
+  "version": 1,
+  "name": "Solana: arbitrary CPI where the caller chooses the target program",
+  "cls": "solidity",
+  "family": "cpi-confused-deputy",
+  "requires": [
+    "an Anchor program that performs a CPI and takes the target program id, or its account list, from the caller",
+    "the program id under test, and the program it is supposed to CPI into",
+    "a victim account holding lamports or tokens on the cluster being cloned",
+    "a local validator cloned from the cluster under test, so the victim holds real balances",
+    "instruction data built from the IDL that names the account positions driving the CPI"
+  ],
+  "questions": [
+    "Is the program id for the CPI a literal or a constant, or is it read from an account the caller passes in the remaining_accounts or the Accounts struct?",
+    "Does the handler check the passed program id with `require_keys_eq!(cpi_program.key(), expected)` before invoking it?",
+    "Are the accounts forwarded to the CPI derived by the program, or copied from the caller's list with `to_account_info()` on whatever was supplied?",
+    "When Anchor's `Program<'info, T>` type is used, does T pin the expected program, which makes a substituted program fail at deserialization?",
+    "Does the CPI transfer authority come from a PDA the program signs for, so the caller can redirect where value goes without holding the key?",
+    "Is the victim account validated as belonging to the program's own state, or can any account with a balance be passed and debited?",
+    "After a caller-directed CPI, which account's lamports changed, and is the change attributable to the CPI rather than to the transaction fee?"
+  ],
+  "false_positives": [
+    "The CPI program is a hardcoded constant or a `Program<'info, Token>` typed account, so Anchor rejects a substitute before the handler runs",
+    "The handler compares the passed program id against a stored or derived one and returns `InvalidProgramId` (3008), which is the guard working",
+    "The accounts are derived by the program from seeds and only the instruction data is caller-supplied",
+    "The CPI can be directed at another program but that program cannot touch the victim account, so nothing of value moves",
+    "The instruction is admin-gated, or the CPI path is only reachable from an already-signed program-owned account"
+  ],
+  "poc_must_show": [
+    "the victim account's lamport balance measured before and after on one validator, showing a decrease caused by the caller-directed CPI",
+    "the program id the CPI was actually pointed at, printed as evidence, so a reader can see it was caller-chosen and not the expected one",
+    "a control run passing the expected CPI program, showing the victim does not move, which attributes the loss to caller control of the target"
+  ],
+  "impact_bar": "Reportable when a caller-chosen CPI target causes a victim account the program holds authority over to lose lamports or tokens, quantified in lamports or token units. Informational when the CPI is redirectable but no account of value is reachable, or when the handler already pins the program and only the harness substituted it."
+}

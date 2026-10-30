@@ -42,6 +42,9 @@ const EXPECTED_SOL = [
   'sol.reentrancy',
   'sol.rounding',
   'sol.signature',
+  'sol.svm-account',
+  'sol.svm-cpi',
+  'sol.svm-signer',
   'sol.upgrade',
 ];
 
@@ -454,9 +457,23 @@ test('selectSkills puts the exact playbook first, then corpus weight descending'
   const w = (id) => weights[id] ?? 0;
   for (let i = 1; i < rest.length; i++) {
     assert.ok(
-      w(rest[i - 1]) > w(rest[i]),
+      w(rest[i - 1]) >= w(rest[i]),
       `weight order broken at ${rest[i - 1]} (${w(rest[i - 1])}) then ${rest[i]} (${w(rest[i])})`,
     );
+    // A tie is legitimate and is NOT free ordering. sol.svm-signer,
+    // sol.svm-account and sol.svm-cpi are n=0 classes with weight 0.0 in
+    // corpus-digest.json — unmeasured, not unprofitable — so with no weight
+    // supplied they tie with each other and with any other unweighted pack
+    // (web.graphql is the pre-existing one). The documented rule is then id
+    // ascending. A strict `>` here would force a fabricated nonzero weight onto
+    // an unmeasured class to make the test pass, which is exactly the v4 bug.
+    // Pin the tie-break instead, so the order stays total and deterministic.
+    if (w(rest[i - 1]) === w(rest[i])) {
+      assert.ok(
+        rest[i - 1] < rest[i],
+        `equal weights ${w(rest[i - 1])} must tie-break on id ascending, got ${rest[i - 1]} then ${rest[i]}`,
+      );
+    }
   }
 });
 
