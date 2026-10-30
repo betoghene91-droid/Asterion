@@ -42,7 +42,14 @@ export type ExitReason =
   | 'trail_stop'
   | 'time_stop'
   | 'liq_decay'
-  | 'dev_sell';
+  | 'dev_sell'
+  /**
+   * The position returned a multiple of its entry inside the window. This is the
+   * ONLY honest way a false negative gets recorded without a backtest: until the
+   * desk sampled its own forward marks, a killed token's aftermath was
+   * unmeasurable and every reason printed "unmeasured".
+   */
+  | 'take_profit';
 
 /** Executor refusals are not kills: nothing was wrong with the token. */
 export type RefusalReason =
@@ -121,6 +128,7 @@ export const EXIT_TEXT: Record<ExitReason, string> = {
   time_stop: 'no +15% within 4h — memecoin thesis decayed',
   liq_decay: 'pool liquidity fell more than 25% — rug precursor',
   dev_sell: 'dev/deployer wallet sold',
+  take_profit: 'position returned a multiple of entry inside the window',
 };
 
 export const REFUSAL_TEXT: Record<RefusalReason, string> = {

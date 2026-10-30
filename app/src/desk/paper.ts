@@ -19,16 +19,30 @@
  *     report can say which cost is eating the edge rather than lumping them into
  *     one "fees" number that hides the answer.
  *
- * What is NOT modelled (stated in DESK.md too):
- *   - MEV/sandwich cost on our own order. On a desk this size a real order can
- *     be sandwiched; paper mode silently assumes we are not. This makes paper
- *     results optimistic for any token thin enough to be worth sandwiching.
- *   - Failed transactions and retry cost. Paper fills either fill or refuse.
+ * What is NOT modelled here (see DESK.md too):
  *   - The bonding-curve portion of a pump.fun token's life.
  *   - Price between quotes. We fill at the quoted price plus impact.
+ *
+ * ## MEV and failed transactions ARE now modelled, as a named haircut
+ *
+ * Earlier versions listed sandwich cost and failed-transaction cost as
+ * unmodelled, which made every paper number structurally optimistic for exactly
+ * the thin tokens most worth sandwiching. They are now charged explicitly on
+ * every leg, entry and exit, from `EXECUTION_HAIRCUT` (default 60bps MEV + 40bps
+ * failed-transaction, 100bps total) with per-deploy overrides
+ * `DESK_MEV_HAIRCUT_BPS` / `DESK_FAILED_TX_BPS`.
+ *
+ * Two properties keep this honest rather than decorative:
+ *  - It is **separate from slippage**. Impact already models moving the pool;
+ *    the haircut models someone else moving it around us, plus the expected cost
+ *    of a transaction that does not land. Conflating them would let a large
+ *    impact cap hide MEV.
+ *  - It is **recorded per fill** (`mev_usd`, `failed_tx_usd`) so calibration can
+ *    say which assumption is eating the edge, and `/calib` prints both numbers.
+ *    A haircut nobody can see is indistinguishable from no haircut.
  */
 
-import { SLIPPAGE, type MarketSnapshot } from './types.js';
+import { EXECUTION_HAIRCUT, SLIPPAGE, type MarketSnapshot } from './types.js';
 
 export interface FillRequest {
   side: 'buy' | 'sell';
@@ -44,6 +58,10 @@ export interface FillRequest {
   priorityFeeUsd: number;
   /** Hard ceiling on the priority fee for one trade. */
   priorityFeeCapUsd: number;
+  /** MEV/sandwich haircut in bps. Defaults to the named constant. */
+  mevBps?: number;
+  /** Failed-transaction/retry haircut in bps. Defaults to the named constant. */
+  failedTxBps?: number;
 }
 
 export interface FillResult {
@@ -65,6 +83,12 @@ export interface FillResult {
   slippageUsd: number;
   /** Fraction. Reported separately from the USD cost so bps can be compared to caps. */
   priceImpact: number;
+  /** MEV/sandwich cost charged on this leg, USD. */
+  mevUsd: number;
+  /** Failed-transaction/retry cost charged on this leg, USD. */
+  failedTxUsd: number;
+  /** The haircut in bps that was actually applied, for the record. */
+  haircutBps: number;
 }
 
 /**
@@ -104,11 +128,18 @@ export function simulateFill(req: FillRequest): FillResult {
     prioFeeUsd: 0,
     slippageUsd: 0,
     priceImpact: 0,
+    mevUsd: 0,
+    failedTxUsd: 0,
+    haircutBps: 0,
   });
 
   if (!(notionalUsd > 0) || !(priceUsd > 0) || !(liqUsd > 0)) {
     return reject('size_exceeds_pool_share', 'invalid fill inputs (non-positive size, price or liquidity)');
   }
+
+  const mevBps = req.mevBps ?? EXECUTION_HAIRCUT.mevBps;
+  const failedTxBps = req.failedTxBps ?? EXECUTION_HAIRCUT.failedTxBps;
+  const haircutBps = mevBps + failedTxBps;
 
   // ── 1% pool share: absolute refusal ────────────────────────────────────
   const poolShare = notionalUsd / liqUsd;
@@ -145,6 +176,11 @@ export function simulateFill(req: FillRequest): FillResult {
   // Slippage cost in USD is impact x notional (the difference between the quoted
   // and executed notional at the quoted price).
   const slippageUsd = notionalUsd * impact;
+  // The execution haircut: MEV and the expected cost of a transaction that does
+  // not land. Charged on the notional of every leg, in the pessimistic direction
+  // on both sides — a sandwich costs us whether we are buying or selling.
+  const mevUsd = notionalUsd * (mevBps / 10_000);
+  const failedTxUsd = notionalUsd * (failedTxBps / 10_000);
 
   /*
    * On a buy the $notional is cash out, so fees come out of the cash and the
@@ -153,13 +189,17 @@ export function simulateFill(req: FillRequest): FillResult {
    * modelled as reducing `qty`-equivalent value rather than being silently
    * dropped.
    */
-  const netValue = Math.max(notionalUsd - lpFeeUsd - req.priorityFeeUsd, 0);
+  const netValue = Math.max(notionalUsd - lpFeeUsd - req.priorityFeeUsd - mevUsd - failedTxUsd, 0);
   const qty = netValue / execPrice;
 
   return {
     filled: true,
     refusal: null,
-    detail: `${side} $${notionalUsd.toFixed(0)} at $${execPrice.toPrecision(6)} (impact ${impactBps.toFixed(0)}bps, lp fee $${lpFeeUsd.toFixed(2)}, prio $${req.priorityFeeUsd.toFixed(4)})`,
+    detail:
+      `${side} ${notionalUsd.toFixed(0)} at ${execPrice.toPrecision(6)} ` +
+      `(impact ${impactBps.toFixed(0)}bps, lp fee ${lpFeeUsd.toFixed(2)}, ` +
+      `prio ${req.priorityFeeUsd.toFixed(4)}, ` +
+      `haircut ${haircutBps}bps = ${(mevUsd + failedTxUsd).toFixed(2)})`,
     priceUsd: execPrice,
     qty,
     notionalUsd,
@@ -167,10 +207,41 @@ export function simulateFill(req: FillRequest): FillResult {
     prioFeeUsd: req.priorityFeeUsd,
     slippageUsd,
     priceImpact: impact,
+    mevUsd,
+    failedTxUsd,
+    haircutBps,
   };
 }
 
 /** Convenience: the pool fee for a pair, defaulting to 30bps (Raydium AMM v4). */
 export function feeBpsOf(m: Pick<MarketSnapshot, 'feeBps'>): number {
   return Number.isFinite(m.feeBps) && m.feeBps > 0 ? m.feeBps : 30;
+}
+
+/**
+ * Resolve the haircut for one deploy from the environment.
+ *
+ * Kept here rather than inlined at every call site so there is exactly one
+ * definition of "what the haircut is" per deployment, and so `/calib` can print
+ * the same numbers the fill model charged.
+ */
+export function haircutFrom(env: { DESK_MEV_HAIRCUT_BPS?: string; DESK_FAILED_TX_BPS?: string; [key: string]: unknown }): {
+  mevBps: number;
+  failedTxBps: number;
+  totalBps: number;
+  source: 'constant' | 'env';
+} {
+  const num = (v: string | undefined, d: number): number => {
+    const n = Number(v);
+    return Number.isFinite(n) && n >= 0 ? n : d;
+  };
+  const hasEnv = env.DESK_MEV_HAIRCUT_BPS !== undefined || env.DESK_FAILED_TX_BPS !== undefined;
+  const mevBps = num(env.DESK_MEV_HAIRCUT_BPS, EXECUTION_HAIRCUT.mevBps);
+  const failedTxBps = num(env.DESK_FAILED_TX_BPS, EXECUTION_HAIRCUT.failedTxBps);
+  return {
+    mevBps,
+    failedTxBps,
+    totalBps: mevBps + failedTxBps,
+    source: hasEnv ? 'env' : 'constant',
+  };
 }

@@ -12,7 +12,7 @@
 
 import { esc } from '../telegram.js';
 import { db, realizedEquity } from './db.js';
-import { latestCalibration, type CalibrationRow } from './logger.js';
+import { latestCalibration, type CalibrationReport, type CalibrationRow } from './logger.js';
 import { killRows, positionRows, deskStatus } from './pipeline.js';
 import { latestThesis } from './thesis.js';
 import { EXIT_TEXT, REFUSAL_TEXT, REASON_TEXT, pct, usd, type ExitReason, type RefusalReason, type KillReason } from './reasons.js';
@@ -136,14 +136,36 @@ export async function calibCard(env: DeskEnv, now = Date.now()): Promise<string>
   out.push(`<i>window ${esc(from)} to ${esc(to)}${stored ? '' : ' (live, not yet stored)'}</i>`);
   out.push('');
 
+  /*
+   * The execution haircut, printed FIRST and always - before the kill rates and
+   * before any "unmeasured" note.
+   *
+   * Paper PnL that ignores MEV and failed transactions is structurally optimistic,
+   * and an optimistic paper record is exactly what would eventually justify a live
+   * order. So the assumption is labelled with its named constant, its configured
+   * value, and what it has actually cost so far. When it has charged nothing, an
+   * operator can see the model is still running on assumptions rather than trades.
+   */
+  if (report.haircut) {
+    const h = report.haircut;
+    out.push('<b>Execution haircut</b> (paper model)');
+    out.push(
+      `  MEV <code>${h.mev_bps}bps</code> + failed-tx <code>${h.failed_tx_bps}bps</code> = ` +
+        `<code>${h.total_bps}bps</code> per leg <i>(${h.source === 'env' ? 'env override' : 'EXECUTION_HAIRCUT constant'})</i>`,
+    );
+    out.push(`  charged so far: <b>$${h.charged_usd.toFixed(2)}</b> across ${h.fills} recorded fill(s)`);
+    out.push('');
+  }
+
   if (report.rows.length === 0) {
     out.push('No kills in the window, so there is nothing to calibrate.');
     out.push('');
     out.push(`<i>${esc(report.note)}</i>`);
+    out.push(...coverageLines(report));
     return out.join('\n');
   }
 
-  out.push(`<b>Kills</b> ${report.totals.kills} · <b>measured</b> ${report.totals.measured}`);
+  out.push(`<b>Kills</b> ${report.totals.kills} \u00b7 <b>measured</b> ${report.totals.measured}`);
   out.push(`<b>True positives</b> (went to -90%) ${report.totals.true_positives}`);
   out.push(`<b>False negatives</b> (later 3x'd) ${report.totals.false_negatives}`);
   out.push('');
@@ -153,7 +175,40 @@ export async function calibCard(env: DeskEnv, now = Date.now()): Promise<string>
   }
   out.push('');
   out.push(`<i>${esc(report.note)}</i>`);
+  out.push(...coverageLines(report));
   return out.join('\n');
+}
+
+/**
+ * Why a rate is or is not measured, in the card.
+ *
+ * "unmeasured" on its own is indistinguishable from "broken". These lines say
+ * whether the forward price series is too young and whether the flow provider has
+ * cached anything - the difference between a desk that needs time and a desk that
+ * needs a fix.
+ */
+function coverageLines(report: CalibrationReport): string[] {
+  const out: string[] = [];
+  if (report.marks) {
+    const m = report.marks;
+    out.push('');
+    out.push(
+      `<b>Price series</b> ${m.marks} marks over ${m.mints} mints \u00b7 span ${m.span_hours}h \u00b7 ` +
+        `${m.dense_mints} dense enough to judge`,
+    );
+    if (m.dense_mints === 0) {
+      out.push('<i>no series is dense enough yet - outcomes stay unmeasured until one is</i>');
+    }
+  }
+  if (report.flow) {
+    out.push(
+      `<b>Flow sample</b> ${esc(report.flow.source)} \u00b7 ${report.flow.cached_mints} mint(s) cached` +
+        (report.flow.newest_ts
+          ? ` \u00b7 newest ${esc(new Date(report.flow.newest_ts * 1000).toISOString().slice(0, 16).replace('T', ' '))}Z`
+          : ''),
+    );
+  }
+  return out;
 }
 
 function formatCalibRow(r: CalibrationRow): string {

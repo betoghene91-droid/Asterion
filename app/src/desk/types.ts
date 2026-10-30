@@ -83,18 +83,77 @@ export interface HolderSnapshot {
   smartWalletPct: number | null;
 }
 
+/**
+ * One `simulateTransaction` call the honeypot probe made.
+ *
+ * `signature` is the signature field of the transaction we submitted, base58.
+ * It is NOT an on-chain signature and this transaction never landed: the call is
+ * made with `sigVerify: false` and a fresh blockhash supplied by the RPC, so the
+ * field carries a deterministic value derived from the probe payload purely so
+ * the exact simulation can be identified and reproduced. `payloadSha256` is the
+ * digest of the exact base64 body sent, which is the reproducible identity.
+ */
+export interface ProbeRecord {
+  /** Which leg this was. See honeypot.ts — 'entry' is an inbound transfer test. */
+  leg: 'entry' | 'exit';
+  /** Base58 of the transaction's signature field. Not an on-chain signature. */
+  signature: string;
+  /** Hex sha256 of the base64 payload exactly as submitted. */
+  payloadSha256: string;
+  /** `result.value.err` from the simulation. Null means the transfer succeeds. */
+  err: unknown;
+  unitsConsumed: number | null;
+  /** Last few program log lines, which is where the reason usually is. */
+  logsTail: string[];
+}
+
 /** Result of simulating the sell we would need to make. The honeypot probe. */
 export interface SellSimulation {
   ok: boolean;
   priceImpactPct: number;
   revertReason?: string;
   /**
-   * True when this came from pool arithmetic rather than a real
-   * `simulateTransaction`. A modelled probe detects impact but cannot detect a
-   * revert (a sell instruction that fails on-chain for a reason unrelated to
+   * True when the *revert* half of this answer came from pool arithmetic rather
+   * than a real `simulateTransaction`. A modelled probe detects impact but
+   * cannot detect a revert (a sell that fails on-chain for a reason unrelated to
    * depth). Recorded so the filter's guarantee is stated precisely.
    */
   modelled?: boolean;
+  /** True only when at least one real `simulateTransaction` produced this. */
+  simulated?: boolean;
+  /** The simulations behind the verdict, with their signatures. */
+  simulations?: ProbeRecord[];
+  /** Which leg reverted, when one did. */
+  revertLeg?: 'entry' | 'exit';
+}
+
+/**
+ * Where a flow number came from, so a reader can bound it.
+ *
+ * Every sample-derived metric in `FlowMetrics` is measured over this window and
+ * nothing else. Recording the window is what stops "unique buyers 41" from
+ * being read as "unique buyers 41 ever": it is 41 distinct buyers among the
+ * transactions we actually fetched, which is a sample of the pool's recent
+ * history and not a census.
+ */
+export interface FlowSample {
+  /** Signatures the RPC returned for the page we asked for. */
+  signatures: number;
+  /** Transactions that parsed into at least one swap leg. */
+  parsed: number;
+  /** Transactions the chain rejected (`meta.err` non-null). Not swaps. */
+  failed: number;
+  /** Slot range covered by the parsed sample, oldest -> newest. */
+  fromSlot: number | null;
+  toSlot: number | null;
+  /**
+   * How token amounts were converted to USD. `mid` means every leg was valued at
+   * the single current mid price in the snapshot, NOT at its own execution
+   * price. That is exact for a size in tokens and an estimate for "what it cost".
+   */
+  usdBasis: 'mid';
+  /** ms since epoch when the sample was taken. */
+  sampledAt: number;
 }
 
 /**
@@ -105,6 +164,11 @@ export interface SellSimulation {
  * is not a token we judged bad. With no provider the desk records a coverage gap
  * and opens nothing — the safe direction, and stated in DESK.md rather than
  * papered over with a guessed ratio that would pass a wash-traded launch.
+ *
+ * A provider is expected to fill only the subset it can actually establish —
+ * see `flow.ts`, which fills six of these from a bounded RPC sample and returns
+ * null for the rest. A field is null because the fact is not available, never
+ * because it was inconvenient.
  */
 export interface FlowMetrics {
   uniqueBuyers: number | null;
@@ -127,6 +191,8 @@ export interface FlowMetrics {
   smartWalletPct: number | null;
   /** 14-period ATR as a fraction of price. */
   atr14Pct: number | null;
+  /** Provenance for the sample-derived fields. Null when nothing was sampled. */
+  flowSample?: FlowSample | null;
 }
 
 export type FlowProvider = (mint: string, market: MarketSnapshot) => Promise<FlowMetrics | null>;
@@ -180,8 +246,14 @@ export interface DeskSource {
    * Price history used by calibration: did a killed token 3x or go to -90%
    * after we passed? Absent source means calibration reports "unmeasured"
    * rather than inventing outcomes.
+   *
+   * `baseUsd` is optional and is the price the multiples must be measured FROM.
+   * Without it, a caller falls back to `lowUsd`, which is the forward-window low
+   * and is therefore <= the pre-decision price — that fallback systematically
+   * UNDER-reports a run and so flatters the filter. A source that knows the real
+   * base (the `desk_marks` series does) must supply it.
    */
-  since?(mint: string, ts: number): Promise<{ highUsd: number; lowUsd: number; lastUsd: number } | null>;
+  since?(mint: string, ts: number): Promise<{ highUsd: number; lowUsd: number; lastUsd: number; baseUsd?: number } | null>;
 }
 
 /** Env slice the desk needs. Kept separate so desk code cannot read chain keys. */
@@ -199,6 +271,15 @@ export interface DeskEnv {
   DESK_DAILY_SUBREQUEST_CAP?: string;
   DESK_DEXSCREENER_BASE?: string;
   DESK_RPC_URL?: string;
+  /** Execution haircut overrides, in bps. Defaults are `EXECUTION_HAIRCUT`. */
+  DESK_MEV_HAIRCUT_BPS?: string;
+  DESK_FAILED_TX_BPS?: string;
+  /** `off` disables the RPC flow sample; every flow field stays a coverage gap. */
+  DESK_FLOW_PROVIDER?: string;
+  /** `off` restores the modelled honeypot probe instead of `simulateTransaction`. */
+  DESK_HONEYPOT_SIM?: string;
+  /** `1` promotes `reported` registry entries into the exclusion denominator. */
+  DESK_CEX_INCLUDE_REPORTED?: string;
   DAILY_LLM_BUDGET?: string;
   TELEGRAM_CHAT_ID?: string;
   TELEGRAM_BOT_TOKEN?: string;
@@ -224,6 +305,27 @@ export const BREAKER = {
   /** Daily realized loss that halts the desk. */
   lossPct: 0.08,
   haltSeconds: 24 * 3600,
+} as const;
+
+/**
+ * Paper mode's execution haircut: MEV and failed-transaction cost.
+ *
+ * Without this, paper PnL is structurally optimistic in exactly the tokens most
+ * worth sandwiching, and an optimistic paper record is what would eventually
+ * authorise a live order. Both halves are named and separate so the calibration
+ * report can say which one is assumed rather than lumping them into one number.
+ *
+ * Override per deploy with `DESK_MEV_HAIRCUT_BPS` / `DESK_FAILED_TX_BPS`; the
+ * constants below are the defaults that must hold when nothing is configured.
+ * Applied to the notional of every simulated leg, entry and exit.
+ */
+export const EXECUTION_HAIRCUT = {
+  /** Adversarial price impact on our own order (sandwich / backrun). */
+  mevBps: 60,
+  /** Expected cost of a transaction that fails and has to be retried. */
+  failedTxBps: 40,
+  /** Convenience total so no caller has to add them up wrongly. */
+  totalBps: 100,
 } as const;
 
 export const RISK = {
@@ -308,6 +410,53 @@ export const ARMING = {
   minPaperTrades: 200,
   minDays: 30,
   maxDrawdownPct: 0.15,
+} as const;
+
+/**
+ * The bound on a flow sample. Named, exported, and quoted in DESK.md.
+ *
+ * ## Why 40 and not "as many as possible"
+ *
+ * Three hard ceilings apply, and the smallest wins:
+ *
+ *  1. **The RPC's own page size.** `getSignaturesForAddress` caps at 1000, but a
+ *     busy pool has thousands of transactions, so 1000 is not "the whole tape" —
+ *     it is a page. Sampling 40 is a *bounded* lie-free answer; sampling 1000 is
+ *     a bigger bill for the same kind of answer.
+ *  2. **The per-invocation subrequest budget.** The free plan allows 50
+ *     subrequests per invocation and `discovery.ts` already spends 40 of them
+ *     (`MAX_CANDIDATES = 20` x 2). The desk runs in the *same* invocation as the
+ *     security sweep, so a flow provider that fetches 40 transactions would
+ *     starve the sweep. `flow.ts` therefore charges every call through
+ *     `spendSubrequest`, and the effective per-tick cap is
+ *     `FLOW_SAMPLE.budgetPerTick`.
+ *  3. **The programme's rate limit.** The RoE carries `rate_limit_rps: 3`, and
+ *     `flow.ts` spaces its requests to honour it rather than firing 40 calls at
+ *     once and taking a 429 (which on a public RPC looks like a dead token).
+ *
+ * ## The honest consequence
+ *
+ * A 40-transaction sample of a pool with 20 000 transactions is a *sample*. It
+ * can say "of the last 40 swaps, 9 were distinct buyers" — which is enough for
+ * the wash-trade ratio gate — but it cannot say "this token has 9 buyers". That
+ * is why `FlowMetrics.flowSample` records the window and why DESK.md states the
+ * bound next to every number derived from it.
+ */
+export const FLOW_SAMPLE = {
+  /** Signatures requested per mint. The primary bound. */
+  maxSignatures: 40,
+  /** Transactions actually parsed per mint (getTransaction is the expensive call). */
+  maxTransactions: 20,
+  /** Signatures per RPC page request; the RPC max is 1000. */
+  signaturePageSize: 40,
+  /** Subrequests the flow provider may spend in ONE tick, across all mints. */
+  budgetPerTick: 12,
+  /** Programme rate limit from the RoE (requests per second). Enforced, not assumed. */
+  rateLimitRps: 3,
+  /** Cache lifetime. One-time cost per token, not per tick. */
+  cacheTtlSeconds: 60 * 60 * 6,
+  /** A cached answer older than this is refetched even inside the TTL budget. */
+  staleAfterSeconds: 60 * 60 * 24,
 } as const;
 
 /** Venues whose extensions are dangerous when present on a Token-2022 mint. */

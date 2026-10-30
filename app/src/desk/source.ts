@@ -31,6 +31,9 @@
 
 import { spendSubrequest } from './db.js';
 import { buildKnownAccounts, type HolderEntry, type KnownAccounts } from './holders.js';
+import { probeHoneypot, recordProbes } from './honeypot.js';
+import { flowProviderFromRpc } from './flow.js';
+import { registryOptionsFrom } from './registry.js';
 import type {
   DeskEnv,
   DeskSource,
@@ -305,11 +308,23 @@ export function liveSource(env: DeskEnv): DeskSource {
   const dex = env.DESK_DEXSCREENER_BASE ?? DEFAULT_DEX;
   const rpc = env.DESK_RPC_URL ?? DEFAULT_RPC;
 
+  // The registry is data, so it is resolved once per source rather than per mint.
+  const registryOpts = registryOptionsFrom(env);
+
   return {
-    // No flow provider is built in: the free tier cannot answer these questions
-    // and inventing answers would be worse than the coverage gap. A deploy that
-    // has a tape source injects it here (see DESK.md, "Adding a flow provider").
-    flow: undefined as DeskSource["flow"],
+    /**
+     * A bounded RPC sample, not a paid indexer. It establishes six of the thirteen
+     * flow fields and returns null for the rest; see `flow.ts` for the derivation
+     * and the bound. With `DESK_FLOW_PROVIDER=off` every flow field stays null and
+     * the desk records a coverage gap, exactly as before — that switch exists so a
+     * deploy can stop paying for sampling without losing the rest of the pipeline.
+     */
+    flow: env.DESK_FLOW_PROVIDER === 'off' ? undefined : flowProviderFromRpc(env, {
+      // The pool accounts the report names are the ones whose trades we want to
+      // ignore: a vault nets to the opposite side of every retail trade and would
+      // otherwise count as one enormous "unique buyer" with huge "buy volume".
+      knownOwners: async () => new Set<string>(),
+    }),
 
     /**
      * Candidates come from the token-profiles feed, which is the only free
@@ -405,7 +420,7 @@ export function liveSource(env: DeskEnv): DeskSource {
         market,
         safety,
         holders,
-        sell: modelledSell(market, sizeUsd),
+        sell: await probeSell(env, mint, market, sizeUsd, holdersFrom(reportPayload), reportPayload),
         fetchedAt: Date.now(),
         holderList: holdersFrom(reportPayload),
         knownAccounts: buildKnownAccounts(reportPayload),
@@ -427,19 +442,72 @@ export function liveSource(env: DeskEnv): DeskSource {
 }
 
 /**
- * The honeypot probe, modelled from pool depth.
+ * The honeypot probe.
  *
- * Honest scope: this detects a token whose pool is too shallow for our exit, and
- * it detects impact above 15%. It does NOT detect a sell that reverts on-chain
- * for a non-depth reason (a frozen account, a disabled transfer, a blacklist) —
- * that needs `simulateTransaction` with a built sell instruction, which needs a
- * transaction builder and a funded key. The snapshot carries `modelled: true` so
- * nothing downstream can claim a revert was tested.
+ * ## What changed, and why it matters
+ *
+ * This used to be `modelledSell()`: pool arithmetic only, marked `modelled: true`.
+ * Pool arithmetic detects a pool too shallow for our exit. It cannot detect the
+ * thing that actually makes a token a honeypot — a transfer that reverts because
+ * the mint is frozen, the account is blacklisted, or a Token-2022 hook refuses.
+ *
+ * It is now a real `simulateTransaction` against a hand-built, unsigned
+ * `transferChecked`. It costs nothing, signs nothing, broadcasts nothing, and
+ * produces a genuine program-level revert when the transfer path is closed. See
+ * `honeypot.ts`; the two properties that make it trustworthy (a correct authority
+ * succeeds, a wrong one reverts with `Custom: 4`) were verified against live RPC.
+ *
+ * ## The fallback is explicit, not silent
+ *
+ * `DESK_HONEYPOT_SIM=off` restores the old modelled probe, and every result it
+ * returns still carries `modelled: true` so nothing downstream can claim a revert
+ * was tested. When the simulation cannot run at all — fewer than two usable token
+ * accounts, RPC refusal — this returns the modelled result rather than null,
+ * because a shallow-pool impact reading is still a true fact, but the result is
+ * marked `simulated: false` so the filter's `honeypot_sell_reverts` guarantee is
+ * stated precisely.
+ *
+ * ## The split of the two numbers
+ *
+ * `ok` / `revertReason` come from the SIMULATION. `priceImpactPct` comes from pool
+ * DEPTH (`modelledSell`), because a transfer simulation carries no market. Both are
+ * labelled on the result: `simulated` for the first, `modelled` for the second.
+ */
+async function probeSell(
+  env: DeskEnv,
+  mint: string,
+  market: MarketSnapshot,
+  sizeUsd: number,
+  holderList: HolderEntry[],
+  report: { token?: { decimals?: number } },
+) {
+  if (env.DESK_HONEYPOT_SIM === 'off') return modelledSell(market, sizeUsd);
+
+  const probed = await probeHoneypot(env, mint, market, {
+    sizeUsd,
+    holders: holderList,
+    decimals: typeof report.token?.decimals === 'number' ? report.token.decimals : 6,
+    persist: (m, records) => recordProbes(env, m, records),
+  }).catch(() => null);
+
+  if (probed) return probed;
+
+  // Could not simulate. Keep the depth reading, but never claim a revert test.
+  const depth = modelledSell(market, sizeUsd);
+  return { ...depth, simulated: false };
+}
+
+/** The honeypot probe, modelled from pool depth.
+ *
+ * Retained as the documented fallback for `DESK_HONEYPOT_SIM=off` and for the
+ * case where the simulation cannot be built (no two usable token accounts). It
+ * is no longer the default. The snapshot carries `modelled: true` so nothing
+ * downstream can claim a revert was tested.
  */
 export function modelledSell(market: MarketSnapshot, sizeUsd: number) {
   const side = Math.max(market.liqUsd / 2, 1);
   const impact = sizeUsd > 0 ? (sizeUsd / (side + sizeUsd)) * 100 : 0;
-  return { ok: true, priceImpactPct: impact, modelled: true };
+  return { ok: true, priceImpactPct: impact, modelled: true, simulated: false as const };
 }
 
 /** Known accounts + holder list for the filter. Exported for the pipeline. */
