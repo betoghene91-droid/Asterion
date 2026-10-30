@@ -379,6 +379,51 @@ async function routeButton(env: Env, chatId: number, msgId: number, data: string
       return;
     }
 
+    case 'ans': {
+      // A follow-up question was answered with a button.
+      //
+      // Minted by `questionKeyboard()` as `ans:<key>:<value>`, where the value is
+      // whatever the option carried - a host, a URL, a class name. It may itself
+      // contain ':' (an https:// option), so the value is everything after the
+      // SECOND separator and `arg` above is deliberately not used.
+      const key = data.slice(4, data.indexOf(':', 4));
+      const value = data.slice(data.indexOf(':', 4) + 1);
+      if (!key || !value) return;
+
+      // No draft means the question predates a restart or was already answered:
+      // say so rather than resuming some other hunt from a stale key.
+      const draft = await readDraft(env, chatId);
+      if (!draft) {
+        await editText(
+          env,
+          chatId,
+          msgId,
+          [
+            '<b>THAT QUESTION HAS EXPIRED</b>',
+            rule(),
+            'I no longer hold the hunt this answer belongs to.',
+            '',
+            'Send the request again - one line is enough.',
+          ].join('\n'),
+          KEYBOARDS.back(),
+        );
+        return;
+      }
+
+      // Re-enter the ONE hunt function with the answers recorded so far. The
+      // edited card is replaced in place by whatever comes next: another
+      // question, the anchor refusal, or the Authorize card.
+      await huntFrom(
+        env,
+        chatId,
+        draft.raw,
+        draft.hints,
+        { ...draft.answers, [key]: value },
+        msgId,
+      );
+      return;
+    }
+
     case 'hunt':
       if (arg === 'new') {
         await editText(
