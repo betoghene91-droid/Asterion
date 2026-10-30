@@ -1128,6 +1128,14 @@ which looks exactly like a successful rotation. Always confirm with
 `wrangler secret list` after rotating, and treat an empty value as a configuration
 error rather than a no-op.
 
+**Unverified, like the rest of this file.** The coupling described above is read
+from the tree and each `file:line` was checked, but no rotation was actually
+performed: every `wrangler secret put`/`delete` and every `setWebhook` here would
+write a real credential or re-point a live bot. Per the table at the end of this
+document, those commands are marked unverified by nature. The *order* and the
+*failure modes* are the load-bearing part and do not depend on having executed
+them.
+
 ---
 
 ## What is UNVERIFIED in this file, and why
