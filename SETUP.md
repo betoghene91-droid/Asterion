@@ -933,6 +933,203 @@ npx wrangler secret delete DESK_LIVE
 
 ---
 
+## 13. Rotating a secret
+
+Rotation is not "change the value in GitHub and redeploy". Three of these
+credentials are checked by *two* independent stores that must agree, and two of
+them **fail closed** — so the order below is the difference between a rotation and
+an outage. Every coupling named here was read out of the tree, and the `grep`
+that proves it is quoted inline.
+
+### The one rule that explains all the failures
+
+A secret lives in one of three places, and they do not sync automatically:
+
+| Store | Who reads it | How it gets there |
+|---|---|---|
+| **GitHub secrets** | the workflow (`prove.yml`, `deploy.yml`, `eval.yml`) | you, in Settings → Secrets |
+| **Worker secrets** | the running Worker | `deploy.yml` *pushes a subset*, the rest are manual |
+| **Third-party side** | Telegram, Alchemy, Google | you, at the provider |
+
+`deploy.yml:119-131` pushes exactly eight: `TELEGRAM_BOT_TOKEN`,
+`TELEGRAM_CHAT_ID`, `TELEGRAM_WEBHOOK_SECRET`, `PROOF_HOOK_SECRET`,
+`GEMINI_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `RPC_URL`. Anything not on
+that list is **Worker-only and must be set by hand** (§4). Rotating a Worker-only
+secret in GitHub does nothing at all.
+
+### Rotate in this order
+
+#### 1. `PROOF_HOOK_SECRET` — highest consequence, do it first
+
+This one authenticates the callback that carries every finding from `prove.yml`
+back to the Worker. Both ends read it, and both refuse on a mismatch:
+
+```
+$ grep -n 'PROOF_HOOK_SECRET' app/src/index.ts .github/workflows/prove.yml
+app/src/index.ts:148:      if (!env.PROOF_HOOK_SECRET) {          # fail-closed: 503
+app/src/index.ts:153:      if (!timingSafeEqual(presented, env.PROOF_HOOK_SECRET)) {
+prove.yml:476:   if [ -z "${{ secrets.PROOF_HOOK_SECRET }}" ]; then
+prove.yml:483:   -H "x-asterion-secret: ${{ secrets.PROOF_HOOK_SECRET }}" \\
+```
+
+If the two values disagree, **no finding can ever be created** — the run completes,
+the callback is refused, and the result is silently lost. This is the one rotation
+that can cost you evidence rather than uptime.
+
+1. `openssl rand -hex 32`
+2. Set the **GitHub** secret `PROOF_HOOK_SECRET`. `deploy.yml:127` pushes it to
+the Worker on the next run, so a redeploy updates both at once.
+3. Re-run **Actions → deploy**. Confirm the push step did not skip it
+   (the step is `if [ -n "$PROOF_HOOK_SECRET" ]`, so an empty value is silently
+   skipped — check, do not assume).
+4. Verify agreement without printing either value:
+   ```bash
+   cd app && npx wrangler secret list | grep PROOF_HOOK_SECRET
+   ```
+5. Prove it end-to-end with a real proof run (§10). A `403` or a logged
+   `proof hook refused` means the two stores disagree.
+
+**There is no zero-downtime rotation here.** The Worker accepts exactly one value,
+so between the Worker push and the next `prove.yml` run, in-flight runs fail their
+callback. Rotate when no proof is running.
+
+#### 2. `TELEGRAM_BOT_TOKEN` — invalidates the old token instantly
+
+BotFather's *Revoke current token* kills the old token the moment you confirm, so
+the Worker starts answering `401` on every `send()` until it has the new one.
+
+The token is used in **two** places, and the second is easy to forget:
+
+```
+$ grep -n 'TELEGRAM_BOT_TOKEN' .github/workflows/deploy.yml
+122:  echo "$TELEGRAM_BOT_TOKEN" | npx wrangler secret put TELEGRAM_BOT_TOKEN
+154:  TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}   # app/scripts/set-webhook.mjs
+```
+
+1. BotFather → `/mybots` → your bot → **API Token** → *Revoke current token*.
+2. Update the **GitHub** secret `TELEGRAM_BOT_TOKEN`.
+3. Re-run **Actions → deploy**. This both pushes the Worker secret *and* re-runs
+   `app/scripts/set-webhook.mjs`, which re-registers the webhook with the new
+   token — so you do not need a separate `setWebhook` call.
+4. Verify:
+   ```bash
+   curl -s "https://api.telegram.org/bot<NEW_TOKEN>/getWebhookInfo" | jq '{url,last_error_message}'
+   ```
+   A non-empty `last_error_message` means the Worker still holds the old token.
+
+#### 3. `TELEGRAM_WEBHOOK_SECRET` — the silent-403 trap
+
+This is the one people get wrong, because the failure looks like "Telegram is
+down" rather than "you rotated a secret". Telegram stamps
+every update with the `secret_token` registered at `setWebhook`; the Worker
+compares it and **rejects on mismatch**:
+
+```
+$ grep -n 'TELEGRAM_WEBHOOK_SECRET' app/src/index.ts app/scripts/set-webhook.mjs
+app/src/index.ts:132:      if (env.TELEGRAM_WEBHOOK_SECRET) {
+app/src/index.ts:134:        if (got !== env.TELEGRAM_WEBHOOK_SECRET) return new Response('forbidden', { status: 403 });
+app/scripts/set-webhook.mjs:  ...(secret ? { secret_token: secret } : {})
+```
+
+Rotating only one side means **every message to the bot returns 403** and the bot
+governs nothing. Both sides are updated by one deploy run
+(`deploy.yml:124` pushes the secret, `deploy.yml:150-155` re-registers the
+webhook), which is why re-running the deploy workflow is the correct procedure
+rather than editing either side by hand.
+
+1. `openssl rand -hex 24`
+2. Update the **GitHub** secret `TELEGRAM_WEBHOOK_SECRET`.
+3. Re-run **Actions → deploy** (updates Worker *and* Telegram in one job).
+4. Verify: send the bot any message. A `403` in `wrangler tail` means the Telegram
+   side still holds the old value — re-run the deploy, do not hand-patch.
+
+**Leaving this secret unset disables the check entirely** (`index.ts:132`), so an
+empty value is not "rotated", it is "off". `set-webhook.mjs` then omits
+`secret_token` and any internet host can POST to `/tg`.
+
+#### 4. `GITHUB_DISPATCH_TOKEN` — Worker-only, manual, and forgettable
+
+Not in the `push runtime secrets` step. Verified:
+
+```
+$ grep -n 'GITHUB_DISPATCH_TOKEN' .github/workflows/deploy.yml
+(no output — it is not pushed)
+$ grep -n 'GITHUB_DISPATCH_TOKEN' app/src/dispatch.ts
+644:  if (!deps.env.GITHUB_DISPATCH_TOKEN) missingVars.push('GITHUB_DISPATCH_TOKEN');
+```
+
+```bash
+cd app
+npx wrangler secret put GITHUB_DISPATCH_TOKEN   # fine-grained PAT, Actions: write
+npx wrangler secret list | grep GITHUB_DISPATCH_TOKEN
+```
+
+Failure is loud and named: an approval is answered with the exact missing variable
+rather than being swallowed (`dispatch.ts:646-659`). Still — rotating the PAT and
+not updating the Worker means **nothing is ever dispatched**, and the approval
+queue fills with decisions that silently cannot run.
+
+#### 5. `CLOUDFLARE_API_TOKEN` — GitHub only
+
+Used solely by the workflow to deploy. Rotate in the Cloudflare dashboard, update
+the GitHub secret, re-run deploy. Check the token still carries **Workers Scripts:
+Edit** and **D1: Edit** for the right account, or the deploy fails at
+`wrangler deploy` rather than at auth.
+
+#### 6. Provider keys — cheap, and safe to leave absent
+
+`RPC_URL` (`sentinel.ts:48`, pushed by `deploy.yml:131`), `FORK_RPC` (used by
+`fuzzseed.ts` and generated PoCs), and the three LLM keys
+(`GEMINI_API_KEY`/`GROQ_API_KEY`/`OPENROUTER_API_KEY`) are all rotated at the
+provider, then set as GitHub secrets and picked up by the next deploy.
+
+All five are **degradable on purpose**: no LLM key still runs every deterministic
+gate (`llm.ts` falls through and degrades), and a dead `FORK_RPC` reports
+`inconclusive` rather than a false success. Rotating them cannot break the trust
+chain — it can only cost prose quality or V2 proof runs.
+
+### Do NOT rotate these
+
+| Name | Why |
+|---|---|
+| `DESK_SIGNER_KEY` | **Its presence is a failed arming gate.** `arming.ts` treats a private key readable by the request handler as a reason to refuse to arm. Setting it is not a rotation, it is a regression (§12). |
+| `DESK_LIVE` | Not a credential. It is the arming switch, and it should stay unset until §12.3 is satisfied. |
+| `DESK_MODE` | Declared in `DeskEnv` and read by nothing — mode comes from `armState()`. Rotating it changes nothing. |
+| `CF_EVAL_TOKEN` | `eval.yml` passes it, but no code in this tree reads it. Leave it empty. |
+
+### After any rotation: prove it, do not assume it
+
+A rotation is complete when the *behaviour* is observed, not when the secret is
+saved. The four checks that actually catch a desync:
+
+```bash
+# 1. both stores exist (does not print values)
+cd app && npx wrangler secret list
+
+# 2. the Worker is alive at all
+curl -s https://<worker>/health
+
+# 3. the webhook is registered and error-free
+curl -s "https://api.telegram.org/bot<TOKEN>/getWebhookInfo" | jq '{url,last_error_message,pending_update_count}'
+
+# 4. the bot actually answers (not just 200s)
+#    send it a message; a 403 in `npx wrangler tail` is the webhook-secret desync
+```
+
+Then run one real proof (§10). That is the only test that exercises
+`PROOF_HOOK_SECRET` in both directions, and it is the failure that costs findings
+rather than uptime.
+
+### What this section does not cover
+
+The `deploy.yml` push steps are guarded by `if [ -n "$X" ]`. An **empty** GitHub
+secret is therefore skipped silently and the Worker keeps the previous value —
+which looks exactly like a successful rotation. Always confirm with
+`wrangler secret list` after rotating, and treat an empty value as a configuration
+error rather than a no-op.
+
+---
+
 ## What is UNVERIFIED in this file, and why
 
 Setup happens on your Cloudflare account, so commands that need a live account
