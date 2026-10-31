@@ -166,12 +166,18 @@ test('describeChain renders mainnet and testnet distinctly, and names the fallba
 
 // ── isMainnet: exactly 1 and 8453 ───────────────────────────────────────────
 
-test('isMainnet is true for exactly 1 and 8453', () => {
+// `mainnet: true` is what makes the tx relay demand BOTH grant.allow_mainnet AND
+// confirm_mainnet (send.ts). It is a SAFETY flag, not a network label: a chain
+// carrying real user funds must be on it. Ticko 84256 is Mainnet (Beta) and the
+// bounty page states it uses real funds, so it belongs here - the invariant is
+// "real funds implies double confirm", and only the id list was ever a snapshot.
+test('isMainnet covers every chain that carries real funds', () => {
   const mainnet = Object.values(CHAINS)
     .filter((c) => c.mainnet)
     .map((c) => c.id)
     .sort((a, b) => a - b);
-  assert.deepEqual(mainnet, [1, 8453]);
+  assert.deepEqual(mainnet, [1, 8453, 84256]);
+  assert.equal(isMainnet(84256), true, 'Ticko Mainnet (Beta) holds real funds');
   assert.equal(isMainnet(1), true);
   assert.equal(isMainnet(8453), true);
   assert.equal(isMainnet(84532), false);

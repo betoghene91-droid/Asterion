@@ -38,7 +38,7 @@ on:
         default: '0'
       chain_id:
         description: 'EVM chain the fork must be taken from: 1, 8453, 84532,
-          11155111 or 31337. Resolved to FORK_RPC_<id>, and asserted against
+          84256 (Ticko), 11155111 or 31337. Resolved to FORK_RPC_<id>, and asserted against
           `cast chain-id`. Empty means no chain pinned (repo-only brief) and
           falls back to the legacy FORK_RPC secret.'
         required: false
@@ -96,6 +96,7 @@ jobs:
           RPC_84532: ${{ secrets.FORK_RPC_84532 }}
           RPC_11155111: ${{ secrets.FORK_RPC_11155111 }}
           RPC_31337: ${{ secrets.FORK_RPC_31337 }}
+          RPC_84256: ${{ secrets.FORK_RPC_84256 }}
           RPC_LEGACY: ${{ secrets.FORK_RPC }}
         run: |
           set -uo pipefail
@@ -122,9 +123,10 @@ jobs:
             84532)    RPC="${RPC_84532:-}"    ; SECRET=FORK_RPC_84532 ;;
             11155111) RPC="${RPC_11155111:-}" ; SECRET=FORK_RPC_11155111 ;;
             31337)    RPC="${RPC_31337:-}"    ; SECRET=FORK_RPC_31337 ;;
+            84256)    RPC="${RPC_84256:-}"    ; SECRET=FORK_RPC_84256 ;;
             *)
               echo "::error::chain_id '$CHAIN_ID' is not a chain this workflow can fork."
-              echo "::error::Known ids: 1, 8453, 84532, 11155111, 31337. Add an arm to the case here AND a row to app/src/chains.ts."
+              echo "::error::Known ids: 1, 8453, 84256, 84532, 11155111, 31337. Add an arm to the case here AND a row to app/src/chains.ts."
               exit 1
               ;;
           esac

@@ -94,6 +94,17 @@ export const CHAINS: Record<number, ChainSpec> = {
     native: 'ETH',
     mainnet: false,
   },
+  84256: {
+    id: 84256,
+    name: 'Ticko',
+    rpc_env: 'FORK_RPC_84256',
+    // The explorer is an SPA route, not a blockscout host. Forking therefore needs
+    // an explicit FORK_RPC_84256 rather than an explorer-derived endpoint, which is
+    // the same requirement the other non-Etherscan chains already carry.
+    explorer: 'app.ticko.xyz',
+    native: 'ETH',
+    mainnet: true,
+  },
   31337: {
     id: 31337,
     name: 'Anvil',
