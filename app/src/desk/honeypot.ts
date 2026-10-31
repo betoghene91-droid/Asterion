@@ -493,5 +493,12 @@ export const PROBE_MAX_IMPACT_PCT = FILTER.maxHoneypotImpactPct;
 /** The subrequest cost of one probe, for budget accounting. */
 export const PROBE_SUBREQUESTS = 1;
 
-/** Re-exported for callers that want the rate limit next to the cost. */
+/**
+ * Re-exported for callers that want a rate next to the cost.
+ *
+ * This is the DESK's default, not a programme limit — see
+ * `types.ts:FLOW_SAMPLE.rateLimitRps`. An engagement-scoped caller should use
+ * `pace.ts:rateLimitForBrief()` instead of this constant, so the number it paces
+ * at is the one its own RoE declares.
+ */
 export const PROBE_RATE_LIMIT_RPS = FLOW_SAMPLE.rateLimitRps;

@@ -430,9 +430,20 @@ export const ARMING = {
  *     starve the sweep. `flow.ts` therefore charges every call through
  *     `spendSubrequest`, and the effective per-tick cap is
  *     `FLOW_SAMPLE.budgetPerTick`.
- *  3. **The programme's rate limit.** The RoE carries `rate_limit_rps: 3`, and
- *     `flow.ts` spaces its requests to honour it rather than firing 40 calls at
- *     once and taking a 429 (which on a public RPC looks like a dead token).
+ *  3. **Politeness to the RPC, not a programme limit.** This loop is the desk's,
+ *     and the desk is not an engagement: it has no RoE, it trades tokens rather
+ *     than operating inside one programme's scope, and no operator ever declared
+ *     a rate for it. So the rate that governs it is the desk's own default,
+ *     `FLOW_SAMPLE.rateLimitRps` — and it is enforced, by `flow.ts` spacing every
+ *     request through a `Pacer`. What it is NOT is a per-programme limit, and the
+ *     comment here used to say it was ("The RoE carries `rate_limit_rps: 3`")
+ *     while nothing read the RoE field at all. That claim is now removed.
+ *
+ *     The per-programme path does exist: `flowProviderFromRpc(env, {
+ *     rateLimitRps: roe.rate_limit_rps })` makes the engagement's declared rate
+ *     govern these calls. No caller passes it today, because the only caller is
+ *     `liveSource()` and the desk has no engagement to take a rate from. That is
+ *     stated rather than papered over.
  *
  * ## The honest consequence
  *
@@ -451,7 +462,16 @@ export const FLOW_SAMPLE = {
   signaturePageSize: 40,
   /** Subrequests the flow provider may spend in ONE tick, across all mints. */
   budgetPerTick: 12,
-  /** Programme rate limit from the RoE (requests per second). Enforced, not assumed. */
+  /**
+   * The DESK's default requests-per-second. Not a programme limit.
+   *
+   * Enforced, not assumed — `flow.ts` spaces every RPC call through a `Pacer`
+   * built from this value. But it is a repository constant, not a number any
+   * engagement declared: the desk trades tokens and holds no RoE. A path that
+   * DOES know its engagement passes `roe.rate_limit_rps` to
+   * `flowProviderFromRpc`, and then that value governs instead. See
+   * `pace.ts:normalizeRateLimitRps` for the accepted range.
+   */
   rateLimitRps: 3,
   /** Cache lifetime. One-time cost per token, not per tick. */
   cacheTtlSeconds: 60 * 60 * 6,

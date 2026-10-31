@@ -43,9 +43,26 @@
  * The binding constraint is request count. Per mint this costs
  * `1 + ceil(parsed / 1)` calls: one `getSignaturesForAddress` and one
  * `getTransaction` per signature. `FLOW_SAMPLE.budgetPerTick` caps the total for a
- * whole tick, and `rateLimitRps` is enforced by spacing calls, because a public
- * RPC that returns 429 for 30 of 40 calls should not be read as "this token has
- * few buyers".
+ * whole tick, and requests are spaced by a `Pacer` so a public RPC that returns
+ * 429 for 30 of 40 calls is not read as "this token has few buyers".
+ *
+ * ## WHICH RATE GOVERNS THIS LOOP, AND WHICH DOES NOT
+ *
+ * This is the ONLY outbound path in the repository that paces anything, and the
+ * rate it paces at is chosen in this order:
+ *
+ *   1. `opts.rateLimitRps` — a caller that holds an engagement's RoE passes
+ *      `roe.rate_limit_rps` here, and then THAT number governs these calls.
+ *   2. `FLOW_SAMPLE.rateLimitRps` — the desk's own default, for the one caller
+ *      that has no engagement: `liveSource()`, which trades tokens.
+ *
+ * The default is not a substitute for a programme limit and must never be
+ * described as one. **The desk is not an engagement.** It does not operate inside
+ * one programme's scope, it has no RoE, and no operator ever declared a rate for
+ * it — so this loop, as the desk runs it, is governed by a repo constant and the
+ * comment below says exactly that. What the previous doc comment claimed ("The RoE
+ * carries rate_limit_rps: 3 ... Enforced, not assumed") was false on both counts:
+ * the RoE value was never read, and the constant was never the RoE's.
  *
  * ## Injectability
  *
@@ -55,6 +72,7 @@
 
 import { b58encode, publicKey } from './base58.js';
 import { db, kvGet, kvSet, spendSubrequest } from './db.js';
+import { pacerFor, type Pacer } from '../pace.js';
 import {
   FLOW_SAMPLE,
   type DeskEnv,
@@ -348,7 +366,27 @@ export interface FlowProviderOptions {
   budgetPerTick?: number;
   /** Cache reads/writes. Disabled by tests that want no database at all. */
   useCache?: boolean;
-  /** Sleep between RPC calls to honour `rateLimitRps`. Tests pass a no-op. */
+  /**
+   * The rate to pace RPC calls at, in requests per second.
+   *
+   * A caller holding an engagement SHOULD pass `roe.rate_limit_rps` here, and
+   * then the programme's declared limit governs this loop. Omitted means the
+   * desk's own `FLOW_SAMPLE.rateLimitRps` default, which is the correct answer
+   * only because `liveSource()` has no engagement to read a rate from — see the
+   * header comment for that distinction, stated rather than implied.
+   *
+   * Normalised by `normalizeRateLimitRps`: 0 / negative / non-finite fall back to
+   * the default rather than becoming "unlimited", and out-of-range values clamp.
+   */
+  rateLimitRps?: number;
+  /**
+   * Spacing between RPC calls. Tests pass a no-op.
+   *
+   * @deprecated Kept because existing callers and tests pass it. A `Pacer` built
+   * from {@link rateLimitRps} supersedes it: the pacer both spaces calls and
+   * records how many were delayed, and passing `sleep` alone can no longer
+   * express WHICH rate is being honoured.
+   */
   sleep?: (ms: number) => Promise<void>;
   /** Owner addresses to exclude: the pool, burn sinks, known CEX wallets. */
   knownOwners?: (mint: string) => Promise<Set<string>>;
@@ -384,7 +422,12 @@ export function flowProviderFromRpc(env: DeskEnv, opts: FlowProviderOptions = {}
   const useCache = opts.useCache ?? true;
   const budget: TickBudget = { used: 0, cap: opts.budgetPerTick ?? FLOW_SAMPLE.budgetPerTick };
   const rpc = opts.rpc ?? defaultRpc(env);
-  const minIntervalMs = Math.ceil(1000 / Math.max(1, FLOW_SAMPLE.rateLimitRps));
+  // WHICH RATE: the engagement's when the caller has one, the desk's default
+  // otherwise. `normalizeRateLimitRps` is the single place that decides whether a
+  // number is usable, so a nonsense rate becomes the default rather than becoming
+  // "unlimited". This is the line the old code got wrong: it read the constant
+  // unconditionally, so an engagement's declared rate could never take effect.
+  const pacer: Pacer = pacerFor(opts.rateLimitRps ?? FLOW_SAMPLE.rateLimitRps, { now, sleep });
 
   /** Spend one subrequest from both the tick budget and the daily desk budget. */
   const charge = async (): Promise<boolean> => {
@@ -394,12 +437,9 @@ export function flowProviderFromRpc(env: DeskEnv, opts: FlowProviderOptions = {}
     return true;
   };
 
-  /** Space calls to honour the programme rate limit instead of taking a 429. */
-  let lastCallAt = 0;
+  /** Space calls to honour the governing rate instead of taking a 429. */
   const rateLimited = async <T>(fn: () => Promise<T>): Promise<T> => {
-    const wait = lastCallAt + minIntervalMs - Date.now();
-    if (wait > 0) await sleep(wait);
-    lastCallAt = Date.now();
+    await pacer.awaitSlot();
     return fn();
   };
 
@@ -481,7 +521,8 @@ export function flowProviderFromRpc(env: DeskEnv, opts: FlowProviderOptions = {}
   };
 }
 
-/** The real RPC caller: POST JSON-RPC, bounded by the desk's own timeout. */
+/**
+ * The real RPC caller: POST JSON-RPC, bounded by the desk's own timeout. */
 export function defaultRpc(env: DeskEnv): RpcCaller {
   const url = env.DESK_RPC_URL ?? 'https://api.mainnet-beta.solana.com';
   return async (method, params) => {

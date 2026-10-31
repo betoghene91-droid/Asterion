@@ -20,6 +20,7 @@
  */
 
 import { CHAINS, chainSpec, parseChainToken } from './chains.js';
+import { normalizeRateLimitRps } from './pace.js';
 
 export type Verdict = 'allow' | 'deny' | 'needs_approval';
 export type TargetKind = 'host' | 'domain' | 'cidr' | 'chain_address' | 'repo' | 'url';
@@ -50,6 +51,14 @@ export interface RoE {
   max_mutability: Mut;
   approval_techniques: string[];
   allow_live_chain_writes: boolean;
+  /**
+   * Outbound requests per second this engagement may receive from us.
+   *
+   * ALWAYS present and ALWAYS in [RATE_LIMIT_RPS_MIN, RATE_LIMIT_RPS_MAX]. It is
+   * normalised on the way in by `normalizeRateLimitRps`, so a reader never has to
+   * handle 0, NaN or `undefined` — and never has an excuse to fall back to a
+   * module-level constant. See `pace.ts` for the range and the reasoning.
+   */
   rate_limit_rps: number;
 }
 
@@ -553,6 +562,20 @@ export interface RoEBriefInput {
    * field. Nothing else is inferred from it — prose cannot mint authorization.
    */
   notes?: string;
+  /**
+   * Requests per second this engagement's target may receive from us.
+   *
+   * OPTIONAL, and absent means "the existing default of 3". It is optional so
+   * that every caller and every already-stored brief keeps its current
+   * behaviour: before this field existed `roeFromBrief` stamped a hardcoded 3, so
+   * `undefined` here reproduces the old RoE byte for byte.
+   *
+   * Normalised, never trusted: `normalizeRateLimitRps` clamps to
+   * [0.1, 20] rps and treats 0 / negative / NaN / Infinity as "no usable rate"
+   * rather than as "unlimited". A value that cannot be honoured must not degrade
+   * into permission to go faster.
+   */
+  rate_limit_rps?: number | null;
 }
 
 /** Result of resolving the one chain an engagement is allowed to reason about. */
@@ -702,6 +725,10 @@ export function roeFromBrief(
     max_mutability: brief.max_mutability,
     approval_techniques: [],
     allow_live_chain_writes: grantIsUsable(live_write_grant, now),
-    rate_limit_rps: 3,
+    // Normalised here, at the single point where an RoE is built, so that no
+    // downstream reader has to handle a missing or unusable value. The default of
+    // 3 reproduces the constant this used to stamp, which is why an existing
+    // brief or caller sees no change.
+    rate_limit_rps: normalizeRateLimitRps(brief.rate_limit_rps).rps,
   };
 }

@@ -9,6 +9,7 @@
  * It never holds a chain key. It never signs. It never spends money.
  */
 
+import { assessJobs, renderDeadmanAlert, type JobName } from './deadman.js';
 import { crawlTick, seed } from './discovery.js';
 import { approveAndDispatch, type DispatchDb } from './dispatch.js';
 import { renderBrief, type Brief, type Question } from './intake.js';
@@ -204,28 +205,37 @@ export default {
     const cron = event.cron;
     ctx.waitUntil(
       (async () => {
+        // The AGGREGATE liveness row, written before any work. It answers one
+        // question only — "has this Worker run any cron at all in the last two
+        // hours?" — and that is what `buildStatus` and the `cron_last` branch of
+        // `dashboardApi` read. It is deliberately NOT what the dead-man's switch
+        // watches: one row per slot means the newest writer masks the other job
+        // in that slot, which is why each job below records its own row too.
         await heartbeat(env, 'cron');
         if (cron === '*/5 * * * *') {
           // The desk is COMPOSED INTO this slot, never a replacement for it.
           // Sentinel is the security sweep; the desk is the paper trader. They
           // share a cron because Workers gives us one 5-minute timer, and each
           // gets its own try/catch so one failing cannot silence the other.
-          await runSentinel(env).catch((e) => console.error('cron sentinel failed', e));
-          await deskTick(env).catch((e) => console.error('cron desk failed', e));
+          await ranJob(env, 'sentinel', 'cron sentinel failed', async () => await runSentinel(env));
+          await ranJob(env, 'desk_tick', 'cron desk failed', async () => await deskTick(env));
           return;
         }
         if (cron === '0 * * * *') {
-          await runCrawler(env).catch((e) => console.error('cron crawler failed', e));
-          await deskAnalystTick(env).catch((e) => console.error('cron desk analyst failed', e));
+          await ranJob(env, 'crawler', 'cron crawler failed', async () => await runCrawler(env));
+          await ranJob(env, 'desk_analyst', 'cron desk analyst failed', async () => await deskAnalystTick(env));
           return;
         }
         if (cron === '15 3 * * *') {
-          await runMaintenance(env).catch((e) => console.error('cron maintenance failed', e));
-          await runCalibration(env).catch((e) => console.error('cron desk calibration failed', e));
+          await ranJob(env, 'maintenance', 'cron maintenance failed', async () => await runMaintenance(env));
+          await ranJob(env, 'desk_calibration', 'cron desk calibration failed', async () => await runCalibration(env));
           return;
         }
         if (cron === '0 */6 * * *') return runDeadman(env);
-        if (cron === '30 6 * * *') return runBriefing(env);
+        if (cron === '30 6 * * *') {
+          await ranJob(env, 'briefing', 'cron briefing failed', async () => await runBriefing(env));
+          return;
+        }
       })().catch((e) => console.error('cron failed', cron, e)),
     );
   },
@@ -1016,6 +1026,63 @@ async function heartbeat(env: Env, source: string): Promise<void> {
     .run();
 }
 
+/**
+ * Record that ONE named job finished its work.
+ *
+ * Separate from `heartbeat()` on purpose. That one writes the aggregate `cron`
+ * row plus the `kv['cron_last']` the Ops screen reads; this one writes only the
+ * job's own `heartbeats` row, so the dead-man's switch can attribute silence to
+ * a named job. The write happens in `ranJob` *after* the work returns, and is
+ * skipped when it throws, because "the cron fired" and "the crawler ran" are
+ * different claims and only the second one is worth asserting to the switch.
+ *
+ * Deliberately not fatal: a heartbeat that cannot be written must not turn a
+ * successful sweep into a thrown cron.
+ */
+async function jobHeartbeat(env: Env, job: JobName): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  await env.DB.prepare(
+    `INSERT INTO heartbeats (source, ts) VALUES (?,?)
+     ON CONFLICT(source) DO UPDATE SET ts=excluded.ts`,
+  )
+    .bind(job, now)
+    .run();
+}
+
+/**
+ * Run one scheduled job behind its own failure boundary, then record its beat.
+ *
+ * `failureLog` is passed as a literal per call site ON PURPOSE: the Worker log has
+ * always said exactly `cron sentinel failed` / `cron desk failed`, and an operator
+ * greps for those strings during an incident. Building the message from a label
+ * (`cron ${label} failed`) would keep the text identical at runtime while removing
+ * it from the source, which is how a greppable log line quietly becomes
+ * un-greppable.
+ *
+ * The try/catch is per JOB and not per slot: two jobs share the 5-minute queue, and
+ * one failing must not stop the other from running or from recording that it did.
+ */
+async function ranJob(
+  env: Env,
+  job: JobName,
+  failureLog: string,
+  run: () => Promise<unknown>,
+): Promise<void> {
+  try {
+    await run();
+    // Same reason as `runDeadman`'s finally: a synchronous throw from the D1
+    // handle would escape a `.catch()` and turn a successful sweep into a thrown
+    // cron.
+    try {
+      await jobHeartbeat(env, job);
+    } catch (e) {
+      console.error(`cron ${job} heartbeat failed`, e);
+    }
+  } catch (e) {
+    console.error(failureLog, e);
+  }
+}
+
 async function runSentinel(env: Env): Promise<void> {
   const { watched, alerts } = await sentinelTick(env);
   if (alerts > 0) await flushAlerts(env);
@@ -1068,25 +1135,79 @@ async function runMaintenance(env: Env): Promise<void> {
     .run();
 }
 
+/**
+ * The dead-man's switch.
+ *
+ * WHAT WAS WRONG. The previous body read `kv['cron_last']` into `quietHours`,
+ * computed the elapsed hours, and then ended in `void quietHours;`. The number
+ * was computed and thrown away. The only source that could raise an alert was
+ * `kv['sentinel_last']` against a hardcoded `> 2` hours, so:
+ *
+ *   · the crawler, the briefing, maintenance and the desk analyst could all die
+ *     while the sentinel kept beating and nothing said so — and the sentinel
+ *     shares its `*\/5` slot with the desk, i.e. it is the job least likely to
+ *     be the one that stopped;
+ *   · the one check that did exist was a hand-tuned constant aimed at one key,
+ *     not a rule derived from cadence;
+ *   · and because every slot wrote the single `heartbeats(source='cron')` row, an
+ *     alert could not have named the job that stopped even if it had fired.
+ *
+ * WHAT IT DOES NOW. Every job writes its own row (see `ranJob`), and the window
+ * each job is judged against is derived from that job's own cron period in
+ * `deadman.ts` (two periods plus slack). A job with no row yet is a COLD START,
+ * not an alert, so a fresh database does not page on the first run after a
+ * deploy.
+ *
+ * ORDERING, AND WHY THE LAST LINE MATTERS MORE THAN IT LOOKS. The check runs
+ * BEFORE this job records its own heartbeat. Recording first would make the
+ * switch structurally incapable of noticing that IT was stalled — its own row
+ * would always be one second old at the moment of the check. Recording after
+ * means a run that arrives thirteen hours late still sees its own thirteen-hour
+ * row, reports itself among the silent jobs, and only then clears it. Its window
+ * is two of its own periods (13h), so an ordinary six-hourly run sits
+ * comfortably inside it and does NOT alert every run; only a real stall does.
+ *
+ * Never throws: the dead-man's switch failing must not become the cron failure
+ * that stops the next slot from running.
+ */
 async function runDeadman(env: Env): Promise<void> {
-  const row = await env.DB.prepare("SELECT ts FROM kv WHERE key='cron_last'").first<{ ts: number }>();
-  const quietHours = row?.ts ? (Date.now() / 1000 - row.ts) / 3600 : 999;
-  // This job itself just ran, so check the *other* heartbeat sources.
-  const sentinel = await env.DB.prepare("SELECT ts FROM kv WHERE key='sentinel_last'").first<{ ts: number }>();
-  const sentinelQuiet = sentinel?.ts ? (Date.now() / 1000 - sentinel.ts) / 3600 : 999;
-  if (sentinelQuiet > 2) {
-    await send(
-      env,
-      [
-        '\u26A0 <b>DEAD-MAN\u2019S SWITCH</b>',
-        rule(),
-        `sentinel silent for ${sentinelQuiet.toFixed(1)}h`,
-        '',
-        'Nothing is being watched. Check the Worker, the RPC, or the cron.',
-      ].join('\n'),
-    ).catch(() => undefined);
+  try {
+    const now = Math.floor(Date.now() / 1000);
+
+    // One read for every source. `observedSince` is the oldest row in the table,
+    // which is the closest thing this system has to "when did we start
+    // watching" — it is what makes the cold-start window measurable rather than
+    // guessed.
+    const rows = await env.DB.prepare('SELECT source, ts FROM heartbeats').all<
+      { source: string; ts: number }
+    >();
+    const lastTs: Record<string, number | null> = {};
+    let observedSince: number | null = null;
+    for (const r of rows.results ?? []) {
+      if (typeof r.source !== 'string' || typeof r.ts !== 'number' || !Number.isFinite(r.ts)) continue;
+      const prev = lastTs[r.source];
+      lastTs[r.source] = prev === null || prev === undefined ? r.ts : Math.max(prev, r.ts);
+      if (observedSince === null || r.ts < observedSince) observedSince = r.ts;
+    }
+
+    const alert = renderDeadmanAlert(assessJobs({ now, lastTs, observedSince }));
+    if (alert) await send(env, alert).catch(() => undefined);
+  } catch (e) {
+    console.error('cron deadman failed', e);
+  } finally {
+    // See ORDERING above: after the check, never before it.
+    //
+    // try/catch and NOT `.catch()`: a D1 handle can throw SYNCHRONOUSLY (a bad
+    // binding, a disposed context), and a sync throw has no promise for `.catch`
+    // to attach to — it escapes the `finally` and out of the cron path. That is
+    // exactly the failure this whole function is supposed to be immune to, so the
+    // beat gets the same boundary as the check.
+    try {
+      await jobHeartbeat(env, 'deadman');
+    } catch (e) {
+      console.error('cron deadman heartbeat failed', e);
+    }
   }
-  void quietHours;
 }
 
 async function runBriefing(env: Env): Promise<void> {
