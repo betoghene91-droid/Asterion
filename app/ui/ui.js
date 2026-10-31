@@ -513,6 +513,102 @@ const header = (label, at) =>
 
 const emptyLine = (text) => h('div', { class: 'empty', text });
 
+/**
+ * The middle-ellipsis for a long opaque string: `0x8335…2913`.
+ *
+ * A 42-character address wrapped across three lines breaks every grid it lands
+ * in, and truncating the TAIL is worse than useless because the tail is often
+ * the only distinguishing part of a hash. So the value is split in the middle,
+ * the visible halves stay selectable text, and the whole string sits one
+ * keystroke away behind the copy control.
+ *
+ * It is a button, not a span: the copy affordance has to clear 44px and has to
+ * be reachable by keyboard, and a span can do neither.
+ */
+function midStr(value, opts) {
+  const o = opts || {};
+  const full = String(value === null || value === undefined ? '' : value);
+  const head = Math.max(4, o.head || 6);
+  const tail = Math.max(3, o.tail || 4);
+  const label = o.label || 'Value copied';
+  // Short enough to show whole: an ellipsis on a 10-char id hides information
+  // and buys nothing.
+  if (full.length <= head + tail + 1) {
+    return h('span', { class: 'mid', text: full });
+  }
+  const btn = h('button', {
+    class: 'mid', type: 'button',
+    'aria-label': full,
+    title: full,
+    onclick: () => copyText(full, label),
+  }, [
+    h('span', { class: 'mid-head', text: full.slice(0, head) }),
+    h('span', { class: 'mid-dots', text: '\u2026', 'aria-hidden': 'true' }),
+    h('span', { class: 'mid-tail', text: full.slice(-tail) }),
+  ]);
+  return btn;
+}
+
+/** A sentinel for "this row's value is the target list, rendered as nodes". */
+const TARGETS = Symbol('targets');
+
+/**
+ * The target line of a brief or a queue card.
+ *
+ * A brief's targets are often raw addresses, and a 42-character address in a
+ * `card-sub` wraps across three lines and breaks the card's rhythm - which is
+ * exactly the failure the design direction calls out. So an address-shaped target
+ * is rendered middle-ellipsised, and a host-shaped one is rendered whole because
+ * a host is short. Several targets are joined with a middot, still shortened.
+ */
+function targetLine(targets, fallback) {
+  const list = (targets || []).filter(Boolean);
+  if (!list.length) return h('div', { class: 'card-sub', text: fallback || 'no target recorded' });
+  const kids = [];
+  list.slice(0, 4).forEach((t, i) => {
+    if (i) kids.push(h('span', { class: 'mid-dots', text: ' \u00b7 ', 'aria-hidden': 'true' }));
+    kids.push(/^0x[0-9a-fA-F]{16,}$/.test(String(t)) ? midStr(t) : h('span', { text: String(t) }));
+  });
+  if (list.length > 4) kids.push(h('span', { class: 'mid-dots', text: ' +' + (list.length - 4) }));
+  return h('div', { class: 'card-sub' }, kids);
+}
+
+/** The copy glyph: an inline SVG this file authored. No icon font, no CDN. */
+function copyGlyph() {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 16 16');
+  svg.setAttribute('width', '13');
+  svg.setAttribute('height', '13');
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('stroke', 'currentColor');
+  svg.setAttribute('stroke-width', '1.5');
+  svg.setAttribute('aria-hidden', 'true');
+  for (const d of ['M5.5 5.5V3.5h7v7h-2', 'M3.5 5.5h7v7h-7z']) {
+    const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    p.setAttribute('d', d);
+    svg.appendChild(p);
+  }
+  return svg;
+}
+
+/** A long opaque value with its copy control: the pair, so callers cannot forget. */
+function midCopy(value, opts) {
+  const o = opts || {};
+  const full = String(value === null || value === undefined ? '' : value);
+  const wrap = h('span', { class: 'mid-wrap', style: 'display:inline-flex;align-items:center;min-width:0;max-width:100%' }, [
+    midStr(full, o),
+  ]);
+  if (o.copy === false) return wrap;
+  const btn = h('button', {
+    class: 'mid-copy', type: 'button',
+    'aria-label': (o.copyLabel || 'Copy') + ' ' + full,
+    title: o.copyLabel || 'Copy',
+    onclick: () => copyText(full, o.label || 'Value copied'),
+  }, [copyGlyph()]);
+  wrap.appendChild(btn);
+  return wrap;
+}
+
 function emptyState(glyph, text, actionLabel, onAction) {
   const kids = [h('div', { class: 'g', text: glyph, 'aria-hidden': 'true' }), h('div', { class: 't', text })];
   if (actionLabel && onAction) kids.push(h('button', { class: 'btn go', type: 'button', text: actionLabel, onclick: onAction }));
@@ -522,10 +618,14 @@ function emptyState(glyph, text, actionLabel, onAction) {
 const jsonBlock = (v) => h('pre', { class: 'json', text: JSON.stringify(v, null, 2) });
 
 function row(title, sub, right, onClick) {
-  const body = h('div', { class: 'grow' }, [
-    h('div', { class: 't', text: title }),
-    sub ? h('div', { class: 'sub', text: sub }) : null,
-  ]);
+  // `title` may be a string, or a Node when the value is a middle-ellipsised
+  // address (which is a button, because it carries a copy affordance and a real
+  // touch target). Wrapping a Node in the `.t` div keeps the row's text styling
+  // uniform; passing it to the `text:` prop would stringify it instead.
+  const t = title instanceof Node
+    ? h('div', { class: 't' }, [title])
+    : h('div', { class: 't', text: title });
+  const body = h('div', { class: 'grow' }, [t, sub ? h('div', { class: 'sub', text: sub }) : null]);
   // Body first, trailing affordance last: the conventional list row. A severity
   // chip therefore sits at the END of its row, which is where a status belongs.
   const el = h('div', { class: 'row' + (onClick ? ' tap' : '') }, [body, right || null]);
@@ -540,17 +640,20 @@ function row(title, sub, right, onClick) {
 
 function skeleton(kind) {
   if (kind === 'list') {
-    const wrap = h('div', {});
+    // Rows, not cards: the thing being waited for is a ledger list, and a
+    // four-card skeleton in front of a four-row list is a guaranteed shift.
+    const wrap = h('div', { class: 'card' });
     for (let i = 0; i < 4; i++) {
-      const c = h('div', { class: 'sk-card' });
-      c.appendChild(h('div', { class: 'sk sk-line w70' }));
-      c.appendChild(h('div', { class: 'sk sk-line w40' }));
-      wrap.appendChild(c);
+      const rowEl = h('div', { class: 'sk-row' }, [
+        h('div', { class: 'sk sk-line' }),
+        h('div', { class: 'sk sk-line w40' }),
+      ]);
+      wrap.appendChild(rowEl);
     }
     return wrap;
   }
   const c = h('div', { class: 'sk-card' });
-  for (const w of ['w40', 'w70', 'w70', 'w40']) c.appendChild(h('div', { class: 'sk sk-line ' + w }));
+  for (const w of ['w40', 'w70']) c.appendChild(h('div', { class: 'sk sk-line ' + w }));
   return c;
 }
 
@@ -921,7 +1024,8 @@ function swr(path, render, opts) {
       clear(host);
       host.appendChild(header(o.label || ''));
       host.appendChild(h('div', { class: 'alert bad', text: messageOf(e) }));
-      if (!o.noHint) host.appendChild(emptyLine('This view only displays the endpoint; nothing here changed it.'));
+      host.appendChild(emptyState('\u26A0',
+        'This surface reads an existing endpoint and nothing on it changed that endpoint, so a refusal here is the endpoint declining rather than a broken screen.'));
     });
   return host;
 }
@@ -1234,7 +1338,7 @@ function greet() {
       h('li', { text: 'Authorize in Queue. Nothing runs before that.' }),
     ]),
   ];
-  const ex = h('button', { class: 'btn quiet', type: 'button', text: 'Example', onclick: () => {
+  const ex = h('button', { class: 'btn quiet', type: 'button', text: 'Use an example', onclick: () => {
     sayEl.value = 'look at app.example.com api, take your time';
     sayEl.focus();
     growComposer();
@@ -1258,7 +1362,10 @@ function pushThinking() {
 
 function growComposer() {
   sayEl.style.height = 'auto';
-  sayEl.style.height = Math.min(112, sayEl.scrollHeight) + 'px';
+  // Four lines, then it scrolls: 4 x 13px x 1.5 = 78px, plus 2 x 10px padding
+  // and 2px of border = 100px. The stylesheet's `max-height: 102px` is the same
+  // number rounded up, so the cap and the CSS cannot disagree.
+  sayEl.style.height = Math.min(100, sayEl.scrollHeight) + 'px';
 }
 
 function submitComposer() {
@@ -1409,7 +1516,7 @@ function viewAsk() {
     wrap.appendChild(
       emptyState(
         '\u270E',
-        'No open questions. The compiler only asks when it cannot settle the target or the class from what you typed.',
+        'No open question. The compiler only asks when it cannot settle the target or the class from what you typed, and an answered question leaves this list immediately.',
         'Start a hunt',
         () => go('/hunt'),
       ),
@@ -1519,8 +1626,11 @@ function viewQueue() {
     }
     for (const item of v.pending || []) host.appendChild(queueCard(item));
     host.appendChild(header('recent decisions'));
-    if (!v.decided || !v.decided.length) host.appendChild(emptyLine('No decisions yet.'));
-    else {
+    if (!v.decided || !v.decided.length) {
+      host.appendChild(emptyState('\u2261',
+        'No decision yet. Approving or denying writes a ledger row and dispatches from here, so this list is the only record of who released what.',
+        'See the history', () => go('/ops/history')));
+    } else {
       const card = h('div', { class: 'card' });
       for (const it of v.decided.slice(0, 12)) {
         card.appendChild(
@@ -1551,7 +1661,7 @@ function viewQueue() {
 function queueCard(item) {
   const card = h('div', { class: 'card' });
   card.appendChild(h('div', { class: 'card-title', text: item.title || item.reason }));
-  card.appendChild(h('div', { class: 'card-sub', text: (item.targets || []).join(', ') || 'no target recorded' }));
+  card.appendChild(targetLine(item.targets));
   const dl = h('dl', { class: 'kv' });
   for (const [k, val] of [['class', item.cls], ['mutability', item.mutability], ['time box', item.time_box_minutes ? item.time_box_minutes + ' min' : null], ['requested', ago(item.requested_at)]]) {
     if (val === null || val === undefined) continue;
@@ -1582,10 +1692,10 @@ function viewQueueDetail(id) {
     card.appendChild(h('div', { class: 'card-title', text: item.title || item.reason }));
     card.appendChild(h('div', { class: 'card-sub', text: item.id }));
     const dl = h('dl', { class: 'kv' });
-    for (const [k, val] of [['targets', (item.targets || []).join(', ')], ['class', item.cls], ['mutability', item.mutability], ['time box', item.time_box_minutes ? item.time_box_minutes + ' min' : null], ['requested', ago(item.requested_at)], ['status', item.status]]) {
+    for (const [k, val] of [['targets', TARGETS], ['class', item.cls], ['mutability', item.mutability], ['time box', item.time_box_minutes ? item.time_box_minutes + ' min' : null], ['requested', ago(item.requested_at)], ['status', item.status]]) {
       if (val === null || val === undefined || val === '') continue;
       dl.appendChild(h('dt', { text: k }));
-      dl.appendChild(h('dd', { text: String(val) }));
+      dl.appendChild(h('dd', {}, [val === TARGETS ? targetLine(item.targets) : document.createTextNode(String(val))]));
     }
     card.appendChild(h('div', {}, [dl]));
     if (item.playbooks && item.playbooks.length) {
@@ -1681,7 +1791,11 @@ function viewLibrary() {
 
     host.appendChild(header(filtered.length + ' of ' + all.entries.length + ' \u00b7 packs from ' + all.load.source));
     if (!filtered.length) {
-      host.appendChild(emptyState('\u2261', 'Nothing matches "' + libraryFilter.q + '".', 'Clear search', () => { libraryFilter.q = ''; search.value = ''; paint(); }));
+      host.appendChild(emptyState('\u2261',
+        libraryFilter.q
+          ? 'No capability matches "' + libraryFilter.q + '". The catalog is whatever this build ships, so a miss is a name that is not in this deployment.'
+          : 'No capability in this domain. Packs and playbooks are enumerated from the build, so an empty domain means no pack shipped for it.',
+        'Clear the filter', () => { libraryFilter.q = ''; libraryFilter.domain = null; search.value = ''; paint(); }));
       return;
     }
     let currentDomain = null;
@@ -1793,7 +1907,9 @@ function viewOps() {
   const wrap = h('div', {});
   const list = S.opsList && S.opsList.length ? S.opsList : [];
   if (!list.length) {
-    wrap.appendChild(h('div', { class: 'alert', text: 'The navigation model did not load, so the surfaces cannot be listed. Reopen the console.' }));
+    wrap.appendChild(emptyState('\u2699',
+      'The navigation model did not load, so the surfaces cannot be listed. It is served by /api/ui/session alongside the tab list, so this usually means the session request itself failed.',
+      'Reload the console', () => { retrySession(); }));
     return wrap;
   }
   const groups = [];
@@ -1853,7 +1969,12 @@ const RENDERERS = {
       ['assets', num(v.assets)],
     ]));
     const list = v.targets || [];
-    if (!list.length) { out.appendChild(emptyState('\u25CE', 'No targets collected yet.', 'Seed one from the chat', () => go('/hunt'))); return out; }
+    if (!list.length) {
+      out.appendChild(emptyState('\u25CE',
+        'No target collected yet. A hunt needs a recorded policy anchor, so discovery has to read a programme page before anything here can be dispatched.',
+        'Seed one from the chat', () => go('/hunt')));
+      return out;
+    }
     out.appendChild(header(list.length + ' shown'));
     const card = h('div', { class: 'card' });
     for (const t of list) {
@@ -1863,8 +1984,7 @@ const RENDERERS = {
         [t.reward, t.status, t.assets ? t.assets + ' asset(s)' : null, t.policy_url ? 'policy on file' : 'no policy'].filter(Boolean).join(' \u00b7 '),
         tag(t.automation, kind),
       ));
-    }
-    out.appendChild(card);
+    }    out.appendChild(card);
     out.appendChild(h('div', { class: 'note', text: 'A hunt needs a recorded policy anchor. "with policy" is the count that can actually be dispatched.' }));
     return out;
   },
@@ -1882,8 +2002,11 @@ const RENDERERS = {
     ]));
     out.appendChild(header('decisions'));
     const dec = v.decisions || [];
-    if (!dec.length) out.appendChild(emptyLine('No decisions yet.'));
-    else {
+    if (!dec.length) {
+      out.appendChild(emptyState('\u2261',
+        'No decision has been recorded yet. Every approve and deny lands here with its operator and timestamp, because the ledger is the audit trail.',
+        'Open the queue', () => go('/queue')));
+    } else {
       const card = h('div', { class: 'card' });
       for (const d of dec.slice(0, 20)) {
         card.appendChild(row(d.title || d.reason, (d.targets || []).join(', ') + ' \u00b7 ' + stamp(d.decided_at || d.requested_at), tag(d.status, d.status === 'approved' ? 'ok' : d.status === 'denied' ? 'bad' : 'warn')));
@@ -1892,8 +2015,11 @@ const RENDERERS = {
     }
     out.appendChild(header('hunts'));
     const hunts = v.hunts || [];
-    if (!hunts.length) out.appendChild(emptyLine('No hunt rows. A refused dispatch leaves none, by design.'));
-    else {
+    if (!hunts.length) {
+      out.appendChild(emptyState('\u25C8',
+        'No hunt rows. A refused dispatch deliberately leaves none, so an empty list here can mean the gate did its job rather than that nothing was tried.',
+        'Start a hunt', () => go('/hunt')));
+    } else {
       const card = h('div', { class: 'card' });
       for (const x of hunts) card.appendChild(row((x.program_id || x.repo || x.id) + ' \u00b7 ' + x.stage, 'leads ' + x.leads_n + ' \u00b7 attempts ' + x.attempts_n + ' \u00b7 proven ' + x.proven_n + (x.stopped_because ? ' \u00b7 ' + x.stopped_because : ''), tag(ago(x.created_at))));
       out.appendChild(card);
@@ -1907,9 +2033,15 @@ const RENDERERS = {
     return out;
   },
   findings(v) {
-    if (!Array.isArray(v) || !v.length) return emptyState('\u25C6', 'No proven findings yet. Silence is the design.', 'See the queue', () => go('/queue'));
+    if (!Array.isArray(v) || !v.length) {
+      return emptyState('\u25C6',
+        'No proven finding yet. A finding only reaches this list when a reproducer runs, a counterfactual confirms causality and the delta is measured - so silence here is the design working, not a missing screen.',
+        'See the queue', () => go('/queue'));
+    }
     const card = h('div', { class: 'card' });
-    for (const f of v) card.appendChild(row(f.title || '(untitled)', [f.target, f.proof_state, f.status].filter(Boolean).join(' \u00b7 '), h('span', { class: sevClass(f.severity), text: String(f.severity || '').toUpperCase() })));
+    for (const f of v) {
+      card.appendChild(row(f.title || '(untitled)', [f.proof_state, f.status].filter(Boolean).join(' \u00b7 '), h('span', { class: sevClass(f.severity), text: String(f.severity || '').toUpperCase() })));
+    }
     return card;
   },
   discovery(v) {
@@ -1917,8 +2049,11 @@ const RENDERERS = {
     out.appendChild(kv([['allowed', num(v.allowed)], ['not mentioned', num(v.not_mentioned)], ['prohibited', num(v.prohibited)], ['unknown', num(v.unknown)]]));
     out.appendChild(header('recently parsed'));
     const recent = v.recent || [];
-    if (!recent.length) out.appendChild(emptyLine('Nothing parsed yet.'));
-    else {
+    if (!recent.length) {
+      out.appendChild(emptyState('\u2691',
+        'Nothing parsed yet. Discovery fills this list on its hourly tick, one bounded batch at a time - an empty state here means no policy page has been read on this deployment.',
+        'See the inventory', () => go('/ops/targets')));
+    } else {
       const card = h('div', { class: 'card' });
       for (const p of recent) card.appendChild(row(p.id, [p.reward, p.status, p.automation].filter(Boolean).join(' \u00b7 '), tag(p.automation || 'unknown', p.automation === 'allowed' ? 'ok' : p.automation === 'prohibited' ? 'bad' : 'warn')));
       out.appendChild(card);
@@ -1929,16 +2064,21 @@ const RENDERERS = {
     const out = h('div', {});
     const entries = v.entries || [];
     out.appendChild(header('watched (' + entries.length + ')'));
-    if (!entries.length) out.appendChild(emptyLine('Nothing on the watchlist.'));
-    else {
+    if (!entries.length) {
+      out.appendChild(emptyState('\u2691',
+        'Nothing is being watched. The sentinel reads this list every five minutes, so an empty watchlist means the sweep has nothing to scan.',
+        'See the targets', () => go('/ops/targets')));
+    } else {
       const card = h('div', { class: 'card' });
-      for (const e of entries) card.appendChild(row(e.label || e.address, String(e.address || '').slice(0, 20) + ' \u00b7 ' + (e.rules || []).length + ' rule(s)', e.last_block ? tag('blk ' + e.last_block) : null));
+      for (const e of entries) card.appendChild(row(e.label || midStr(e.address), '', e.last_block ? tag('blk ' + e.last_block) : null));
       out.appendChild(card);
     }
     out.appendChild(header('alerts'));
     const alerts = v.alerts || [];
-    if (!alerts.length) out.appendChild(emptyLine('No alerts.'));
-    else {
+    if (!alerts.length) {
+      out.appendChild(emptyState('\u25CB',
+        'No alert has fired. This list stays quiet until a watched address trips one of its rules; an alert is the only thing the sentinel will interrupt you for.'));
+    } else {
       const card = h('div', { class: 'card' });
       for (const a of alerts) card.appendChild(row(a.rule, (a.detail || '') + (a.block ? ' \u00b7 block ' + a.block : ''), h('span', { class: sevClass(a.severity), text: String(a.severity || '').toUpperCase() })));
       out.appendChild(card);
@@ -1956,14 +2096,18 @@ const RENDERERS = {
     if (recent.length) {
       out.appendChild(header('last entries'));
       const card = h('div', { class: 'card' });
-      for (const r of recent) card.appendChild(row(r.kind, '#' + r.seq + ' \u00b7 ' + ago(r.ts), tag(String(r.hash || '').slice(0, 8))));
+      for (const r of recent) card.appendChild(row(r.kind, '#' + r.seq + ' \u00b7 ' + ago(r.ts), tag(midStr(r.hash, { head: 6, tail: 4 }))));
       out.appendChild(card);
     }
     return out;
   },
   eval(v) {
     const keys = Object.keys(v || {});
-    if (!keys.length) return emptyLine('No scoreboard stored yet.');
+    if (!keys.length) {
+      return emptyState('\u25F1',
+        'No scoreboard stored yet. The evaluation runs on its own schedule and writes per-class precision and recall here; until it has run once there is nothing measured to show.',
+        'See the status', () => go('/ops/status'));
+    }
     const out = h('div', {});
     const scalars = keys.filter((k) => typeof v[k] !== 'object');
     if (scalars.length) out.appendChild(kv(scalars.slice(0, 14).map((k) => [k, scalar(k, v[k])])));
@@ -1989,10 +2133,11 @@ const RENDERERS = {
     const gates = v.gates || [];
     out.appendChild(header('arming gates (' + (v.gates_unmet || []).length + ' unmet)'));
     const card = h('div', { class: 'card' });
-    if (!gates.length) card.appendChild(emptyLine('No gate data.'));
+    if (!gates.length) card.appendChild(emptyState('\u26FD',
+      'No gate data came back. Arming is judged on closed paper trades and days of history, and the desk could not read either from this deployment.'));
     for (const g of gates) {
       const ok = g && (g.met === true || g.ok === true);
-      card.appendChild(row((g && (g.name || g.id || g.gate)) || String(g), (g && (g.detail || g.reason || g.why)) || '', tag(ok ? 'met' : 'unmet', ok ? 'ok' : 'warn')));
+      card.appendChild(row((g && (g.name || g.id || g.gate)) || String(g), (g && (g.detail || g.reason || g.why)) || ((g && (g.requirement || '')) ? g.requirement + ' \u00b7 now ' + String(g.actual ?? '\u2014') : ''), tag(ok ? 'met' : 'unmet', ok ? 'ok' : 'warn')));
     }
     out.appendChild(card);
     if (v.coverage_gaps && v.coverage_gaps.length) {
@@ -2006,9 +2151,14 @@ const RENDERERS = {
     const out = h('div', {});
     if (v && v.stale) out.appendChild(h('div', { class: 'alert', text: 'Marks are the last stored price, not live quotes.' }));
     out.appendChild(header(list.length + ' open'));
-    if (!list.length) { out.appendChild(emptyLine('No open positions.')); return out; }
+    if (!list.length) {
+      out.appendChild(emptyState('\u25A4',
+        'No open position. The desk only opens one when every flow gate is satisfied by real trade-level data, and it closes nothing by hand.',
+        'See the kills', () => go('/ops/kills')));
+      return out;
+    }
     const card = h('div', { class: 'card' });
-    for (const p of list) card.appendChild(row(p.symbol || p.mint, 'size ' + money(p.size) + ' \u00b7 entry ' + p.entry + ' \u00b7 stop ' + p.stop, tag(ago(p.opened_at))));
+    for (const p of list) card.appendChild(row(p.symbol || midStr(p.mint), 'size ' + money(p.size) + ' \u00b7 entry ' + p.entry + ' \u00b7 stop ' + p.stop, tag(ago(p.opened_at))));
     out.appendChild(card);
     return out;
   },
@@ -2016,9 +2166,14 @@ const RENDERERS = {
     const list = Array.isArray(v) ? v : [];
     const out = h('div', {});
     out.appendChild(header(list.length + ' kills'));
-    if (!list.length) { out.appendChild(emptyLine('No kills recorded.')); return out; }
+    if (!list.length) {
+      out.appendChild(emptyState('\u2715',
+        'No kill recorded. Each rejection stores its reason code and the snapshot that justified it, because the reason history is what the calibration report is built from.',
+        'See calibration', () => go('/ops/calibration')));
+      return out;
+    }
     const card = h('div', { class: 'card' });
-    for (const k of list) card.appendChild(row((k.symbol || k.mint) + '  \u00b7  ' + k.reason_code, (k.detail || '') + (k.outcome ? '  \u00b7 outcome ' + k.outcome : ''), tag(ago(k.ts))));
+    for (const k of list) card.appendChild(row((k.symbol || midStr(k.mint)) + '  \u00b7  ' + k.reason_code, (k.detail || '') + (k.outcome ? '  \u00b7 outcome ' + k.outcome : ''), tag(ago(k.ts))));
     out.appendChild(card);
     return out;
   },
@@ -2028,7 +2183,12 @@ const RENDERERS = {
     if (v.totals) out.appendChild(kv(Object.keys(v.totals).map((k) => [k, scalar(k, v.totals[k])])));
     out.appendChild(header('by reason'));
     const rows = v.by_reason || [];
-    if (!rows.length) { out.appendChild(emptyLine('No calibration rows.')); return out; }
+    if (!rows.length) {
+      out.appendChild(emptyState('\u25CE',
+        'No calibration row. Every kill reason needs at least a few measured outcomes before it can report a dodge rate, so this fills in as the desk accumulates forward price history.',
+        'See the kills', () => go('/ops/kills')));
+      return out;
+    }
     const card = h('div', { class: 'card' });
     for (const r of rows) card.appendChild(row(r.reason_code, r.description || 'kills ' + r.kills + ' \u00b7 n ' + r.n + ' \u00b7 hit ' + r.hit_rate + ' \u00b7 fn ' + r.false_negatives, r.thin ? tag('thin', 'warn') : tag('ok', 'ok')));
     out.appendChild(card);
@@ -2047,7 +2207,7 @@ function briefCard(r, opts) {
 
   const dl = h('dl', { class: 'kv' });
   for (const [k, v] of [
-    ['targets', (b.targets || []).join(', ')],
+    ['targets', TARGETS],
     ['class', b.cls],
     ['mutability', b.max_mutability],
     ['time box', b.time_box_minutes ? b.time_box_minutes + ' min' : null],
@@ -2055,7 +2215,7 @@ function briefCard(r, opts) {
   ]) {
     if (v === null || v === undefined || v === '') continue;
     dl.appendChild(h('dt', { text: k }));
-    dl.appendChild(h('dd', { text: String(v) }));
+    dl.appendChild(h('dd', {}, [v === TARGETS ? targetLine(b.targets) : document.createTextNode(String(v))]));
   }
   card.appendChild(h('div', { class: 'card' }, [dl]));
 

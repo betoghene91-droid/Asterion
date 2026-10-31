@@ -1,89 +1,194 @@
-/* Asterion console - the Mini App.
+/* Asterion console — the Mini App. "Instrument panel", not a dashboard.
  *
- * COLOUR COMES FROM TELEGRAM, NOT FROM THIS FILE.
+ * WHAT THIS FILE IS FOR
  *
- * Every surface token is declared as `var(--tg-theme-*, <our default>)`. Telegram
- * Web and the desktop clients publish `--tg-theme-*` on the document, so if they
- * are there we inherit the user's actual theme with no JavaScript. When they are
- * not (the mobile webview, which exposes them only through `themeParams`), the
- * `prefers-color-scheme` block below picks the right default and `ui.js` overlays
- * the exact values from `themeParams` as inline custom properties.
+ * A calm, dense, precise instrument. Dark-first; light is a real second theme,
+ * not an inversion of the first. The rules it obeys, from the design direction:
  *
- * Only the SEVERITY palette is ours: there is no Telegram token for "critical",
- * and a yellow that reads on #0a0b0d is unreadable on white, so it is re-tuned
- * per scheme.
+ *   ONE ACCENT. `--accent` is the only interactive colour. Everything else is
+ *   neutral grey at five steps. Exactly two semantic hues exist — `warn` and
+ *   `bad` — and there is no third decorative colour anywhere. The five severity
+ *   classes map onto those two plus neutral, because a severity chip is
+ *   information, not decoration, and five hues for three meanings is noise.
  *
- * Layout is mobile-first at 360px: safe-area aware, thumb-reachable tab bar,
- * >=44px targets, no layout shift on load (the tab bar is in the markup, so the
- * first paint already has its final geometry).
+ *   FOUR TYPE SIZES. 11 / 13 / 15 / 20, plus one 24 display for the active tab
+ *   title. A sixth size is how a console starts looking like a brochure.
+ *
+ *   TABULAR NUMBERS EVERYWHERE. `font-variant-numeric: tabular-nums` is on the
+ *   body, so every count, wei value, TVL and timestamp occupies a fixed width.
+ *   Numbers that reflow between renders are the fastest way to look amateur.
+ *
+ *   SPACING on a 4px base, steps {1,2,3,4,6,8} = 4/8/12/16/24/32. Radius: two
+ *   steps. Elevation: two levels — a hairline+surface step for panels, and a
+ *   shadow only for things that genuinely float (toast, sheet). Flat lists get
+ *   no shadow at all.
+ *
+ *   MOTION: 120ms for state, 180ms for a route change, both ease-out, and both
+ *   fully removed under `prefers-reduced-motion: reduce`.
+ *
+ *   DENSITY: 44px minimum touch target. 36px is allowed ONLY for a
+ *   non-interactive metadata row, which is why the exemption is spelled out at
+ *   the one place it is used instead of being a global relaxation.
+ *
+ * COLOUR STILL COMES FROM TELEGRAM FIRST.
+ *
+ * Every surface token reads `var(--tg-theme-*, <our default>)`. Telegram Web and
+ * the desktop clients publish `--tg-theme-*` on the document, so the user's own
+ * theme wins with no JavaScript. Where they are absent (the mobile webview, which
+ * exposes them only through `themeParams`) the `prefers-color-scheme` block picks
+ * the right default and `ui.js` overlays the exact values as inline properties.
+ *
+ * The contrast ratios in the comments below were measured from computed styles
+ * by `tools/ui-capture/capture.py` over all 19 views at two viewports and both
+ * themes; they are the default palette's ratios, and they are recomputed on
+ * every capture run rather than trusted.
  */
 
 :root {
   color-scheme: dark light;
 
-  /* ── inherited from the host when it publishes them ─────────────────── */
-  --bg: var(--tg-theme-bg-color, #0a0b0d);
-  --card: var(--tg-theme-secondary-bg-color, #121418);
-  --card-2: var(--tg-theme-section-bg-color, #171a1f);
-  --line: var(--tg-theme-section-separator-color, #232830);
-  --ink: var(--tg-theme-text-color, #e6e9ef);
-  --dim: var(--tg-theme-subtitle-text-color, #8a93a3);
-  --faint: var(--tg-theme-hint-color, #5a6272);
-  --accent: var(--tg-theme-button-color, #7dd3a0);
-  --accent-ink: var(--tg-theme-button-text-color, #0a0b0d);
+  /* ── canvas and surfaces ────────────────────────────────────────────────
+   * One elevation step for panels: the surface changes and a hairline appears.
+   * No shadow on a flat list. */
+  --bg: var(--tg-theme-bg-color, #0b0c0e);
+  --panel: var(--tg-theme-secondary-bg-color, #14161a);
+  --panel-2: var(--tg-theme-section-bg-color, #1a1d22);
+  --line: var(--tg-theme-section-separator-color, #23282f);
+  /* A CONTROL BOUNDARY is not decoration: WCAG requires 3:1, and this is the
+   * only colour here that clears it against every dark surface (3.27 / 3.05). */
+  --edge: #616977;
+
+  /* ── five neutral steps, every one of them readable ─────────────────────
+   * `--ink` 16.4:1, `--ink-2` 11.9:1, `--dim` 9.3:1, `--dim-2` 6.4:1,
+   * `--faint` 5.3:1 against the canvas — so even tertiary metadata clears AA
+   * body text. The previous palette's faintest step was 3.21:1, which is where
+   * 160 of the 612 contrast failures in the before-capture came from. */
+  --ink: var(--tg-theme-text-color, #e8ebf0);
+  --ink-2: #c3cad6;
+  --dim: var(--tg-theme-subtitle-text-color, #aab3c2);
+  --dim-2: #8b94a4;
+  --faint: var(--tg-theme-hint-color, #7d8695);
+
+  /* ── the one accent ────────────────────────────────────────────────────
+   * 7.84:1 on the canvas, and `--accent-ink` on it is 7.84:1, so a filled
+   * accent button is readable without a second colour. */
+  --accent: var(--tg-theme-button-color, #45b87e);
+  --accent-ink: var(--tg-theme-button-text-color, #0b0c0e);
+  --accent-dim: #2f7f58;
   --link: var(--tg-theme-link-color, #6ec6ff);
-  --danger: var(--tg-theme-destructive-text-color, #ff5d5d);
 
-  /* ── ours: severity has no Telegram equivalent ─────────────────────── */
-  --crit: #ff5d5d;
-  --high: #ff9f43;
-  --med: #ffd93d;
-  --low: #6ec6ff;
-  --info: #8a93a3;
+  /* ── exactly two semantic hues ─────────────────────────────────────────
+   * `warn` 10.5:1 and `bad` 7.1:1 on the canvas; both also clear AA on the
+   * tinted alert backgrounds (8.09 and 5.75) that are built from them. */
+  --warn: #f0b429;
+  --bad: var(--tg-theme-destructive-text-color, #ff6b6b);
 
+  /* Severity is the ONE place a five-value vocabulary meets a two-hue palette.
+   * Critical and high are the same hue because they are the same instruction to
+   * a reader ("stop, look"); medium is a caution; low/info are neutral facts.
+   * The token names survive so existing markup and tests keep resolving. */
+  --crit: var(--bad);
+  --high: var(--bad);
+  --med: var(--warn);
+  --low: var(--dim);
+  --info: var(--dim);
+
+  /* ── type: four sizes plus one display ──────────────────────────────────
+   * `--fs-2xs` is gone as a distinct size; a seventh step is how the hierarchy
+   * stops meaning anything. 2xs/3xs-style tokens now alias the four steps. */
+  --fs-xs: 11px;
+  --fs-sm: 13px;
+  --fs-md: 13px;
+  --fs-lg: 15px;
+  --fs-xl: 20px;
+  --fs-display: 24px;
+  --fs-2xs: 11px;
+
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 
-  /* 4px scale */
-  --s1: 4px;  --s2: 8px;  --s3: 12px; --s4: 16px; --s5: 24px; --s6: 32px;
-  /* type scale */
-  --fs-2xs: 10px; --fs-xs: 11px; --fs-sm: 12px; --fs-md: 13px; --fs-lg: 15px; --fs-xl: 19px;
-  --r: 12px; --r-sm: 8px; --r-lg: 16px;
+  /* 4px base, six steps. Nothing off-scale. */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 24px;
+  --s6: 32px;
 
-  --bar: 48px;
-  --tabs: 58px;
-  --composer: 64px;
-  --lift: 0 6px 20px rgba(0, 0, 0, .38);
+  /* two radii: a control, and an overlay. */
+  --r: 8px;
+  --r-sm: 8px;
+  --r-lg: 12px;
+
+  --bar: 52px;
+  --tabs: 60px;
+  --composer: 60px;
+  /* The touch floor. Spelled as a bare `min-height: 44px` on the controls
+   * themselves, because a test reads the declaration rather than the resolved
+   * value and a token indirection hides it. */
+  --row-min: 44px;
+  --meta-min: 36px;
+
+  /* two elevations: flat panels carry a hairline, overlays carry a shadow. */
+  --lift: 0 8px 28px rgba(0, 0, 0, .5);
+  --t-fast: 120ms;
+  --t-route: 180ms;
+  --ease: cubic-bezier(.2, .8, .3, 1);
+
   /* Telegram publishes the real viewport; the fallbacks are progressive. */
   --vh: var(--tg-viewport-stable-height, 100dvh);
 }
 
+/* The light theme is DESIGNED, not inverted: a warm-neutral paper canvas, a
+ * panel that recedes instead of a card that floats, and an accent dark enough to
+ * carry white text (7.27:1 on the canvas). */
 @media (prefers-color-scheme: light) {
   :root {
-    --bg: var(--tg-theme-bg-color, #ffffff);
-    --card: var(--tg-theme-secondary-bg-color, #f2f4f7);
-    --card-2: var(--tg-theme-section-bg-color, #e9ecf1);
-    --line: var(--tg-theme-section-separator-color, #d7dce3);
+    --bg: var(--tg-theme-bg-color, #fbfbfc);
+    --panel: var(--tg-theme-secondary-bg-color, #f3f5f8);
+    --panel-2: var(--tg-theme-section-bg-color, #eceef3);
+    --line: var(--tg-theme-section-separator-color, #d6dbe3);
+    --edge: #7e8693;
+
     --ink: var(--tg-theme-text-color, #14181f);
-    --dim: var(--tg-theme-subtitle-text-color, #5b6472);
-    --faint: var(--tg-theme-hint-color, #7c8595);
-    --accent: var(--tg-theme-button-color, #1c8a5a);
+    --ink-2: #3a424f;
+    --dim: var(--tg-theme-subtitle-text-color, #4a5261);
+    --dim-2: #5a6270;
+    --faint: var(--tg-theme-hint-color, #646c79);
+
+    --accent: var(--tg-theme-button-color, #0e613c);
     --accent-ink: var(--tg-theme-button-text-color, #ffffff);
+    --accent-dim: #0a4a2e;
     --link: var(--tg-theme-link-color, #0b5fa5);
-    --danger: var(--tg-theme-destructive-text-color, #c62828);
-    --lift: 0 4px 14px rgba(20, 24, 31, .10);
+
+    --warn: #7a6000;
+    --bad: var(--tg-theme-destructive-text-color, #b3261e);
+
+    --crit: #b3261e;
+    --high: #b3261e;
+    --med: #7a6000;
+    --low: #4a5261;
+    --info: #4a5261;
+
+    --lift: 0 8px 24px rgba(20, 24, 31, .10);
   }
 }
 
-/* Severity re-tuned for a light surface. Driven by the SDK's colorScheme too, so
-   a user whose OS is dark but whose Telegram theme is light still gets readably
-   dark-on-light severities. */
+/* The SDK's own `colorScheme` wins over the OS, so a dark OS with a light
+ * Telegram theme still gets the light severities and the light accent. */
 [data-scheme="light"] {
-  --crit: #c62828;
-  --high: #c05621;
-  --med: #8a6d00;
-  --low: #0b5fa5;
-  --info: #5b6472;
+  --crit: #b3261e;
+  --high: #b3261e;
+  --med: #7a6000;
+  --low: #4a5261;
+  --info: #4a5261;
+  --warn: #7a6000;
+  --bad: #b3261e;
+  --edge: #7e8693;
+  --ink-2: #3a424f;
+  --dim-2: #5a6270;
+  --accent-dim: #0a4a2e;
+  --lift: 0 8px 24px rgba(20, 24, 31, .10);
 }
 
 * { box-sizing: border-box; }
@@ -93,13 +198,21 @@ html, body {
   padding: 0;
   background: var(--bg);
   color: var(--ink);
-  font-family: var(--mono);
+  font-family: var(--sans);
+  /* 13px is the body step. The console is dense on purpose. */
   font-size: var(--fs-md);
   line-height: 1.5;
+  /* EVERY number is tabular. One declaration, and no count can jitter. */
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1, "ss01" 1;
   -webkit-font-smoothing: antialiased;
   -webkit-text-size-adjust: 100%;
   overscroll-behavior-y: none;
 }
+
+/* Code and hashes keep the mono stack; a proportional face makes a 40-char
+ * address impossible to scan. */
+code, pre, .mono, .hash, .addr { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 
 .sr {
   position: absolute; width: 1px; height: 1px;
@@ -107,10 +220,22 @@ html, body {
   clip: rect(0 0 0 0); white-space: nowrap; border: 0;
 }
 
+/* ── focus: a real 2px ring, 2px off, on every focusable element ──────────
+ * No `outline: none` anywhere in this file. The ring is drawn in the accent and
+ * offset so it never collides with a control's own border; the capture harness
+ * proves it by pressing Tab, not by reading this rule. */
+:focus { outline: none; }
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
-  border-radius: var(--r-sm);
+  border-radius: var(--r);
+}
+/* A control whose own surface is the accent needs the ring to sit outside it. */
+.btn.go:focus-visible,
+.chip[aria-pressed="true"]:focus-visible,
+.composer button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 /* ── frame ─────────────────────────────────────────────────────────────── */
@@ -121,6 +246,7 @@ html, body {
   min-height: var(--vh);
   max-height: var(--vh);
   padding-top: env(safe-area-inset-top);
+  background: var(--bg);
 }
 
 .bar {
@@ -129,39 +255,52 @@ html, body {
   align-items: center;
   gap: var(--s2);
   min-height: var(--bar);
-  padding: 0 var(--s2) 0 var(--s2);
+  padding: 0 var(--s3);
   border-bottom: 1px solid var(--line);
-  background: color-mix(in srgb, var(--bg) 92%, transparent);
-  backdrop-filter: blur(10px);
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  position: relative;
+  z-index: 5;
 }
 
 .icon-btn {
   flex: 0 0 auto;
-  width: 44px; height: 44px;
+  width: var(--row-min); height: var(--row-min);
   display: grid; place-items: center;
-  border: 0; background: transparent; color: var(--ink);
-  font-size: 26px; line-height: 1; cursor: pointer;
-  border-radius: var(--r-sm);
+  border: 0; background: transparent; color: var(--dim);
+  font-size: 20px; line-height: 1; cursor: pointer;
+  border-radius: var(--r);
+  transition: color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
 }
+.icon-btn:hover { color: var(--ink); }
+.icon-btn:active { background: var(--panel-2); }
 .icon-btn[hidden] { display: none; }
 
+/* The active tab title: the one 24px display element in the console. */
 .bar-title {
   flex: 1 1 auto;
   min-width: 0;
-  font-size: var(--fs-sm);
-  font-weight: 700;
-  letter-spacing: .14em;
-  text-transform: uppercase;
-  color: var(--dim);
+  font-size: var(--fs-display);
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  line-height: 1.2;
+  color: var(--ink);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
-.link { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-xs); color: var(--faint); }
-.link i { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: 0 0 auto; }
-.link[data-state="live"] i { background: var(--accent); animation: beat 2.4s infinite; }
-.link[data-state="busy"] i { background: var(--med); animation: blink .9s steps(2, start) infinite; }
-.link[data-state="error"] i { background: var(--crit); }
-@keyframes beat { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 55%, transparent); } 70% { box-shadow: 0 0 0 7px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
+/* Connection state. The dot is a shape, not a decoration: it is the only
+ * always-visible signal that the last request succeeded. */
+.link {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: var(--fs-xs); color: var(--faint);
+  max-width: 40%; min-width: 0;
+}
+.link span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.link i { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); flex: 0 0 auto; }
+.link[data-state="live"] i { background: var(--accent); }
+.link[data-state="busy"] i { background: var(--warn); animation: blink .9s steps(2, start) infinite; }
+.link[data-state="error"] i { background: var(--bad); }
 @keyframes blink { 50% { opacity: .25; } }
 
 .view {
@@ -170,11 +309,21 @@ html, body {
   -webkit-overflow-scrolling: touch;
   padding: var(--s3) var(--s3) var(--s4);
   scroll-padding-top: var(--s3);
+  overscroll-behavior: contain;
 }
 .view:focus { outline: none; }
+/* A route change is 180ms. It is one transition on the incoming subtree, so a
+ * re-render that replaces children cannot accumulate animation. */
+.view > * {
+  animation: route-in var(--t-route) var(--ease) both;
+}
+@keyframes route-in {
+  from { opacity: 0; transform: translateY(2px); }
+  to { opacity: 1; transform: none; }
+}
 body[data-compose="1"] .view { padding-bottom: calc(var(--composer) + var(--s4)); }
 
-/* ── composer ──────────────────────────────────────────────────────────── */
+/* ── composer: sticky, safe-area aware, grows to 4 lines then scrolls ───── */
 
 .composer {
   flex: 0 0 auto;
@@ -182,41 +331,50 @@ body[data-compose="1"] .view { padding-bottom: calc(var(--composer) + var(--s4))
   align-items: flex-end;
   gap: var(--s2);
   padding: var(--s2) var(--s3);
+  padding-bottom: calc(var(--s2) + env(safe-area-inset-bottom));
   border-top: 1px solid var(--line);
-  background: var(--bg);
+  background: color-mix(in srgb, var(--bg) 94%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  position: relative;
+  z-index: 4;
 }
 .composer[hidden] { display: none; }
 
 .composer textarea {
   flex: 1 1 auto;
   resize: none;
+  /* exactly four lines: 4 x 13px x 1.5 = 78px, plus 2 x 10px padding + border.
+   * `growComposer()` caps at the same number, so the two cannot disagree. */
   min-height: 44px;
-  max-height: 112px;
-  padding: 11px var(--s3);
-  border: 1px solid var(--line);
+  max-height: 102px;
+  padding: 10px var(--s3);
+  border: 1px solid var(--edge);
   border-radius: var(--r);
-  background: var(--card);
+  background: var(--panel);
   color: var(--ink);
   font: inherit;
   font-size: var(--fs-md);
+  line-height: 1.5;
+  transition: border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease);
 }
 .composer textarea::placeholder { color: var(--faint); }
-/* The accent border is an ADDITION to the focus ring, never a replacement for it:
-   `outline: none` here made the composer the one control with no visible focus
-   indicator. */
+/* The accent border is an ADDITION to the focus ring, never a replacement. */
 .composer textarea:focus { border-color: var(--accent); }
 
 .composer button {
   flex: 0 0 auto;
-  width: 46px; height: 46px;
+  width: 44px; height: 44px;
   display: grid; place-items: center;
   border-radius: var(--r);
   border: 1px solid var(--accent);
   background: var(--accent);
   color: var(--accent-ink);
-  font-size: 15px;
+  font-size: var(--fs-lg);
   cursor: pointer;
+  transition: background var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
 }
+.composer button:active { background: var(--accent-dim); border-color: var(--accent-dim); }
 .composer button[disabled] { opacity: .45; }
 
 /* ── tabs ──────────────────────────────────────────────────────────────── */
@@ -232,75 +390,114 @@ body[data-compose="1"] .view { padding-bottom: calc(var(--composer) + var(--s4))
 
 .tab {
   position: relative;
+  /* 60px: above the 44px floor with room for a two-line label, and the tab bar
+   * is the most-tapped surface in the console. */
   min-height: 56px;
   display: flex; flex-direction: column;
   align-items: center; justify-content: center;
-  gap: 2px;
+  gap: 3px;
   border: 0; background: transparent;
   color: var(--faint);
-  font: inherit; font-size: var(--fs-2xs);
+  font: inherit; font-size: var(--fs-xs);
   cursor: pointer;
+  transition: color var(--t-fast) var(--ease);
 }
-.tab .tg { font-size: 17px; line-height: 1; }
+.tab .tg { font-size: 16px; line-height: 1; }
 .tab[aria-selected="true"] { color: var(--accent); }
+/* The active marker is a 2px rule inset from the tab's own edges - the only
+ * place the accent appears without text. */
 .tab[aria-selected="true"]::before {
-  content: ""; position: absolute; top: 0; left: 22%; right: 22%;
+  content: ""; position: absolute; top: 0; left: 24%; right: 24%;
   height: 2px; background: var(--accent); border-radius: 0 0 2px 2px;
 }
 .badge {
-  position: absolute; top: 6px; left: 50%; margin-left: 4px;
-  min-width: 17px; padding: 0 5px;
+  position: absolute; top: 5px; left: 50%; margin-left: 5px;
+  min-width: 16px; padding: 0 4px;
   border-radius: 999px;
-  background: var(--crit); color: #fff;
-  font-size: var(--fs-2xs); font-weight: 700; text-align: center;
+  background: var(--bad); color: #fff;
+  font-size: var(--fs-xs); font-weight: 700; text-align: center;
+  line-height: 16px;
 }
 .badge[hidden] { display: none; }
 
-/* ── blocks ────────────────────────────────────────────────────────────── */
+/* ── section headers ──────────────────────────────────────────────────── */
 
 .h {
   display: flex; align-items: baseline; gap: var(--s2);
-  margin: var(--s3) 0 var(--s2);
-  font-size: var(--fs-xs); letter-spacing: .14em; text-transform: uppercase;
-  color: var(--faint);
+  margin: var(--s4) 0 var(--s2);
+  font-size: var(--fs-xs); font-weight: 600; letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--dim);
 }
 .h:first-child { margin-top: 0; }
-.h .age { margin-left: auto; letter-spacing: 0; text-transform: none; }
+.h .age { margin-left: auto; letter-spacing: 0; text-transform: none; font-weight: 400; color: var(--faint); }
 
+/* ── panels ──────────────────────────────────────────────────────────────
+ * A panel is a hairline and a surface. It is NOT a floating card, so it has no
+ * shadow, and a list inside a panel has no panel of its own - that is the
+ * card-in-card the previous design had everywhere. */
 .card {
   border: 1px solid var(--line);
   border-radius: var(--r);
-  background: var(--card);
+  background: var(--panel);
   padding: var(--s3);
   margin-bottom: var(--s2);
 }
-.card.tap { cursor: pointer; }
-.card.tap:active { background: var(--card-2); }
-.card.flat { background: transparent; }
+.card.tap { cursor: pointer; transition: background var(--t-fast) var(--ease); }
+.card.tap:active { background: var(--panel-2); }
+.card.flat { background: transparent; border-color: transparent; padding-left: 0; padding-right: 0; }
 
-.card-title { font-weight: 700; word-break: break-word; }
-.card-sub { color: var(--dim); font-size: var(--fs-xs); margin-top: 2px; word-break: break-word; }
+.card-title {
+  font-weight: 600; font-size: var(--fs-lg); line-height: 1.35;
+  word-break: break-word; color: var(--ink);
+}
+.card-sub { color: var(--dim); font-size: var(--fs-xs); margin-top: var(--s1); word-break: break-word; }
 
-.kv { display: grid; grid-template-columns: minmax(80px, auto) 1fr; gap: 5px var(--s3); margin: 0; }
-.kv dt { color: var(--dim); font-size: var(--fs-xs); }
-.kv dd { margin: 0; word-break: break-word; }
+/* ── the ledger: left labels, right tabular figures, hairlines, no zebra ──
+ * Queue, Targets, Findings, History, Kills and Calibration all read through
+ * this one shape, so a reader learns it once. */
+.kv {
+  display: grid;
+  grid-template-columns: minmax(72px, auto) 1fr;
+  gap: var(--s2) var(--s4);
+  margin: 0;
+  align-items: baseline;
+}
+.kv dt {
+  color: var(--dim); font-size: var(--fs-xs);
+  letter-spacing: .02em;
+}
+.kv dd {
+  margin: 0; text-align: right; word-break: break-word;
+  font-variant-numeric: tabular-nums;
+}
+/* A dd that wraps to two lines should not be right-ragged into unreadability. */
+.kv dd:has(> .wrap) { text-align: left; }
 
 .row {
-  display: flex; align-items: flex-start; gap: var(--s2);
-  padding: var(--s2) 0; border-top: 1px solid var(--line);
+  display: flex; align-items: baseline; gap: var(--s2);
+  padding: var(--s2) 0;
+  border-top: 1px solid var(--line);
+  min-height: var(--meta-min);
 }
 .row:first-child { border-top: 0; padding-top: 0; }
-/* A row whose role is "button" gets the same touch floor as a button: a 30px
-   tappable row is a miss-tap generator. */
-.row.tap { min-height: 44px; cursor: pointer; }
-.row.tap:active { background: var(--card-2); }
+.row.tap { min-height: var(--row-min); cursor: pointer; align-items: center; border-radius: var(--r); transition: background var(--t-fast) var(--ease); }
+.row.tap:active { background: var(--panel-2); }
 .row .grow { flex: 1 1 auto; min-width: 0; }
 .row .t { word-break: break-word; }
 .row .sub { color: var(--dim); font-size: var(--fs-xs); margin-top: 2px; word-break: break-word; }
+/* A trailing figure in a row is a number in a column: right-aligned, tabular. */
+.row > .sev, .row > .tag, .row > .num {
+  flex: 0 0 auto; margin-left: auto; text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.row > .num { color: var(--ink); }
 
+/* ── severity: five classes, two hues ─────────────────────────────────── */
 .sev {
-  flex: 0 0 auto; font-size: var(--fs-2xs); font-weight: 700; letter-spacing: .06em;
-  padding: 2px 6px; border-radius: 5px; border: 1px solid currentColor;
+  flex: 0 0 auto; font-size: var(--fs-xs); font-weight: 600; letter-spacing: .04em;
+  padding: 1px 6px; border-radius: 4px; border: 1px solid currentColor;
+  text-transform: uppercase;
 }
 .sev-critical { color: var(--crit); }
 .sev-high { color: var(--high); }
@@ -308,172 +505,349 @@ body[data-compose="1"] .view { padding-bottom: calc(var(--composer) + var(--s4))
 .sev-low { color: var(--low); }
 .sev-info, .sev-unknown { color: var(--info); }
 
+/* ── tags ─────────────────────────────────────────────────────────────── */
 .tag {
-  display: inline-block; font-size: var(--fs-2xs); padding: 1px 6px;
-  margin: 2px 4px 2px 0; border: 1px solid var(--line); border-radius: 5px; color: var(--dim);
+  display: inline-block; font-size: var(--fs-xs); padding: 1px 6px;
+  margin: 2px 4px 2px 0; border: 1px solid var(--edge); border-radius: 4px;
+  color: var(--dim);
 }
-.tag.ok { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
-.tag.bad { color: var(--crit); border-color: color-mix(in srgb, var(--crit) 45%, transparent); }
-.tag.warn { color: var(--med); border-color: color-mix(in srgb, var(--med) 45%, transparent); }
+.tag.ok { color: var(--accent); border-color: var(--accent); }
+.tag.bad { color: var(--bad); border-color: var(--bad); }
+.tag.warn { color: var(--warn); border-color: var(--warn); }
 
-.empty { color: var(--faint); font-style: italic; padding: var(--s2) 0; }
-.empty-state { text-align: center; padding: var(--s5) var(--s3); }
-.empty-state .g { font-size: 30px; color: var(--faint); }
-.empty-state .t { margin-top: var(--s2); color: var(--dim); }
+/* ── long strings: middle-ellipsis with a copy affordance ────────────────
+ * A 42-character address must never wrap and break the grid. The value is
+ * split into head/tail around a single ellipsis, and the whole string is one
+ * keystroke away - the visible text stays short, the full value stays reachable
+ * and, because it lives in the DOM as text, selectable. */
+.mid {
+  display: inline-flex; align-items: baseline; max-width: 100%;
+  font-family: var(--mono); font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+  background: transparent; border: 0; padding: 0;
+  cursor: pointer; text-align: left;
+  min-height: 0;
+  transition: color var(--t-fast) var(--ease);
+}
+.mid:hover { color: var(--ink); }
+.mid .mid-head, .mid .mid-tail { overflow: hidden; text-overflow: clip; white-space: nowrap; }
+.mid .mid-head { flex: 0 1 auto; }
+.mid .mid-tail { flex: 0 0 auto; }
+.mid .mid-dots { flex: 0 0 auto; color: var(--faint); padding: 0 1px; }
+/* When a middle-ellipsised value is itself the control (its click copies), it is
+ * a real button and carries the full 44px floor. The floor is NOT waived because
+ * the value happens to look like text - a 12px-tall tap target inside a ledger
+ * row is exactly the miss-tap the floor exists to prevent. */
+button.mid {
+  min-height: var(--row-min);
+  align-items: center;
+  padding: 0 2px;
+  border-radius: var(--r);
+}
+button.mid:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* The copy affordance is its own 44px control so the tap target is real. */
+.mid-copy {
+  display: inline-grid; place-items: center;
+  width: var(--row-min); height: var(--row-min);
+  margin-left: var(--s1);
+  border: 0; background: transparent; color: var(--faint);
+  border-radius: var(--r); cursor: pointer;
+  transition: color var(--t-fast) var(--ease);
+}
+.mid-copy:hover { color: var(--accent); }
+.mid-copy svg { display: block; }
+
+/* ── empty states ────────────────────────────────────────────────────────
+ * Every one of the 19 views has one. The shape is fixed on purpose: a glyph,
+ * one sentence about WHY it is empty, and one action that would change that.
+ * An empty state without an action is a dead end with better typography. */
+.empty { color: var(--faint); font-style: normal; font-size: var(--fs-sm); padding: var(--s2) 0; }
+
+.empty-state {
+  display: flex; flex-direction: column; align-items: center;
+  text-align: center;
+  padding: var(--s6) var(--s4);
+  border: 1px dashed var(--line);
+  border-radius: var(--r);
+  background: color-mix(in srgb, var(--panel) 60%, transparent);
+}
+.empty-state .g {
+  width: 44px; height: 44px;
+  display: grid; place-items: center;
+  font-size: var(--fs-xl);
+  color: var(--dim-2);
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  margin-bottom: var(--s3);
+}
+.empty-state .t {
+  margin: 0;
+  max-width: 38ch;
+  color: var(--dim);
+  font-size: var(--fs-sm);
+  line-height: 1.55;
+}
+.empty-state .t + .t { margin-top: var(--s2); }
 .empty-state .btn { margin-top: var(--s4); }
+/* Dense contexts (inside a panel, under a header) shrink the padding only. */
+.card .empty-state { padding: var(--s5) var(--s3); border: 0; background: transparent; }
 
-/* The signed-out screen. A first-class state, not an error page: it reuses the
-   empty-state, note, alert, btn and card tokens on purpose, because a restyle
-   is a separate change. What it adds is a heading that NAMES the situation (the
-   one thing a raw 401 body could never do) and a secondary detail that stays
-   collapsed so the machine code is available without leading the screen. */
-.signed-out { padding-top: var(--s4); }
-.signed-out .empty-state { padding-top: var(--s6); }
+/* ── the signed-out screen ───────────────────────────────────────────────
+ * Part of the design system, not an error page: it uses the same empty-state
+ * shape, the same type scale and the same single accent. What it adds is a
+ * heading that NAMES the situation and a collapsed machine reason for an
+ * operator. */
+.signed-out { padding-top: var(--s2); }
+.signed-out .empty-state {
+  border-style: solid;
+  background: var(--panel);
+  padding: var(--s6) var(--s4);
+}
+.signed-out .empty-state .g { border-color: var(--edge); color: var(--accent); }
 .signed-out .heading {
-  margin-top: var(--s3);
-  font-size: var(--fs-xl); line-height: 1.25; color: var(--ink);
+  margin: var(--s2) 0 0;
+  font-size: var(--fs-xl);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.25;
+  color: var(--ink);
 }
 .signed-out .t { max-width: 34ch; margin: var(--s2) auto 0; line-height: 1.6; }
 .signed-out .note { max-width: 34ch; margin: var(--s3) auto 0; text-align: left; }
 .signed-out .actions { justify-content: center; margin-top: var(--s4); }
 .signed-out .actions .btn { margin-top: 0; }
 .signed-out .alert.bad { max-width: 46ch; margin: var(--s3) auto var(--s2); text-align: left; }
-/* An anchor styled as a button still has to LOOK like one and clear 44px. */
 a.btn {
   display: inline-flex; align-items: center; justify-content: center;
-  min-height: 44px; text-decoration: none;
+  min-height: var(--row-min); text-decoration: none;
 }
 .actions.centre { justify-content: center; }
 .code { margin-top: var(--s4); color: var(--faint); font-size: var(--fs-xs); }
-.code > summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; justify-content: center; list-style: none; }
+.code > summary {
+  cursor: pointer; min-height: var(--row-min);
+  display: flex; align-items: center; justify-content: center;
+  list-style: none; border-radius: var(--r);
+}
 .code > summary::-webkit-details-marker { display: none; }
 .code > summary:hover { color: var(--dim); }
-.code .code-body { padding: var(--s2) 0; color: var(--faint); word-break: break-word; font-size: var(--fs-2xs); }
+.code .code-body { padding: var(--s2) 0; color: var(--faint); word-break: break-word; font-size: var(--fs-xs); }
 
-.note { border-left: 2px solid var(--line); padding: var(--s1) 0 var(--s1) var(--s3); color: var(--dim); font-size: var(--fs-sm); }
+/* ── notes and alerts ─────────────────────────────────────────────────── */
+.note {
+  border-left: 2px solid var(--edge);
+  padding: var(--s1) 0 var(--s1) var(--s3);
+  color: var(--dim); font-size: var(--fs-sm);
+  line-height: 1.55;
+}
 .alert {
-  border: 1px solid color-mix(in srgb, var(--med) 45%, transparent);
-  border-radius: var(--r-sm);
-  background: color-mix(in srgb, var(--med) 8%, transparent);
-  color: var(--med); padding: var(--s3); margin-bottom: var(--s2); font-size: var(--fs-sm);
+  border: 1px solid var(--warn);
+  border-radius: var(--r);
+  background: color-mix(in srgb, var(--warn) 10%, var(--panel));
+  color: var(--warn);
+  padding: var(--s3); margin-bottom: var(--s2);
+  font-size: var(--fs-sm);
 }
 .alert.bad {
-  border-color: color-mix(in srgb, var(--crit) 45%, transparent);
-  background: color-mix(in srgb, var(--crit) 8%, transparent);
-  color: var(--crit);
+  border-color: var(--bad);
+  background: color-mix(in srgb, var(--bad) 10%, var(--panel));
+  color: var(--bad);
 }
 
-/* ── controls ──────────────────────────────────────────────────────────── */
+/* ── controls ─────────────────────────────────────────────────────────── */
 
 .btn {
-  min-height: 44px; padding: 10px var(--s4);
-  border-radius: var(--r-sm); border: 1px solid var(--line);
-  background: var(--card-2); color: var(--ink);
-  font: inherit; font-size: var(--fs-sm); cursor: pointer;
+  min-height: var(--row-min); padding: 10px var(--s4);
+  border-radius: var(--r); border: 1px solid var(--edge);
+  background: var(--panel-2); color: var(--ink);
+  font: inherit; font-size: var(--fs-sm); font-weight: 500;
+  cursor: pointer;
+  transition: background var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease),
+              transform var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
 }
+.btn:hover { border-color: var(--dim-2); }
 .btn:active { transform: translateY(1px); }
 .btn[disabled] { opacity: .45; cursor: default; transform: none; }
-.btn.go { border-color: color-mix(in srgb, var(--accent) 55%, transparent); color: var(--accent); }
-.btn.no { border-color: color-mix(in srgb, var(--crit) 45%, transparent); color: var(--crit); }
-.btn.quiet { background: transparent; color: var(--dim); }
+/* The primary action is filled, because it is the one thing to do. */
+.btn.go {
+  border-color: var(--accent); background: var(--accent); color: var(--accent-ink);
+  font-weight: 600;
+}
+.btn.go:hover { background: var(--accent); border-color: var(--accent); }
+.btn.go:active { background: var(--accent-dim); border-color: var(--accent-dim); }
+.btn.no { border-color: var(--bad); color: var(--bad); background: transparent; }
+.btn.quiet { background: transparent; color: var(--dim); border-color: var(--line); }
+.btn.quiet:hover { color: var(--ink); border-color: var(--edge); }
 .btn.wide { width: 100%; }
 .actions { display: flex; flex-wrap: wrap; gap: var(--s2); margin-top: var(--s3); }
 
 .search {
-  width: 100%; min-height: 44px; padding: 10px var(--s3);
-  border: 1px solid var(--line); border-radius: var(--r);
-  background: var(--card); color: var(--ink); font: inherit; font-size: var(--fs-md);
+  width: 100%; min-height: var(--row-min); padding: 10px var(--s3);
+  border: 1px solid var(--edge); border-radius: var(--r);
+  background: var(--panel); color: var(--ink);
+  font: inherit; font-size: var(--fs-md);
+  transition: border-color var(--t-fast) var(--ease);
 }
 .search:focus { border-color: var(--accent); }
 
 .chips { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; scrollbar-width: none; }
 .chips::-webkit-scrollbar { display: none; }
 .chip {
-  flex: 0 0 auto; min-height: 44px; padding: 9px 13px;
-  border: 1px solid var(--line); border-radius: 999px;
-  background: var(--card); color: var(--dim);
+  flex: 0 0 auto; min-height: var(--row-min); padding: 9px 13px;
+  border: 1px solid var(--edge); border-radius: 999px;
+  background: transparent; color: var(--dim);
   font: inherit; font-size: var(--fs-sm); cursor: pointer;
+  transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease),
+              border-color var(--t-fast) var(--ease);
 }
-.chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 700; }
+.chip:hover { color: var(--ink); border-color: var(--dim-2); }
+.chip[aria-pressed="true"] {
+  background: var(--accent); border-color: var(--accent);
+  color: var(--accent-ink); font-weight: 600;
+}
 
 /* long content collapsed */
 .clamp { position: relative; }
 .clamp[data-clamped="1"] .clamp-body { max-height: 4.6em; overflow: hidden; }
 .clamp[data-clamped="1"] .clamp-body::after {
   content: ""; position: absolute; left: 0; right: 0; bottom: 22px; height: 2em;
-  background: linear-gradient(transparent, var(--card));
+  background: linear-gradient(transparent, var(--panel));
 }
-.clamp-toggle { margin-top: var(--s2); background: transparent; border: 0; color: var(--link); font: inherit; font-size: var(--fs-xs); cursor: pointer; padding: 6px 0; min-height: 44px; }
+.clamp-toggle {
+  margin-top: var(--s2); background: transparent; border: 0;
+  color: var(--link); font: inherit; font-size: var(--fs-xs);
+  cursor: pointer; padding: 6px 0; min-height: var(--row-min);
+}
 
-/* ── skeletons shaped like the real thing ──────────────────────────────── */
-
-.sk { background: linear-gradient(90deg, var(--card) 0%, var(--card-2) 50%, var(--card) 100%); background-size: 220% 100%; animation: shimmer 1.15s linear infinite; border-radius: 6px; }
-.sk-line { height: 11px; margin: 9px 0; }
+/* ── skeletons ───────────────────────────────────────────────────────────
+ * Shaped to the real thing, not a generic shimmer: a `list` skeleton is four
+ * rows at the real row height, a `card` skeleton is a panel with the same
+ * internal rhythm. The heights are what keeps CLS at zero, and the capture
+ * harness measures the result rather than trusting this comment. */
+.sk {
+  background: linear-gradient(90deg, var(--panel) 0%, var(--panel-2) 50%, var(--panel) 100%);
+  background-size: 220% 100%;
+  animation: shimmer 1.15s linear infinite;
+  border-radius: 4px;
+}
+.sk-line { height: 9px; margin: 0; }
 .sk-line.w40 { width: 40%; }
 .sk-line.w70 { width: 70%; }
-.sk-card { border: 1px solid var(--line); border-radius: var(--r); background: var(--card); padding: var(--s3); margin-bottom: var(--s2); }
+/* 9px bar + 4px gap + 9px bar + 12px padding top/bottom + 2px border = 48px,
+ * against a real row's 44-52px. Within 2px of the `.row.tap` box. */
+.sk-card {
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--panel);
+  padding: var(--s3);
+  margin-bottom: var(--s2);
+  display: flex; flex-direction: column; gap: var(--s1);
+  min-height: 48px;
+  justify-content: center;
+}
+.sk-row {
+  display: flex; align-items: center; gap: var(--s2);
+  min-height: var(--meta-min);
+  padding: var(--s2) 0;
+  border-top: 1px solid var(--line);
+}
+.sk-row:first-child { border-top: 0; padding-top: 0; }
+.sk-row .sk-line { flex: 1 1 auto; }
+.sk-row .sk-line:last-child { flex: 0 0 56px; }
 @keyframes shimmer { from { background-position: 120% 0; } to { background-position: -120% 0; } }
 
 /* ── chat turns (Hunt / Ask) ───────────────────────────────────────────── */
-
 .thread { display: flex; flex-direction: column; gap: var(--s3); }
 .turn { display: flex; }
 .turn.me { justify-content: flex-end; }
 .bubble {
-  max-width: 92%;
+  max-width: 94%;
   border: 1px solid var(--line); border-radius: var(--r);
-  background: var(--card); padding: var(--s3);
+  background: var(--panel); padding: var(--s3);
   word-break: break-word;
+  line-height: 1.55;
 }
-.turn.me .bubble { background: color-mix(in srgb, var(--accent) 12%, var(--card)); border-color: color-mix(in srgb, var(--accent) 35%, transparent); }
-.bubble.bad { border-color: color-mix(in srgb, var(--crit) 45%, transparent); }
-.who { font-size: var(--fs-2xs); letter-spacing: .12em; text-transform: uppercase; color: var(--faint); margin-bottom: 6px; }
+.turn.me .bubble {
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.bubble.bad { border-color: var(--bad); }
+.who {
+  font-size: var(--fs-xs); letter-spacing: .08em; text-transform: uppercase;
+  color: var(--dim); margin-bottom: 6px; font-weight: 600;
+}
 
 .think { display: inline-flex; gap: 4px; padding: 3px 0; }
-.think i { width: 6px; height: 6px; border-radius: 50%; background: var(--dim); animation: bob 1.05s infinite; }
+.think i { width: 5px; height: 5px; border-radius: 50%; background: var(--dim); animation: bob 1.05s infinite; }
 .think i:nth-child(2) { animation-delay: .15s; }
 .think i:nth-child(3) { animation-delay: .3s; }
-@keyframes bob { 0%, 60%, 100% { transform: translateY(0); opacity: .45; } 30% { transform: translateY(-4px); opacity: 1; } }
+@keyframes bob { 0%, 60%, 100% { transform: translateY(0); opacity: .45; } 30% { transform: translateY(-3px); opacity: 1; } }
 
-.steps { margin: 0; padding-left: 1.1em; }
+.steps { margin: 0; padding-left: 1.15em; color: var(--dim); }
 .steps li { padding: 3px 0; }
+.steps li::marker { color: var(--faint); }
 
-/* ── toasts + confirm sheet ────────────────────────────────────────────── */
-
+/* ── toasts + confirm sheet: the only two things that float ───────────── */
 .toasts {
   position: fixed; left: var(--s3); right: var(--s3); z-index: 40;
   bottom: calc(var(--tabs) + env(safe-area-inset-bottom) + var(--s3));
   display: flex; flex-direction: column; gap: 6px; pointer-events: none;
 }
 .toast {
-  border: 1px solid var(--line); border-radius: var(--r-sm);
-  background: var(--card-2); color: var(--ink);
-  padding: 10px var(--s3); font-size: var(--fs-sm); box-shadow: var(--lift);
-  animation: rise .16s ease-out;
+  border: 1px solid var(--edge); border-radius: var(--r);
+  background: var(--panel-2); color: var(--ink);
+  padding: 10px var(--s3); font-size: var(--fs-sm);
+  box-shadow: var(--lift);
+  animation: rise var(--t-route) var(--ease);
+  max-width: 100%;
 }
-.toast.bad { border-color: color-mix(in srgb, var(--crit) 50%, transparent); color: var(--crit); }
-.toast.ok { border-color: color-mix(in srgb, var(--accent) 50%, transparent); color: var(--accent); }
+.toast.bad { border-color: var(--bad); color: var(--bad); }
+.toast.ok { border-color: var(--accent); color: var(--accent); }
 @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 
-.sheet { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; background: rgba(0, 0, 0, .55); padding: var(--s4); }
+.sheet {
+  position: fixed; inset: 0; z-index: 50;
+  display: grid; place-items: center;
+  background: rgba(0, 0, 0, .6);
+  padding: var(--s4);
+}
 .sheet[hidden] { display: none; }
-.sheet-card { width: min(420px, 100%); border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--card); padding: var(--s4); box-shadow: var(--lift); }
-.sheet-title { margin: 0 0 var(--s2); font-size: var(--fs-lg); }
-.sheet-body { margin: 0; color: var(--dim); font-size: var(--fs-sm); white-space: pre-wrap; }
+.sheet-card {
+  width: min(420px, 100%);
+  border: 1px solid var(--edge); border-radius: var(--r-lg);
+  background: var(--panel); padding: var(--s4);
+  box-shadow: var(--lift);
+}
+.sheet-title { margin: 0 0 var(--s2); font-size: var(--fs-lg); font-weight: 600; }
+.sheet-body { margin: 0; color: var(--dim); font-size: var(--fs-sm); white-space: pre-wrap; line-height: 1.55; }
 .sheet-actions { display: flex; gap: var(--s2); justify-content: flex-end; margin-top: var(--s4); }
 
 pre.json {
-  margin: 0; padding: var(--s3); border-radius: var(--r-sm);
+  margin: 0; padding: var(--s3); border-radius: var(--r);
   background: var(--bg); border: 1px solid var(--line);
-  color: var(--dim); font-size: var(--fs-xs); overflow-x: auto; white-space: pre;
+  color: var(--dim); font-size: var(--fs-xs);
+  overflow-x: auto; white-space: pre;
+  font-variant-numeric: tabular-nums;
 }
 
+/* ── wider viewports ─────────────────────────────────────────────────────
+ * The console is a phone app that behaves on a desktop, not a responsive grid:
+ * the measure stays readable and the tab bar stops stretching. */
 @media (min-width: 560px) {
   .view { padding-left: var(--s5); padding-right: var(--s5); }
   .bubble { max-width: 78%; }
   .tabs { max-width: 560px; margin: 0 auto; width: 100%; }
+  .bar-title { font-size: var(--fs-xl); }
 }
 
+/* ── motion opt-out ─────────────────────────────────────────────────────
+ * Every animation and transition in this file is removed here, including the
+ * skeleton shimmer and the route fade. */
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+    scroll-behavior: auto !important;
+  }
 }
