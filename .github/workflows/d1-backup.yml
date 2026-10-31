@@ -1,0 +1,190 @@
+name: d1-backup
+# D1 -> git backup on a GitHub schedule, plus a restore test that actually runs.
+#
+# WHY GITHUB AND NOT A WORKER CRON: the Worker has exactly 5 cron triggers
+# (app/wrangler.toml:34-40) and all 5 are occupied -- that is the free-plan
+# ceiling, so there is no sixth slot to give a backup. A scheduled workflow
+# does not consume a Worker cron. It is the option the hand-off spec calls for
+# (line 685: "free on a public repo, and it does not consume a Worker cron").
+#
+# WHY NOT R2: R2 requires R2 to be enabled on the account, which requires a
+# payment method. That is an account mutation the owner has to make, so this
+# workflow does not assume it. A git-backed copy also survives things an
+# in-account copy does not: it is in a different provider, under version
+# history, and can be cloned on a fresh machine with no Cloudflare access.
+#
+# WHAT THIS DOES NOT DO: it is not real-time and it is not off-site from
+# GitHub. D1 Time Travel already covers the short window (7 days on the Free
+# plan, 30 on Workers Paid) and is on by default -- see SETUP.md.
+#
+# THE RESTORE IS THE POINT. A dump is a file; a backup is a dump that has been
+# loaded back and verified. Step "restore test" imports the dump into a
+# throwaway local D1 and walks the ledger hash chain, which is the evidence
+# this whole system exists to protect. If the dump cannot be restored, the job
+# fails and no commit is made.
+
+on:
+  schedule:
+    # Daily, and deliberately at a different hour from eval.yml (04:17) so the
+    # two do not compete for the same minutes window.
+    - cron: '43 5 * * *'
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'why this manual run'
+        required: false
+        default: 'manual'
+
+# ---------------------------------------------------------------------------
+# 60-DAY RULE, answered here because this file is where the schedule lives.
+#
+# GitHub's documented behaviour (docs.github.com -> Actions -> "Disabling and
+# enabling a workflow"): "In a public repository, scheduled workflows are
+# automatically disabled when no repository activity has occurred in 60 days."
+#
+# Two consequences, and they point in opposite directions:
+#
+#   1. This repo is PRIVATE today. The 60-day auto-disable is a public-repo
+#      rule, so it does not apply. But private repos are not free for Actions:
+#      the GitHub Free plan includes a monthly amount of compute ($12 USD of
+#      included compute usage), and standard runners on a private repo draw
+#      from it. If this repo were made public, minutes become free and the
+#      60-day rule becomes live.
+#
+#   2. If the repo is ever made public, committing the dump DOES count as
+#      repository activity, and that is what keeps this schedule alive: every
+#      daily run writes a commit, so the repo is never idle for 60 days. BUT
+#      the commit is skipped when the dump is unchanged, so this only holds
+#      while the database is changing. The guard step below therefore refuses
+#      to let the "skip commit" path become permanent.
+#
+# So: no 60-day action is needed while private. If it goes public, the daily
+# commit keeps it alive and the guard step fails loudly if commits ever stop.
+# ---------------------------------------------------------------------------
+
+permissions:
+  contents: write
+
+concurrency:
+  # A backup must never race another backup on the same mutable file.
+  group: d1-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history is not needed, but the guard step reads the last
+          # backup commit date, so a shallow clone would make it lie.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: install
+        run: npm ci --no-audit --no-fund
+
+      - name: export D1
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          mkdir -p ../backups
+          npx wrangler d1 export asterion --remote --skip-confirmation \
+            --output ../backups/asterion.sql
+
+      - name: sanity-check the dump
+        run: |
+          f=../backups/asterion.sql
+          test -s "$f"
+          # Every table in schema.sql must be represented. A truncated export
+          # that stops early would otherwise still look like a valid file.
+          missing=0
+          for t in $(grep -oE 'CREATE TABLE IF NOT EXISTS [a-z_]+' schema.sql | awk '{print $NF}'); do
+            grep -q "CREATE TABLE $t" "$f" || { echo "MISSING TABLE: $t"; missing=1; }
+          done
+          test "$missing" -eq 0
+          echo "dump bytes: $(wc -c < "$f")"
+          echo "ledger rows in dump: $(grep -c 'INSERT INTO ledger' "$f" || true)"
+
+      # The restore is what makes this a backup rather than a hope. It runs
+      # entirely locally: a fresh .wrangler/state, the dump ingested with
+      # --local, then the same integrity question runMaintenance asks of
+      # production every night -- is the ledger hash chain unbroken?
+      - name: restore test
+        run: |
+          rm -rf .wrangler/state
+          npx wrangler d1 execute asterion --local --file=../backups/asterion.sql --yes
+          python3 - <<'PY'
+          import json, re, subprocess, sys
+
+          def q(sql):
+              out = subprocess.run(
+                  ['npx', 'wrangler', 'd1', 'execute', 'asterion', '--local', '--json', '--command', sql],
+                  capture_output=True, text=True, timeout=300,
+              )
+              if out.returncode != 0:
+                  print(out.stderr[-2000:])
+                  sys.exit('local D1 query failed')
+              m = re.search(r'\[.*\]', out.stdout, re.S)
+              return json.loads(m.group(0))[0]['results']
+
+          tables = q("select count(*) n from sqlite_master where type='table'")[0]['n']
+          print(f'tables restored: {tables}')
+          if tables < 30:
+              sys.exit(f'only {tables} tables restored; schema has ~36')
+
+          rows = q('select seq, prev_hash, hash from ledger order by seq')
+          print(f'ledger rows restored: {len(rows)}')
+
+          # Walk the chain exactly as app/src/ledger.ts verify() does: each
+          # row's prev_hash must equal the previous row's hash.
+          prev = None
+          for r in rows:
+              if prev is not None and r['prev_hash'] != prev:
+                  sys.exit(f"BROKEN LINK at seq {r['seq']}: prev_hash={r['prev_hash'][:12]} != {prev[:12]}")
+              prev = r['hash']
+          print('ledger chain: unbroken' if rows else 'ledger chain: EMPTY (nothing to verify)')
+          PY
+
+      # Guard against the two silent failure modes of a scheduled job: never
+      # running at all, and running but never committing.
+      - name: guard against a silently dead schedule
+        run: |
+          last=$(git log -1 --format=%ct -- backups/asterion.sql 2>/dev/null || echo 0)
+          now=$(date +%s)
+          if [ "$last" = "0" ]; then
+            echo "no prior backup commit; this run will create the first one"
+            exit 0
+          fi
+          days=$(( (now - last) / 86400 ))
+          echo "last backup commit: $days day(s) ago"
+          # 9 days, not 60: the 60-day threshold is GitHub's, and by the time
+          # you hit it the schedule is already disabled. This fires long before
+          # that, while the job is still running and can still tell you.
+          test "$days" -lt 9
+
+      - name: commit the backup
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          git config user.name 'asterion-backup'
+          git config user.email 'backup@asterion.local'
+          git add -f backups/asterion.sql
+          if git diff --cached --quiet; then
+            echo 'database unchanged since last backup; nothing to commit'
+            exit 0
+          fi
+          stamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          git commit -q \
+            -m "backup(d1): $stamp asterion.sql (restore-tested in this run)" \
+            -m "Automated export of the D1 database. Row counts are not listed on purpose: the dump may contain evidence and intake data. This commit exists so the ledger survives a lost database."
+          git push
