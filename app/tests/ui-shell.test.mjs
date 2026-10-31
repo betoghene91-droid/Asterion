@@ -167,6 +167,31 @@ test('touch targets and focus rings meet the bar', () => {
   assert.match(CSS, /:focus-visible/);
 });
 
+/**
+ * A middle-ellipsised value is rendered as a BUTTON when it copies on click, and
+ * a button carries the full touch floor. This was a real regression: `.mid` was
+ * styled as inline text, so as a button it came out 74x12px - a 12px-tall tap
+ * target inside a ledger row - and the capture harness caught it as 4 controls
+ * under the floor while every code test still passed. The stylesheet rule is
+ * pinned here so the next restyle cannot quietly drop it.
+ */
+test('a middle-ellipsised value that is a control carries the 44px floor', () => {
+  assert.match(JS, /function midStr\(/, 'the middle-ellipsis helper must still exist');
+  assert.match(JS, /class: 'mid', type: 'button'/, 'it must be a real button, for keyboard reach');
+  assert.match(JS, /aria-label': full/, 'and its accessible name must be the FULL value, not the elided one');
+  // The rule that gives the button its height.
+  assert.match(CSS, /button\.mid\s*\{[^}]*min-height:\s*var\(--row-min\)/, CSS.includes('button.mid')
+    ? 'button.mid exists but does not set the floor'
+    : 'no button.mid rule at all');
+});
+
+test('the row helper renders a Node title instead of stringifying it', () => {
+  // `row()` takes either a string or a Node; passing a Node through the `text:`
+  // prop would render "[object HTMLButtonElement]" in production.
+  assert.match(JS, /title instanceof Node/);
+  assert.match(JS, /function row\(title, sub, right, onClick\)/);
+});
+
 test('motion is opt-out and the skeletons match the real layout', () => {
   assert.match(CSS, /@media \(prefers-reduced-motion: reduce\)/);
   assert.match(JS, /function skeleton\(/);
@@ -236,4 +261,40 @@ test('boot reads the launch fragment before stripping it', () => {
   // before it is read. It is allowed only inside resolveInitDataNow.
   assert.strictEqual(forgetAt, -1, 'boot() must not strip the fragment before reading it');
   assert.ok(resolveAt < (forgetAt === -1 ? Infinity : forgetAt), 'read must precede strip');
+});
+
+// --- every theme variable applyTheme writes must be one the CSS reads --------
+//
+// Regression, found by landing the restyle: the stylesheet renamed
+// `--card`/`--card-2`/`--danger` to `--panel`/`--panel-2`/`--bad`, and
+// `applyTheme`'s overlay map was left pointing at the old names. Every value it
+// wrote landed on a variable no rule consumed - and because the map is fed from
+// `themeParams`, which the mobile webview exposes ONLY through the SDK, that is
+// the single path by which a phone gets the user's real theme. A stale name
+// there silently pins the phone to the default palette while a desktop Telegram
+// client (which publishes `--tg-theme-*` on the document) looks correct.
+//
+// Both halves were already asserted separately - that applyTheme drives
+// themeParams, and that the palette is tokenised - which is exactly why neither
+// caught this. This pins the JOIN between them.
+
+test('applyTheme writes only custom properties the stylesheet actually defines', () => {
+  const at = JS.indexOf('const map = {');
+  assert.ok(at !== -1, 'applyTheme must still build an overlay map');
+  const mapBody = JS.slice(at, JS.indexOf('};', at));
+
+  const written = [...mapBody.matchAll(/'--([a-z0-9-]+)'/g)].map((m) => m[1]);
+  assert.ok(written.length >= 8, `expected the full theme map, saw ${written.length}`);
+
+  // Every custom property the stylesheet declares.
+  const defined = new Set([...CSS.matchAll(/^\s*--([a-z0-9-]+)\s*:/gm)].map((m) => m[1]));
+  assert.ok(defined.size > 20, 'the stylesheet should define its full token set');
+
+  const dead = written.filter((name) => !defined.has(name));
+  assert.deepEqual(
+    dead,
+    [],
+    `applyTheme writes ${dead.join(', ')}, which the stylesheet never defines - ` +
+      'the overlay would be dead and the host theme ignored',
+  );
 });
