@@ -18,15 +18,15 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 import {
-  WORKFLOW_FILE,
   PROOF_TECHNIQUE,
   STAGE_DISPATCHED,
   STAGE_DISPATCH_FAILED,
   deriveProveInputs,
   authorizeProof,
-  dispatchProveWorkflow,
+  dispatchWorkflow,
   approveAndDispatch,
 } from '../build/dispatch.js';
+import { workflowFileFor, PLANES } from '../build/planes.js';
 import { checkTargetBounds, MAX_TARGETS, MAX_TARGET_ENTRY, roeFromBrief } from '../build/policy.js';
 import index from '../build/index.js';
 
@@ -34,6 +34,15 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const SCHEMA = readFileSync(join(HERE, '..', 'schema.sql'), 'utf8');
 
 const NOW = 1_700_000_000;
+/**
+ * The hunt id every derivation in this file passes.
+ *
+ * It is a REQUIRED argument now: /hook/proof upserts on it, and ingest refuses a
+ * `proven` verdict that resolves to no hunts row, so a body built without one is
+ * a body whose verdict is discarded. Making it required is what makes that
+ * unrepresentable at the call site rather than a runtime check.
+ */
+const HUNT = 'hunt-derivation-fixture';
 const GIT_URL = 'https://github.com/acme/vault.git';
 const SHA = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
 
@@ -179,7 +188,7 @@ function okFetch(seen = []) {
 // ── derivation ──────────────────────────────────────────────────────────────
 
 test('derives repo, commit and contract from a brief that carries them', () => {
-  const d = deriveProveInputs(provableBrief());
+  const d = deriveProveInputs(provableBrief(), HUNT);
   assert.equal(d.ok, true);
   assert.deepEqual(d.missing, []);
   assert.equal(d.inputs.repo, GIT_URL);
@@ -190,22 +199,20 @@ test('derives repo, commit and contract from a brief that carries them', () => {
 
 test('a commit pinned in notes is used when the target carries none', () => {
   const d = deriveProveInputs(
-    provableBrief({ targets: [GIT_URL], notes: `contract:Vault commit=${SHA}` }),
-  );
+    provableBrief({ targets: [GIT_URL], notes: `contract:Vault commit=${SHA}` }), HUNT);
   assert.equal(d.ok, true);
   assert.equal(d.inputs.commit, SHA);
 });
 
 test('a fork block in notes is carried through as a number string', () => {
   const d = deriveProveInputs(
-    provableBrief({ notes: `contract:Vault fork_block:19000000 repo:${GIT_URL} commit:${SHA}` }),
-  );
+    provableBrief({ notes: `contract:Vault fork_block:19000000 repo:${GIT_URL} commit:${SHA}` }), HUNT);
   assert.equal(d.ok, true);
   assert.equal(d.inputs.fork_block, '19000000');
 });
 
 test('names every underivable input for a host-only brief, with a reason each', () => {
-  const d = deriveProveInputs(hostOnlyBrief());
+  const d = deriveProveInputs(hostOnlyBrief(), HUNT);
   assert.equal(d.ok, false);
   assert.equal(d.inputs, null);
   assert.deepEqual(d.missing, ['repo', 'commit', 'contract']);
@@ -217,20 +224,25 @@ test('names every underivable input for a host-only brief, with a reason each', 
   assert.match(d.why[2], /contract/i);
 });
 
-test('a non-solidity brief is refused before listing inputs', () => {
-  const d = deriveProveInputs(provableBrief({ cls: 'web2' }));
+test('a class with no plane at all (mobile) is refused by name, before inputs', () => {
+  // `mobile` is the case this refusal exists for now: web2/infra/solana all have
+  // planes, so the only honest by-name refusal left is a class with none. The
+  // assertion is on the PLANE being named, not merely the class: "no proof path
+  // for mobile" is not actionable, "there is no mobile (APK/IPA) plane" is.
+  const d = deriveProveInputs(
+    provableBrief({ cls: 'mobile', playbooks: [] }),
+    HUNT,
+  );
   assert.equal(d.ok, false);
   assert.deepEqual(d.missing, ['cls']);
-  // The refusal must NAME the missing plane, not merely the class. "forge test"
-  // was the old wording; naming the plane is what makes the refusal actionable.
-  assert.match(d.why[0], /no web2\/HTTP proof plane/);
-  assert.match(d.why[0], /Foundry\/EVM/);
+  assert.equal(d.workflow, null, 'a plane-less class must not name a workflow');
+  assert.match(d.why[0], /no mobile \(APK\/IPA\) proof plane/);
   assert.match(d.why[0], /inconclusive/);
 });
 
-test('a non-solidity brief reports not_provable_class, not underivable_inputs', async () => {
+test('a plane-less class reports not_provable_class, not underivable_inputs', async () => {
   const db = makeDb();
-  seedApproval(db, provableBrief({ cls: 'web2' }));
+  seedApproval(db, provableBrief({ cls: 'mobile', playbooks: [] }));
   const rec = recorder();
   const seen = [];
 
@@ -244,6 +256,7 @@ test('a non-solidity brief reports not_provable_class, not underivable_inputs', 
   assert.equal(out.reason, 'not_provable_class');
   assert.equal(seen.length, 0);
   assert.equal(hunts(db).length, 0);
+  assert.match(rec.msgs.join('\n'), /no proof plane for this class/);
 });
 
 test('an ambiguous bare SHA in prose is not guessed', () => {
@@ -251,8 +264,7 @@ test('an ambiguous bare SHA in prose is not guessed', () => {
     provableBrief({
       targets: [GIT_URL],
       notes: `contract:Vault saw ${SHA} and also 0123456789abcdef0123456789abcdef01234567`,
-    }),
-  );
+    }), HUNT);
   assert.equal(d.ok, false);
   assert.ok(d.missing.includes('commit'));
 });
@@ -312,11 +324,14 @@ test('approval dispatches prove.yml with the derived inputs and a pre-existing h
   // Exactly one call, to the right endpoint.
   assert.equal(seen.length, 1);
   const { url, init } = seen[0];
+  // The workflow is now a FUNCTION of the class, not a constant. A solidity
+  // brief must reach prove.yml and nothing else.
   assert.equal(
     url,
-    `https://api.github.com/repos/me/asterion/actions/workflows/${WORKFLOW_FILE}/dispatches`,
+    `https://api.github.com/repos/me/asterion/actions/workflows/${workflowFileFor('solidity')}/dispatches`,
   );
-  assert.equal(WORKFLOW_FILE, 'prove.yml');
+  assert.equal(workflowFileFor('solidity'), 'prove.yml');
+  assert.equal(out.workflow, 'prove.yml');
   assert.equal(init.method, 'POST');
   assert.equal(init.headers.authorization, 'Bearer tok');
   assert.equal(init.headers['content-type'], 'application/json');
@@ -878,21 +893,21 @@ test('a proven verdict lands as a finding attributed to the real program', async
 const ADDRESS = '0x00000000000000000000000000000000000000ab';
 
 test('an explicit 0x target is carried through as the address', () => {
-  const d = deriveProveInputs(provableBrief({ targets: [`${GIT_URL}@${SHA}`, ADDRESS] }));
+  const d = deriveProveInputs(provableBrief({ targets: [`${GIT_URL}@${SHA}`, ADDRESS] }), HUNT);
   assert.equal(d.ok, true);
   assert.equal(d.inputs.address, ADDRESS);
 });
 
 test('the address is normalised to lowercase', () => {
   const mixed = '0x00000000000000000000000000000000000000AB';
-  const d = deriveProveInputs(provableBrief({ targets: [`${GIT_URL}@${SHA}`, mixed] }));
+  const d = deriveProveInputs(provableBrief({ targets: [`${GIT_URL}@${SHA}`, mixed] }), HUNT);
   assert.equal(d.inputs.address, mixed.toLowerCase());
 });
 
 test('a git URL is NEVER used as the address', () => {
   // The whole point: repo is present, address is absent, and we must not
   // substitute one for the other.
-  const d = deriveProveInputs(provableBrief());
+  const d = deriveProveInputs(provableBrief(), HUNT);
   assert.equal(d.ok, true);
   assert.equal(d.inputs.repo, GIT_URL);
   assert.equal(d.inputs.address, undefined);
@@ -903,8 +918,7 @@ test('an address can come from an explicit notes token', () => {
     provableBrief({
       targets: [GIT_URL],
       notes: `contract:Vault repo:${GIT_URL} commit:${SHA} address:${ADDRESS}`,
-    }),
-  );
+    }), HUNT);
   assert.equal(d.ok, true);
   assert.equal(d.inputs.address, ADDRESS);
 });
@@ -914,8 +928,7 @@ test('a 0x-looking string in prose is not accepted as an address', () => {
     provableBrief({
       targets: [GIT_URL],
       notes: `contract:Vault repo:${GIT_URL} commit:${SHA} saw 0xdeadbeef on chain`,
-    }),
-  );
+    }), HUNT);
   assert.equal(d.ok, true);
   assert.equal(d.inputs.address, undefined);
 });
@@ -926,9 +939,9 @@ test('the dispatch body omits address entirely when unknown', async () => {
     seen.push(JSON.parse(init.body));
     return new Response(null, { status: 204 });
   };
-  const d = deriveProveInputs(provableBrief());
-  await dispatchProveWorkflow(
-    { token: 't', githubRepo: 'o/r', ref: 'main', inputs: { ...d.inputs, hunt_id: 'h1' } },
+  const d = deriveProveInputs(provableBrief(), HUNT);
+  await dispatchWorkflow(
+    { token: 't', githubRepo: 'o/r', ref: 'main', workflow: d.workflow, inputs: d.inputs },
     { fetch },
   );
   assert.equal('address' in seen[0].inputs, false);
@@ -940,9 +953,9 @@ test('the dispatch body carries address when known', async () => {
     seen.push(JSON.parse(init.body));
     return new Response(null, { status: 204 });
   };
-  const d = deriveProveInputs(provableBrief({ targets: [`${GIT_URL}@${SHA}`, ADDRESS] }));
-  await dispatchProveWorkflow(
-    { token: 't', githubRepo: 'o/r', ref: 'main', inputs: { ...d.inputs, hunt_id: 'h1' } },
+  const d = deriveProveInputs(provableBrief({ targets: [`${GIT_URL}@${SHA}`, ADDRESS] }), HUNT);
+  await dispatchWorkflow(
+    { token: 't', githubRepo: 'o/r', ref: 'main', workflow: d.workflow, inputs: d.inputs },
     { fetch },
   );
   assert.equal(seen[0].inputs.address, ADDRESS);
@@ -994,87 +1007,177 @@ test('roeFromBrief refuses an over-wide brief instead of narrowing it', () => {
   );
 });
 
-// ── B8: a Solana brief must never queue a Foundry job ────────────────────────
+// ── B8 → Task 6: a Solana brief must NEVER queue a Foundry job ───────────────
+//
+// The B8 defect was that `sol.svm-*` declared cls 'solidity' and dispatched a
+// FOUNDRY job at an Anchor program: guaranteed `inconclusive`, and it looked
+// like a legitimate run. Task 6 built the Solana plane, so the invariant is no
+// longer "refuse everything" — it is the sharper one:
+//
+//   · `sol.svm-signer` dispatches, and dispatches to prove-solana.yml
+//   · `sol.svm-account` / `sol.svm-cpi` refuse BY NAME (plane exists, harness
+//     does not) and still never reach fetch
+//   · NOTHING in the solana class ever reaches prove.yml
+//
+// The load-bearing assertion in every arm is on the URL, not just the count: a
+// refusal that still POSTs is the bug wearing a different hat, and a dispatch to
+// prove.yml for a Solana brief is the B8 bug itself.
 
-/**
- * The B8 gate, end to end.
- *
- * `sol.svm-*` used to declare cls 'solidity', so they passed deriveProveInputs
- * and dispatched a FOUNDRY job at an Anchor program: guaranteed `inconclusive`,
- * and it looked like a legitimate run. The assertion that matters is that
- * `fetch` is NEVER CALLED — a refusal that still POSTs would be the bug wearing
- * a different hat.
- */
-test('dispatching an sol.svm-* brief refuses by name and never calls fetch', async () => {
+const SOL_PROGRAM_ID = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+
+/** A Solana brief with complete provenance, so ONLY the harness can refuse it. */
+function solanaBrief(playbook, over = {}) {
+  return provableBrief({
+    cls: 'solana',
+    playbooks: [playbook],
+    targets: [`${GIT_URL}@${SHA}`, SOL_PROGRAM_ID],
+    notes: `contract:Vault repo:${GIT_URL} commit:${SHA} program:vault program_id:${SOL_PROGRAM_ID} instruction:withdraw`,
+    ...over,
+  });
+}
+
+test('no sol.svm-* brief ever reaches prove.yml (the B8 invariant, per class)', async () => {
+  // Runs the WHOLE solana class through the real approval -> dispatch chain and
+  // asserts the URL of every request that happened. Done as its own test (rather
+  // than folded into the two below) because this is the regression itself: it
+  // must fail if any future change routes a Solana brief at the Foundry plane,
+  // whatever the refusal reason or the harness set happens to be.
   for (const [i, playbook] of ['sol.svm-signer', 'sol.svm-account', 'sol.svm-cpi'].entries()) {
-    const brief = provableBrief({
-      cls: 'solana',
-      playbooks: [playbook],
-      // Deliberately complete provenance: repo, a pinned sha and a contract name
-      // are all present, so the ONLY reason this can be refused is the missing
-      // Solana plane. If derivation were failing for an unrelated reason the test
-      // would pass for the wrong reason, which is why the message is asserted.
-      targets: [`${GIT_URL}@${SHA}`, 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'],
-      notes: `contract:Vault repo:${GIT_URL} commit:${SHA}`,
-    });
     const db = makeDb();
-    seedApproval(db, brief, `appr-svm-${i}`);
+    seedApproval(db, solanaBrief(playbook), `appr-svm-${i}`);
     const rec = recorder();
     const fetched = [];
 
-    const out = await approveAndDispatch(
+    await approveAndDispatch(
       `appr-svm-${i}`,
       true,
       rec.deps(db, { GITHUB_DISPATCH_TOKEN: 'tok', GITHUB_REPO: 'me/asterion' }, okFetch(fetched)),
     );
 
-    // 1. refused, with the documented reason code
-    assert.equal(out.dispatched, false, `${playbook}: must not dispatch`);
-    assert.equal(out.reason, 'not_provable_class', `${playbook}: refusal reason`);
-    assert.deepEqual(out.missing, ['cls']);
-
-    // 2. NO workflow dispatch was attempted. This is the load-bearing assertion.
-    assert.equal(fetched.length, 0, `${playbook}: a Foundry job was queued for a Solana brief`);
-    assert.ok(
-      !rec.ledgers.some((l) => l.kind === 'dispatch.sent'),
-      `${playbook}: the ledger must not record a dispatch`,
-    );
-
-    // 3. no hunts row: a hunt that no compute was asked to run is a lie
-    assert.equal(hunts(db).length, 0, `${playbook}: a hunts row was created`);
-
-    // 4. the operator was told WHY, naming the missing plane
-    const msg = rec.msgs.join('\n');
-    assert.match(msg, /Solana \(SVM\)/, `${playbook}: message must name the missing plane`);
-    assert.match(msg, /NOT DISPATCHED/);
-    assert.match(msg, /no proof path for this class/);
-
-    // 5. and it is on the ledger, so the refusal is auditable
-    assert.ok(
-      rec.ledgers.some((l) => l.kind === 'dispatch.blocked' && l.payload.gate === 'allow'),
-      `${playbook}: refusal must be recorded on the ledger`,
-    );
+    for (const call of fetched) {
+      assert.ok(
+        !/\/prove\.yml\//.test(String(call.url)),
+        `${playbook}: a Foundry job was queued for a Solana brief (B8 regression): ${call.url}`,
+      );
+      assert.ok(
+        /\/prove-solana\.yml\//.test(String(call.url)),
+        `${playbook}: dispatched to an unexpected workflow: ${call.url}`,
+      );
+    }
   }
 });
 
-test('the solana refusal message is stable and names the plane verbatim', async () => {
-  const brief = provableBrief({
-    cls: 'solana',
-    playbooks: ['sol.svm-signer'],
-    notes: `contract:Vault repo:${GIT_URL} commit:${SHA}`,
-  });
+test('sol.svm-signer dispatches — to prove-solana.yml, with its own input contract', async () => {
   const db = makeDb();
-  seedApproval(db, brief);
+  seedApproval(db, solanaBrief('sol.svm-signer'));
   const rec = recorder();
   const fetched = [];
-  await approveAndDispatch(
+
+  const out = await approveAndDispatch(
     'appr-1',
     true,
     rec.deps(db, { GITHUB_DISPATCH_TOKEN: 'tok', GITHUB_REPO: 'me/asterion' }, okFetch(fetched)),
   );
-  assert.equal(fetched.length, 0);
-  // eslint-disable-next-line no-console
-  console.log('B8 dispatch refusal (operator view):\n' + rec.msgs.join('\n'));
+
+  assert.equal(out.dispatched, true, 'sol.svm-signer has a harness and must dispatch');
+  assert.equal(out.workflow, 'prove-solana.yml');
+  assert.equal(fetched.length, 1);
+
+  const { url, init } = fetched[0];
+  assert.ok(url.endsWith('/actions/workflows/prove-solana.yml/dispatches'), `wrong workflow: ${url}`);
+  assert.ok(!url.includes('prove.yml'), 'must not be the Foundry workflow');
+
+  const body = JSON.parse(init.body);
+  assert.equal(body.ref, 'main');
+  // The Solana contract, complete. repo/commit identify the .rs source the
+  // harness builds; program names the crate; program_id is the address the
+  // built .so is deployed at; instruction is the entrypoint invoked.
+  assert.equal(body.inputs.repo, GIT_URL);
+  assert.equal(body.inputs.commit, SHA);
+  assert.equal(body.inputs.program, 'vault');
+  assert.equal(body.inputs.program_id, SOL_PROGRAM_ID);
+  assert.equal(body.inputs.instruction, 'withdraw');
+  assert.equal(body.inputs.playbook, 'sol.svm-signer');
+  assert.equal(body.inputs.hunt_id, 'hunt-fixed-uuid');
+
+  // NOT the EVM contract: an undeclared input is a 422, so this is not style.
+  for (const forbidden of ['contract', 'fork_block', 'chain_id', 'address']) {
+    assert.equal(
+      forbidden in body.inputs,
+      false,
+      `prove-solana.yml does not declare '${forbidden}'; sending it would 422 the dispatch`,
+    );
+  }
+
+  // A Solana hunt row exists and carries the source provenance; `contract` is
+  // NULL because a Solana program is not a Solidity contract and inventing one
+  // would put a false value in the table the queue and the report writer read.
+  const rows = hunts(db);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].stage, STAGE_DISPATCHED);
+  assert.equal(rows[0].repo, GIT_URL);
+  assert.equal(rows[0].commit_sha, SHA);
+  assert.equal(rows[0].contract, null);
+});
+
+test('sol.svm-account and sol.svm-cpi refuse BY NAME: plane exists, harness does not', async () => {
+  for (const [i, playbook] of ['sol.svm-account', 'sol.svm-cpi'].entries()) {
+    const db = makeDb();
+    seedApproval(db, solanaBrief(playbook), `appr-noh-${i}`);
+    const rec = recorder();
+    const fetched = [];
+
+    const out = await approveAndDispatch(
+      `appr-noh-${i}`,
+      true,
+      rec.deps(db, { GITHUB_DISPATCH_TOKEN: 'tok', GITHUB_REPO: 'me/asterion' }, okFetch(fetched)),
+    );
+
+    assert.equal(out.dispatched, false, `${playbook}: must not dispatch`);
+    assert.equal(out.reason, 'no_harness_for_playbook', `${playbook}: refusal reason`);
+    assert.deepEqual(out.missing, ['playbook']);
+
+    // The refusal names the PLANE that exists and the harnesses it does have,
+    // which is a different message from "there is no Solana plane".
+    const msg = rec.msgs.join('\n');
+    assert.match(msg, /no harness for this playbook/);
+    assert.match(msg, /Solana \(SVM\) plane exists/);
+    assert.match(msg, /sol\.svm-signer/, 'must name the harness that DOES run');
+    assert.match(msg, /NOT DISPATCHED/);
+
+    // Still nothing queued, and still no hunt row to lie about.
+    assert.equal(fetched.length, 0, `${playbook}: a job was queued for a harness-less class`);
+    assert.equal(hunts(db).length, 0, `${playbook}: a hunts row was created`);
+    assert.ok(!rec.ledgers.some((l) => l.kind === 'dispatch.sent'));
+    assert.ok(
+      rec.ledgers.some((l) => l.kind === 'dispatch.blocked' && l.payload.gate === 'allow'),
+      `${playbook}: the refusal must be on the ledger`,
+    );
+  }
+});
+
+test('the Solana plane refuses by name when its own inputs are missing', () => {
+  // A sol.svm-signer brief with a repo but no program/instruction. The refusal
+  // must name the SOLANA inputs, not the EVM ones, or the operator fixes the
+  // wrong fields.
+  const d = deriveProveInputs(
+    provableBrief({
+      cls: 'solana',
+      playbooks: ['sol.svm-signer'],
+      targets: [`${GIT_URL}@${SHA}`],
+      notes: `repo:${GIT_URL} commit:${SHA}`,
+    }),
+    HUNT,
+  );
+  assert.equal(d.ok, false);
+  assert.equal(d.workflow, 'prove-solana.yml');
+  assert.ok(d.missing.includes('program'), 'must name `program`');
+  assert.ok(d.missing.includes('program_id'), 'must name `program_id`');
+  assert.ok(d.missing.includes('instruction'), 'must name `instruction`');
+  // And it must NOT ask for the EVM-only ones, which would send the operator to
+  // the wrong fields.
+  assert.equal(d.missing.includes('contract'), false);
+  assert.equal(d.missing.includes('fork_block'), false);
 });
 
 test('a solidity brief with the SAME targets still dispatches (the control)', async () => {

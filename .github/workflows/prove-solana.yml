@@ -1,0 +1,212 @@
+name: prove-solana
+# The Solana (SVM) plane. Builds an Anchor/native program from source, deploys it
+# into an in-process bankrun validator, drives the instruction the playbook names,
+# and reports a verdict on the measured before/after.
+#
+# WHY BANKRUN AND NOT `solana-test-validator --clone`
+#
+# §8.1 is explicit, and the reason is operational rather than stylistic:
+#
+#   `solana-test-validator --clone <account>` needs a LIVE RPC per account, for
+#   every account the program touches, and it starts a real validator process.
+#   In CI that is minutes of startup, a hard dependency on a public endpoint's
+#   rate limit, and a failure mode (the RPC throttles) that produces
+#   `inconclusive` — indistinguishable from "the bug is not there".
+#
+# `solana-bankrun` runs the same bank in-process: no validator, no RPC, no
+# accounts to clone. `anchor-bankrun` is the Anchor-aware entry point and is
+# installed alongside it. Both are permissively licenced, and NEITHER is a
+# runtime dependency of the Worker — `app/package.json` `dependencies` stays
+# empty, which is a standing constraint of this repo.
+#
+# THE ARCH BUILD FLAG IS LOAD-BEARING
+#
+# `cargo-build-sbf --arch v0` is required. `solana-bankrun` 0.4.0's runtime is
+# built against the v0 BPF loader; a program compiled with the default `--arch v3`
+# deploys successfully and then fails EVERY instruction with
+#
+#     Error processing Instruction 0: invalid account data for instruction
+#
+# which looks like a program error and is really a loader/version mismatch. This
+# was measured, not assumed: the same program built v3 failed every call and the
+# v0 build executed correctly. Getting this wrong would make every Solana verdict
+# `inconclusive` while the job went green.
+#
+# THE COUNTERFACTUAL
+#
+# Two mechanisms, and which one applies is recorded in the plan:
+#
+#   with_fix              the derived Rust patch (require `is_signer`) is applied
+#                         to the .rs source, the program is REBUILT, and the SAME
+#                         attack is re-run. It must pass. The derivation lives in
+#                         `plane-patch.ts`; the rebuild happens before the re-run
+#                         because a with-fix run that executed the old .so would
+#                         report a pass on a tree that was never compiled.
+#   without_precondition  the harness's `nocond` mode, used when no with_fix run
+#                         can be produced (no SVM_SOURCE, or a patch that does not
+#                         apply exactly). A missing counterfactual leaves a
+#                         `.reason` file, and judge() then reports `partial`
+#                         rather than inventing causality.
+#
+# `hunt_id` is REQUIRED: /hook/proof upserts on it and ingest refuses a `proven`
+# verdict that resolves to no hunts row.
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: 'git URL of the program repository'
+        required: true
+      commit:
+        description: 'commit to build and test against'
+        required: true
+      program:
+        description: 'crate/package name under programs/ (cargo-build-sbf builds programs/<program>)'
+        required: true
+      program_id:
+        description: 'base58 program address the built .so is deployed AT'
+        required: true
+      instruction:
+        description: 'entrypoint the harness invokes (e.g. withdraw)'
+        required: true
+      playbook:
+        description: 'solana playbook to run (prove-solana has a harness for sol.svm-signer)'
+        required: true
+      hunt_id:
+        description: 'hunt row id, for correlation. Required: a verdict that resolves to no hunt is discarded.'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  prove-solana:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: clone the target program at the pinned commit
+        run: |
+          git clone --quiet "${{ inputs.repo }}" target
+          cd target
+          git checkout --quiet "${{ inputs.commit }}"
+          echo "TARGET_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      # proto / rust / the SBF toolchain. `cargo-build-sbf` needs a rustup-managed
+      # toolchain: without rustup it refuses with "Failed to obtain package
+      # metadata" as soon as a dependency's manifest requires edition2024, which
+      # reads like a broken dependency graph and is really a toolchain problem.
+      - name: install the Solana toolchain
+        run: |
+          set -uo pipefail
+          sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)" || {
+            echo '::error::the Solana release installer failed; no program can be built.'
+            exit 1
+          }
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: install app
+        working-directory: app
+        run: npm ci --no-audit --no-fund && npm run build --silent
+
+      # The harness's own deps. They are NOT added to app/package.json: that file
+      # describes the Worker, whose `dependencies` must stay empty. They are
+      # installed here, in the runner, as harness tooling — the same way Echidna is
+      # installed as a binary rather than vendored.
+      - name: install the bankrun harness
+        working-directory: app
+        run: |
+          # PINNED, and the pin is load-bearing. solana-bankrun@0.4.0 declares
+          # peerDependency @solana/web3.js ^1.68.0, but a bare `npm install
+          # @solana/web3.js` resolves to 3.x, where Keypair.generate() is async and
+          # Connection/Transaction differ. The harness then fails at runtime with a
+          # type/await error that looks like a broken test rather than a broken
+          # install. Pinning the peer to the 1.9x line is what keeps this runnable.
+          npm install --no-save --no-audit --no-fund \
+            solana-bankrun@0.4.0 anchor-bankrun @solana/web3.js@^1.98.0
+
+      - name: build the program for the bankrun loader
+        working-directory: target
+        run: |
+          set -uo pipefail
+          if [ ! -d "programs/${{ inputs.program }}" ]; then
+            echo "::error::programs/${{ inputs.program }} does not exist in the checkout."
+            echo "::error::The brief named program '${{ inputs.program }}'; cargo-build-sbf builds programs/<program>."
+            exit 1
+          fi
+          # --arch v0: see the header. A v3 build deploys and then fails every
+          # instruction with a loader error, which reads as inconclusive.
+          ( cd "programs/${{ inputs.program }}" \
+            && cargo-build-sbf --arch v0 --sbf-out-dir "$GITHUB_WORKSPACE/target/target/deploy" )
+          ls -la "$GITHUB_WORKSPACE/target/target/deploy"
+
+      # ── the runs ──────────────────────────────────────────────────────────
+      #
+      # plane-run.mjs writes results/controls/counterfactual in the layout
+      # judge.mjs already reads, then writes plan.json so judge has something to
+      # adjudicate. It gets the target checkout so it can perform the with_fix
+      # rebuild.
+      - name: run the svm harness
+        env:
+          SVM_PROGRAM: ${{ inputs.program }}
+          SVM_PROGRAM_ID: ${{ inputs.program_id }}
+          SVM_INSTRUCTION: ${{ inputs.instruction }}
+          SVM_SOURCE: ${{ vars.SVM_SOURCE }}
+          SBF_OUT_DIR: ${{ github.workspace }}/target/target/deploy
+          TARGET_SHA: ${{ env.TARGET_SHA }}
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          node "$GITHUB_WORKSPACE/app/build/plane-run.mjs" \
+            --playbook "${{ inputs.playbook }}" \
+            --target "$GITHUB_WORKSPACE/target" \
+            --work-dir "$GITHUB_WORKSPACE/out" \
+            --out "$GITHUB_WORKSPACE/out"
+          echo "plane-run exit: $? (0 = evidence recorded, 3 = a precondition was absent)"
+
+      - name: judge
+        if: always()
+        run: |
+          set -uo pipefail
+          if [ ! -f "$GITHUB_WORKSPACE/out/plan.json" ]; then
+            echo '::error::no plan.json was written, so nothing can be judged. The harness run did not start.'
+            exit 1
+          fi
+          node "$GITHUB_WORKSPACE/app/build/judge.mjs" \
+            --plan "$GITHUB_WORKSPACE/out/plan.json" \
+            --results "$GITHUB_WORKSPACE/out/results" \
+            --counterfactual "$GITHUB_WORKSPACE/out/counterfactual" \
+            --out "$GITHUB_WORKSPACE/verdicts.json"
+          cat "$GITHUB_WORKSPACE/verdicts.json"
+
+      - name: report to the Worker
+        if: always()
+        run: |
+          if [ -z "${{ vars.WORKER_URL }}" ]; then echo 'no WORKER_URL; skipping'; exit 0; fi
+          if [ -z "${{ secrets.PROOF_HOOK_SECRET }}" ]; then
+            echo 'PROOF_HOOK_SECRET not set; the Worker would refuse this callback (fail-closed)'
+            exit 1
+          fi
+          curl -sS -X POST "${{ vars.WORKER_URL }}/hook/proof" \
+            -H 'content-type: application/json' \
+            -H "x-asterion-hunt: ${{ inputs.hunt_id }}" \
+            -H "x-asterion-secret: ${{ secrets.PROOF_HOOK_SECRET }}" \
+            --data @verdicts.json || echo 'report failed (non-fatal)'
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: prove-solana-bundle
+          path: |
+            verdicts.json
+            out/plan.json
+            out/results/
+            out/controls/
+            out/counterfactual/
+          retention-days: 90

@@ -1,0 +1,139 @@
+name: prove-infra
+# The infrastructure/DNS plane. Takes a domain and a playbook, resolves the name
+# for real, and reports a verdict on what the DNS actually says.
+#
+# WHY THIS FILE DID NOT EXIST
+#
+# Same root cause as prove-web.yml: `dispatch.ts` named one workflow, so an infra
+# brief could never reach compute. `web.takeover` has been a playbook for as long
+# as `sol.reentrancy`, and no run has ever executed it.
+#
+# ITS CONTRACT
+#
+#   prove-infra.yml   domain / playbook / evidence
+#
+# Deliberately different from both prove.yml (repo/commit/contract) and
+# prove-web.yml (target/playbook): an infra hunt acts on a NAME, and a URL's path
+# is not part of a name. GitHub 422s an undeclared input, so each plane's body is
+# built by its own function in `planes.ts` and posted verbatim.
+#
+# SAFETY POSTURE
+#
+# · Exactly ONE HTTPS GET per name, `redirect: manual`, no crawling. §14 of the
+#   hand-off is explicit that low footprint is the product: the discipline is
+#   already in code elsewhere (`MAX_CANDIDATES = 20`, 2 requests/host) and this
+#   plane holds to it.
+# · DNS resolution goes to a public resolver over DoH, which is query traffic the
+#   target's own authoritative servers would see from any resolver anyway; no
+#   zone transfer is attempted and no subdomain brute force runs here.
+# · Nothing is claimed at the provider. The harness ASKS whether the name looks
+#   unclaimed and records the signature; taking a name over is an operator action
+#   with its own authorization, not a CI step.
+# · `hunt_id` is REQUIRED, for the same reason as every other plane.
+
+on:
+  workflow_dispatch:
+    inputs:
+      domain:
+        description: 'the DNS name to audit (a bare hostname; a URL is reduced to its host)'
+        required: true
+      playbook:
+        description: 'infra playbook to run (prove-infra has a harness for web.takeover)'
+        required: true
+      evidence:
+        description: 'optional label recorded in the bundle'
+        required: false
+        default: ''
+      hunt_id:
+        description: 'hunt row id, for correlation. Required: a verdict that resolves to no hunt is discarded.'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  prove-infra:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: validate the domain
+        env:
+          DOMAIN: ${{ inputs.domain }}
+        run: |
+          set -uo pipefail
+          # Refuse anything that is not a name. Sending a URL's path or an address
+          # to a DNS plane produces an NXDOMAIN and an `inconclusive` that looks
+          # like a real attempt.
+          case "${DOMAIN:-}" in
+            *://*|*/*|'')
+              echo "::error::domain '$DOMAIN' is not a bare hostname."
+              echo "::error::An infra proof acts on a DNS name; strip the scheme and path before dispatching."
+              exit 1
+              ;;
+          esac
+          echo "domain: $DOMAIN"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: install app
+        working-directory: app
+        run: npm ci --no-audit --no-fund && npm run build --silent
+
+      # ── the runs: attack, fixture control, counterfactual ─────────────────
+      #
+      # Same layout as the other two planes, so judge.mjs is the only scorer.
+      - name: run the infra harness
+        env:
+          DOMAIN: ${{ inputs.domain }}
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          node "$GITHUB_WORKSPACE/app/build/plane-run.mjs" \
+            --playbook "${{ inputs.playbook }}" \
+            --work-dir "$GITHUB_WORKSPACE/out" \
+            --out "$GITHUB_WORKSPACE/out"
+          echo "plane-run exit: $? (0 = evidence recorded, 3 = a precondition was absent)"
+
+      - name: judge
+        if: always()
+        run: |
+          set -uo pipefail
+          if [ ! -f "$GITHUB_WORKSPACE/out/plan.json" ]; then
+            echo '::error::no plan.json was written, so nothing can be judged. The harness run did not start.'
+            exit 1
+          fi
+          node "$GITHUB_WORKSPACE/app/build/judge.mjs" \
+            --plan "$GITHUB_WORKSPACE/out/plan.json" \
+            --results "$GITHUB_WORKSPACE/out/results" \
+            --counterfactual "$GITHUB_WORKSPACE/out/counterfactual" \
+            --out "$GITHUB_WORKSPACE/verdicts.json"
+          cat "$GITHUB_WORKSPACE/verdicts.json"
+
+      - name: report to the Worker
+        if: always()
+        run: |
+          if [ -z "${{ vars.WORKER_URL }}" ]; then echo 'no WORKER_URL; skipping'; exit 0; fi
+          if [ -z "${{ secrets.PROOF_HOOK_SECRET }}" ]; then
+            echo 'PROOF_HOOK_SECRET not set; the Worker would refuse this callback (fail-closed)'
+            exit 1
+          fi
+          curl -sS -X POST "${{ vars.WORKER_URL }}/hook/proof" \
+            -H 'content-type: application/json' \
+            -H "x-asterion-hunt: ${{ inputs.hunt_id }}" \
+            -H "x-asterion-secret: ${{ secrets.PROOF_HOOK_SECRET }}" \
+            --data @verdicts.json || echo 'report failed (non-fatal)'
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: prove-infra-bundle
+          path: |
+            verdicts.json
+            out/plan.json
+            out/results/
+            out/controls/
+            out/counterfactual/
+          retention-days: 90

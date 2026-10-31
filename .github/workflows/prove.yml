@@ -44,9 +44,8 @@ on:
         required: false
         default: ''
       hunt_id:
-        description: 'hunt row id, for correlation'
-        required: false
-        default: ''
+        description: 'hunt row id, for correlation - REQUIRED: /hook/proof upserts on it and ingest discards a verdict that resolves to no hunts row'
+        required: true
       address:
         description: 'V2: deployed contract address the PoC attaches to (0x... ). Optional; a repo URL here would break setUp.'
         required: false

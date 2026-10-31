@@ -10,7 +10,15 @@
  * Adding a capability to Asterion means adding a playbook here. Nothing else.
  */
 
-export type Cls = 'web2' | 'solidity' | 'infra' | 'solana';
+/**
+ * What kind of target a brief is about. Each value is a PLANE, not a folder.
+ *
+ * `mobile` is a real class with real packs (`mob.*` load and are selectable) and
+ * NO plane. It is listed so the taxonomy is total and so a brief can carry the
+ * class the operator meant; dispatch refuses it BY NAME rather than pretending.
+ * See `planes.ts:noPlaneReason`.
+ */
+export type Cls = 'web2' | 'solidity' | 'infra' | 'solana' | 'mobile';
 export type Mut = 'read' | 'simulate' | 'mutate' | 'destructive';
 export type EvidenceType =
   | 'http_exchange'
@@ -458,37 +466,43 @@ export const PLAYBOOKS: Playbook[] = [
 ];
 
 /**
- * Classes with a real PoC executor BEHIND THE DISPATCHER.
+ * Playbook ids that have a REAL PoC executor behind some plane.
  *
- * This is the single source of truth for "may this class be dispatched at all".
- * It is deliberately NOT the same thing as `poc.ts:HARNESSED`: HARNESSED says "a
- * harness exists", this says "a plane exists that could run it". A class in this
- * list with no harness dispatches a job that can never produce a finding — the
- * exact dead-dispatch bug that made sol.signature / sol.delegatecall /
- * sol.flashloan run for minutes and report nothing. `tests/dispatch-coverage.test.mjs`
- * asserts `DISPATCHER_CLASSES ⊆ HARNESSED`, computed from THIS list, so that
- * class of bug cannot come back.
+ * This used to be `DISPATCHER_CLASSES` — a set of CLASSES, which is a strictly
+ * coarser thing than "this playbook can be executed". The difference is not
+ * academic: `solana` is a class WITH a plane, and `sol.svm-account` and
+ * `sol.svm-cpi` are in that class with no harness. A class-level answer would
+ * make them dispatchable and re-create the dead-dispatch bug inside the very
+ * plane that was built to fix it.
  *
- * `mobile` is absent on purpose: three mob.* packs exist and load, but there is
- * no mobile plane, so intake cannot even infer the class and dispatch refuses by
- * name. Listing it here would advertise a capability that does not exist.
+ * So the source of truth moved to `planes.ts`, which is per-class AND
+ * per-playbook, and this function reads that registry instead of keeping a
+ * second list that could drift. The invariant
  *
- * `solana` is absent on purpose TOO, and for a stronger reason: the three
- * sol.svm-* classes declare `cls: 'solana'` and their harness (svm-harness.ts)
- * does not exist. Before that was made a distinct class they declared
- * `'solidity'`, which meant they passed deriveProveInputs and queued a FOUNDRY
- * job against an Anchor program: a guaranteed `inconclusive` that looked like a
- * legitimate run. They are now refused by name instead. See dispatch.ts.
+ *     dispatchable ⊆ HARNESSED
+ *
+ * is still asserted in tests/dispatch-coverage.test.mjs, now computed from the
+ * union of every plane's harness set — and each id is additionally required to
+ * synthesize an attack AND a control, so membership alone is never the claim.
+ *
+ * `mobile` is deliberately absent from the registry: three mob.* packs exist and
+ * load, but there is no mobile plane, so a mobile brief refuses BY NAME. Listing
+ * it would advertise a capability that does not exist.
  */
-export const DISPATCHER_CLASSES: ReadonlySet<Cls> = new Set<Cls>(['solidity']);
+export const MOBILE_PACKS_WITHOUT_A_PLANE: readonly string[] = ['mob.android', 'mob.apk', 'mob.ios'];
 
-/** Every playbook id the dispatcher may queue work for. */
-export function dispatchablePlaybookIds(): string[] {
-  return PLAYBOOKS.filter((p) => DISPATCHER_CLASSES.has(p.cls)).map((p) => p.id);
-}
+// The dispatch sets are DERIVED in `planes.ts`, because both of the facts they
+// depend on — "a plane exists" and "that plane can execute this playbook" — are
+// properties of the registry. Keeping a second, hand-written list here is
+// exactly how `HARNESSED` and the old `DISPATCHER_CLASSES` drifted apart in B7.
+// Import them from './planes.js' rather than re-exporting, so there is one copy.
 
 export function byId(id: string): Playbook | undefined {
   return PLAYBOOKS.find((p) => p.id === id);
+}
+
+export function hasPlaybook(id: string): boolean {
+  return byId(id) !== undefined;
 }
 
 export function forClass(cls: Cls): Playbook[] {

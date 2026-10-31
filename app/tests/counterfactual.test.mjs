@@ -25,7 +25,11 @@ import { join } from 'node:path';
 
 import { judge } from '../build/proof.js';
 import { synthesize, HARNESSED } from '../build/poc.js';
-import { PLAYBOOKS, byId, dispatchablePlaybookIds } from '../build/playbooks.js';
+import { PLAYBOOKS, byId } from '../build/playbooks.js';
+import { dispatchablePlaybookIds, PLANES } from '../build/planes.js';
+
+/** Every playbook id; the derivation takes the list now that it lives in planes.ts. */
+const ALL_IDS = PLAYBOOKS.map((p) => p.id);
 import { synthesizeFromFuzz } from '../build/fuzzseed.js';
 import { derivePatch } from '../build/patch.js';
 import { adjudicatePlan, resolveCounterfactual, MECHANISMS } from '../build/judge.mjs';
@@ -486,14 +490,28 @@ test('dispatchable is a subset of HARNESSED (no dead dispatch can return)', () =
   // dispatchable. sol.signature, sol.delegatecall and sol.flashloan passed
   // deriveProveInputs, queued a Foundry job, ran for minutes, and could never
   // produce a finding because synthesize() returned null. Nothing failed; the run
-  // simply could not conclude. The set is computed from DISPATCHER_CLASSES, which
+  // simply could not conclude. The set is computed from the plane registry, which
   // is what the dispatcher itself reads, so a future class cannot be made
   // dispatchable without a harness without failing here.
-  const dispatchable = dispatchablePlaybookIds();
+  //
+  // SCOPE, STATED EXPLICITLY. `HARNESSED` in poc.ts is the FOUNDRY harness set and
+  // is only consulted for the classes Foundry owns. A web2 or Solana playbook is
+  // harnessed by `plane-harness.ts` instead, and asserting `HARNESSED.has('web.jwt')`
+  // would be asserting that Foundry can execute an HTTP test. So each id is
+  // checked against the harness set of the PLANE IT BELONGS TO, and the two
+  // SOLIDITY-specific claims (in HARNESSED, and synthesize() non-null) keep their
+  // full force for every sol.* id.
+  const dispatchable = dispatchablePlaybookIds(ALL_IDS);
   assert.ok(dispatchable.length > 0);
   for (const id of dispatchable) {
-    assert.ok(HARNESSED.has(id), `${id} is dispatchable but has no harness: dead dispatch`);
-    assert.ok(synthesize(lead(id), { contract: 'V', forkBlock: 1 }), `${id}: synthesize returned null`);
+    const cls = byId(id).cls;
+    const plane = PLANES.get(cls);
+    assert.ok(plane, `${id} is dispatchable but its class ${cls} has no plane`);
+    assert.ok(plane.harnesses.has(id), `${id} is dispatchable but its plane does not harness it: dead dispatch`);
+    if (cls === 'solidity') {
+      assert.ok(HARNESSED.has(id), `${id} is dispatchable but has no Foundry harness: dead dispatch`);
+      assert.ok(synthesize(lead(id), { contract: 'V', forkBlock: 1 }), `${id}: synthesize returned null`);
+    }
   }
 });
 
