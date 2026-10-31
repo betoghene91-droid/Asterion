@@ -11,6 +11,14 @@ Discovery → proof → disclosure. No laptop required for any of it.
 no crypto background at all, including what each empty state means and why it is
 usually correct. This README is the engineering record; that file is the manual.
 
+- **`docs/Asterion-Beginner-Guide.pdf`** - the same guide as a 14-page PDF with
+  diagrams. Regenerate with `python3 docs/build_guide.py`; the figures compute
+  their own numbers, so the gate list and the drawdown table cannot drift from the
+  code they describe.
+- **`docs/DARKHAT-ZERO-TO-10K.md`** - what it actually takes to go from $0 to
+  $10,000 in under 60 days, with the arithmetic first and the ethically grey
+  options second.
+
 ---
 
 ## Read this first: what it does not do
