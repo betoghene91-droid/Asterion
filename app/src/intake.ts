@@ -67,14 +67,25 @@ export interface Question {
  * used to declare `cls: 'solidity'`, which let them pass deriveProveInputs and
  * queue a Foundry job against an Anchor program. Now that they are their own
  * class, a brief must be able to become that class or the packs are decoration.
- * Deliberately NOT `ios` or `ipa` for a future mobile class: those substring
- * match scenarios, violations, participant and principal.
+ *
+ * `mobile` is here too, and its word list is the whole of §8.2's second half:
+ * mobile was UNINFERABLE from text before, because this map was typed
+ * `Record<Exclude<Cls,'mobile'>, string[]>` and `mobile` was in `Cls`. The class
+ * existed, three `mob.*` packs loaded, and no sentence could ever select one.
+ *
+ * DELIBERATELY NOT `ios` OR `ipa`. They are substrings of ordinary engagement
+ * prose — *scenarios*, *violations*, *participant*, *principal* — so scoring on
+ * them would classify a huge share of web2 briefs as mobile and hand them to a
+ * class that has no plane. `android`, `apk`, `mobile` and `keystore` are the
+ * safe four: each is a token that appears when the operator actually means an
+ * app binary, and none is a substring of a word this taxonomy already uses.
  */
 const CLASS_WORDS: Record<Cls, string[]> = {
   web2: ['web', 'api', 'url', 'http', 'site', 'app', 'endpoint', 'graphql', 'login', 'site'],
   solidity: ['contract', 'solidity', 'vault', 'token', 'defi', 'protocol', 'evm', '0x'],
   infra: ['dns', 'subdomain', 'takeover', 'tls', 'port', 'host', 'infra'],
   solana: ['solana', 'anchor', 'svm', 'spl', 'program id', 'pda', 'lamport'],
+  mobile: ['android', 'apk', 'mobile', 'keystore'],
 };
 
 const DEPTHS: Record<string, { minutes: number; mut: Mut; label: string }> = {

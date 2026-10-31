@@ -1,0 +1,157 @@
+name: prove-web
+# The web2/HTTP plane. Takes an endpoint and a playbook, issues real requests,
+# and reports a verdict per request-level assertion.
+#
+# WHY THIS FILE DID NOT EXIST
+#
+# `dispatch.ts` was hard-wired to `prove.yml`, so a web2 brief was either refused
+# ("no proof path") or — before that refusal existed — handed to a Foundry
+# pipeline that cannot execute it. The plane was written and unreachable. Task 6
+# gives it its own workflow and its own input contract.
+#
+# ITS INPUT CONTRACT IS NOT `prove.yml`'s, AND THAT IS THE POINT
+#
+#   prove.yml        repo / commit / contract / fork_block / chain_id / address
+#   prove-web.yml    target / playbook / evidence
+#
+# GitHub answers a `workflow_dispatch` carrying an input the workflow does not
+# declare with **422**, so a single union body cannot serve both. `planes.ts`
+# builds exactly these keys and nothing else; `tests/plane-routing.test.mjs`
+# walks this block and compares it with what the builder emits, so the two cannot
+# drift.
+#
+# SAFETY POSTURE
+#
+# · GET/HEAD only. A web2 proof issues requests at an endpoint the engagement
+#   already authorizes; it does not post, and it does not authenticate as anyone.
+# · `redirect: manual` inside the harness, so a redirect cannot walk the request
+#   to a host the RoE never covered.
+# · No credentials in the body or the environment: the harness takes a token from
+#   the ENGAGEMENT, and the Worker does not send one.
+# · `hunt_id` is REQUIRED. /hook/proof upserts on it, and ingest refuses a
+#   `proven` verdict that resolves to no hunts row, so a run without it could
+#   only ever produce a discarded verdict.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'absolute http(s) URL to test (never a git URL)'
+        required: true
+      playbook:
+        description: 'web2 playbook to run (prove-web has a harness for web.jwt)'
+        required: true
+      evidence:
+        description: 'optional capture label, recorded in the bundle'
+        required: false
+        default: ''
+      hunt_id:
+        description: 'hunt row id, for correlation. Required: a verdict that resolves to no hunt is discarded.'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  prove-web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── refuse an unusable target by name, before doing any work ──────────
+      #
+      # A git URL here means the brief was classified web2 while its target is a
+      # source tree. Failing with the reason is better than issuing an HTTP
+      # request at a checkout URL, which produces a 404 and an `inconclusive`
+      # that looks like a real attempt.
+      - name: validate the target
+        env:
+          TARGET: ${{ inputs.target }}
+        run: |
+          set -uo pipefail
+          case "${TARGET:-}" in
+            http://*|https://*) ;;
+            *)
+              echo "::error::target '$TARGET' is not an absolute http(s) URL."
+              echo "::error::A web2 proof issues requests at an endpoint; a bare host or a git URL cannot be requested."
+              exit 1
+              ;;
+          esac
+          echo "target: $TARGET"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: install app
+        working-directory: app
+        run: npm ci --no-audit --no-fund && npm run build --silent
+
+      # ── the runs: attack, fixture control, counterfactual ─────────────────
+      #
+      # plane-run.mjs writes results/<t>.{log,exit}, controls/<t>_control.{log,exit}
+      # and counterfactual/<t>.{log,exit} — the SAME layout prove.yml produces, so
+      # judge.mjs adjudicates a web verdict with the same code that adjudicates a
+      # Foundry one. That is the property that makes these verdicts comparable
+      # rather than a parallel scoring system.
+      #
+      # `TOKEN` is the engagement's own session token when the playbook needs one.
+      # It is read from a secret, never printed, and never written into the plan.
+      - name: run the web2 harness
+        env:
+          TARGET: ${{ inputs.target }}
+          TOKEN: ${{ secrets.WEB2_SESSION_TOKEN }}
+          METHOD: GET
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          node "$GITHUB_WORKSPACE/app/build/plane-run.mjs" \
+            --playbook "${{ inputs.playbook }}" \
+            --work-dir "$GITHUB_WORKSPACE/out" \
+            --out "$GITHUB_WORKSPACE/out"
+          # A non-zero exit here is a REFUSED PRECONDITION (exit 3), not a failing
+          # test: plane-run writes a `.reason` file and the verdict must then be
+          # inconclusive rather than reproduced. Surfacing it without failing the
+          # job keeps the bundle uploadable and the reason readable.
+          echo "plane-run exit: $? (0 = evidence recorded, 3 = a precondition was absent)"
+
+      - name: judge
+        if: always()
+        run: |
+          set -uo pipefail
+          if [ ! -f "$GITHUB_WORKSPACE/out/plan.json" ]; then
+            echo '::error::no plan.json was written, so nothing can be judged. The harness run did not start.'
+            exit 1
+          fi
+          node "$GITHUB_WORKSPACE/app/build/judge.mjs" \
+            --plan "$GITHUB_WORKSPACE/out/plan.json" \
+            --results "$GITHUB_WORKSPACE/out/results" \
+            --counterfactual "$GITHUB_WORKSPACE/out/counterfactual" \
+            --out "$GITHUB_WORKSPACE/verdicts.json"
+          cat "$GITHUB_WORKSPACE/verdicts.json"
+
+      - name: report to the Worker
+        if: always()
+        run: |
+          if [ -z "${{ vars.WORKER_URL }}" ]; then echo 'no WORKER_URL; skipping'; exit 0; fi
+          if [ -z "${{ secrets.PROOF_HOOK_SECRET }}" ]; then
+            echo 'PROOF_HOOK_SECRET not set; the Worker would refuse this callback (fail-closed)'
+            exit 1
+          fi
+          curl -sS -X POST "${{ vars.WORKER_URL }}/hook/proof" \
+            -H 'content-type: application/json' \
+            -H "x-asterion-hunt: ${{ inputs.hunt_id }}" \
+            -H "x-asterion-secret: ${{ secrets.PROOF_HOOK_SECRET }}" \
+            --data @verdicts.json || echo 'report failed (non-fatal)'
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: prove-web-bundle
+          path: |
+            verdicts.json
+            out/plan.json
+            out/results/
+            out/controls/
+            out/counterfactual/
+          retention-days: 90
