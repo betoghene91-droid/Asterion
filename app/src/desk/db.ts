@@ -52,6 +52,50 @@ export async function kvSet(env: DeskEnv, key: string, value: string): Promise<v
 }
 
 /**
+ * The D1 free-tier daily rows_written ceiling, and where we stop before it.
+ *
+ * Cloudflare meters this per UTC day and, past the cap, does not throttle: every
+ * write fails outright. A desk that ignores that does not fail cleanly - it writes
+ * a partial universe, then reads it back as if it were complete. Halting at 90%
+ * leaves headroom for the interactive paths (a /hunt approval, a sentinel alert)
+ * that share the same database and are worth more than another sweep.
+ */
+export const WRITE_BUDGET = {
+  /** The published free-tier cap. */
+  dailyRows: 100_000,
+  /** Stop the sweep here, so interactive work still has room. */
+  stopAtFraction: 0.9,
+} as const;
+
+/**
+ * Has this UTC day's D1 write budget run out?
+ *
+ * Cloudflare exposes the consumed count only in an out-of-band email, so this is
+ * necessarily our own accounting: every desk writer funnels through this module's
+ * `db()`, and `spendRows` is called by the sweep as it writes. Absent any recorded
+ * spend we assume zero - i.e. we never halt a desk that has not been measured,
+ * because a false halt stops trading on no evidence at all.
+ */
+export async function writeBudgetExhausted(env: DeskEnv, now = Date.now()): Promise<boolean> {
+  const day = new Date(now).toISOString().slice(0, 10);
+  const raw = await kvGet(env, `rows_written:${day}`);
+  if (raw === null) return false;
+  const used = Number(raw);
+  if (!Number.isFinite(used)) return false;
+  return used >= WRITE_BUDGET.dailyRows * WRITE_BUDGET.stopAtFraction;
+}
+
+/** Record rows written this UTC day. Called by the writers, not by readers. */
+export async function spendRows(env: DeskEnv, n: number, now = Date.now()): Promise<void> {
+  if (!Number.isFinite(n) || n <= 0) return;
+  const day = new Date(now).toISOString().slice(0, 10);
+  const raw = await kvGet(env, `rows_written:${day}`);
+  const used = Number(raw ?? 0);
+  const next = (Number.isFinite(used) ? used : 0) + n;
+  await kvSet(env, `rows_written:${day}`, String(next));
+}
+
+/**
  * Outbound-call budget. Every desk network call goes through `spendSubrequest`
  * first: Cloudflare caps subrequests per invocation and a runaway crawler is a
  * failure mode that looks like a feature until the Worker starts throwing.

@@ -777,6 +777,50 @@ test('desk-data: the marks snapshot honours a write cadence instead of writing e
   assert.equal(fourth.written, 2, 'minGapSeconds=0 keeps the old per-call behaviour');
 });
 
+// ── D1 write budget: the desk stops before the cap ───────────────────
+//
+// Cloudflare does not throttle past the free-tier rows_written cap: every write
+// fails. A sweep that keeps going writes a partial universe and then reads it back
+// as complete. It must stop instead, which is the same halt the risk breaker has
+// always used.
+
+test('desk-data: the sweep halts once the daily D1 write budget is spent', async () => {
+  const e = makeEnv();
+  const { WRITE_BUDGET, spendRows, writeBudgetExhausted } = await import('../build/desk/db.js');
+  const { runSweep } = await import('../build/desk/pipeline.js');
+
+  // Nothing recorded yet: a desk that has not been measured is never halted.
+  assert.equal(await writeBudgetExhausted(e.env, NOW), false);
+
+  // Below the stop threshold: still running.
+  await spendRows(e.env, Math.floor(WRITE_BUDGET.dailyRows * 0.5), NOW);
+  assert.equal(await writeBudgetExhausted(e.env, NOW), false);
+
+  // At the threshold: stop.
+  await spendRows(e.env, Math.ceil(WRITE_BUDGET.dailyRows * 0.4), NOW);
+  assert.equal(await writeBudgetExhausted(e.env, NOW), true);
+
+  // And the sweep refuses to do any work at all - not even fetching candidates.
+  let fetched = 0;
+  const source = {
+    candidates: async () => { fetched += 1; return []; },
+    dossier: async () => ({}),
+    quote: async () => ({}),
+  };
+  const rep = await runSweep(e.env, source, NOW);
+  assert.equal(rep.halted, true, 'a spent budget must halt the sweep');
+  assert.equal(fetched, 0, 'a halted sweep must not even call the source');
+});
+
+test('desk-data: a new UTC day starts with a fresh write budget', async () => {
+  const e = makeEnv();
+  const { WRITE_BUDGET, spendRows, writeBudgetExhausted } = await import('../build/desk/db.js');
+  await spendRows(e.env, WRITE_BUDGET.dailyRows, NOW);
+  assert.equal(await writeBudgetExhausted(e.env, NOW), true);
+  // 24h later is a different UTC day, so the counter does not carry over.
+  assert.equal(await writeBudgetExhausted(e.env, NOW + 24 * 3600 * 1000), false);
+});
+
 // ── the registry ─────────────────────────────────────────────────────────
 
 test('desk-data: every registry entry is cited, and only listed entries are excluded', () => {

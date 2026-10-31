@@ -24,7 +24,7 @@
 import { append as ledgerAppend } from '../ledger.js';
 import { analyze } from './analyst.js';
 import { armState, checkBreaker, todayRealizedPnl } from './arming.js';
-import { db, newId, realizedEquity, subrequestsUsed } from './db.js';
+import { db, newId, realizedEquity, spendRows, subrequestsUsed, writeBudgetExhausted } from './db.js';
 import { confirmEntry, decideSize, openPosition, recordFill } from './executor.js';
 import { evaluate } from './filter.js';
 import { buildKnownAccounts, concentration, type HolderEntry } from './holders.js';import { buildCalibration, measureOutcomes, recordExit, recordHaircut, recordKill, saveCalibration } from './logger.js';
@@ -127,12 +127,30 @@ export async function runSweep(
   now = Date.now(),
 ): Promise<SweepReport> {
   const report = emptySweep();
+  // Ordinary D1 writes this sweep performs, so the daily budget can be tracked
+  // from inside the loop that actually spends it.
+  let wrote = 0;
 
   // Breaker first: a halted desk does no scanning at all, which also stops the
   // subrequest spend. Halting is not just "no trades", it is "no work".
   const breaker = await checkBreaker(env, now);
-  report.halted = breaker.halted;
-  if (breaker.halted) return report;
+  if (breaker.halted) {
+    report.halted = true;
+    return report;
+  }
+
+  // The D1 free tier is a HARD ceiling on rows_written, and the sweep is its
+  // largest consumer. When Cloudflare has already told us we are past the budget,
+  // continuing does not degrade gracefully: every write starts returning an error,
+  // so the sweep half-completes, kills fire on half-written state, and the operator
+  // sees a dead bot rather than a quiet one. Stopping is the same halt path the
+  // risk breaker uses, because "no work" is exactly the intended behaviour.
+  const writeGate = await writeBudgetExhausted(env, now);
+  if (writeGate) {
+    report.halted = true;
+    report.errors = 0;
+    return report;
+  }
 
   let candidates: MarketSnapshot[] = [];
   try {
@@ -164,7 +182,8 @@ export async function runSweep(
       const cheap = scout(dor, SCOUT_HOLDER_PROBE, now);
       if (!cheap.keep && cheap.reason !== 'holders_too_few') {
         report.scouted_out++;
-        await upsertUniverse(env, m, now, 'killed');
+        await upsertUniverse(env, m, now, 'killed'); wrote += 1;
+        wrote += 1;
         await recordKill(env, {
           mint: m.mint,
           symbol: m.symbol,
@@ -189,7 +208,7 @@ export async function runSweep(
       }
       report.judged++;
 
-      await upsertUniverse(env, dossier.market, now, 'in');
+      await upsertUniverse(env, dossier.market, now, 'in'); wrote += 1;
 
       // Scout's holder gate now has a real number.
       const holdersN = dossier.holders.holders;
@@ -197,6 +216,7 @@ export async function runSweep(
       if (!full.keep) {
         report.scouted_out++;
         await setUniverseState(env, m.mint, 'killed', holdersN ?? undefined);
+        wrote += 1;
         await recordKill(env, {
           mint: m.mint,
           symbol: dossier.market.symbol,
@@ -228,6 +248,7 @@ export async function runSweep(
         // One kill row per reason would double-count the token in calibration;
         // the primary reason is the recorded one and the rest go in the snapshot
         // so "would this have been killed anyway" stays answerable.
+        wrote += 1;
         await recordKill(env, {
           mint: m.mint,
           symbol: dossier.market.symbol,
@@ -345,6 +366,10 @@ export async function runSweep(
       console.error('desk sweep: mint failed', m.mint, e);
     }
   }
+
+  // Best-effort accounting: it must never fail a sweep that succeeded, and
+  // must never fail one that is about to.
+  if (wrote > 0) await spendRows(env, wrote, now).catch(() => undefined);
 
   return report;
 }
