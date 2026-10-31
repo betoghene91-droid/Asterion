@@ -32,6 +32,10 @@ import {
   ensureProgramRow,
   resolveTargetRef,
 } from '../authorize.js';
+import { forkableChains, parseChainToken } from '../chains.js';
+
+/** A 40-hex `0x` token anywhere in the text - the same shape `authorize.ts` accepts. */
+const ADDRESS_IN_TEXT = /(?:^|[^0-9a-zA-Z])0x[0-9a-fA-F]{40}(?![0-9a-fA-F])/;
 import { approveAndDispatch, type ApproveOutcome } from '../dispatch.js';
 import { renderBrief, type Brief, type Question } from '../intake.js';
 import { compileWithEnrichment, describeEnrichment } from '../intake-enrich.js';
@@ -65,7 +69,13 @@ export type EngagementResult =
   | {
       kind: 'questions';
       programId: string;
-      authorizationRef: string;
+      /**
+       * Absent for the pre-gate chain question: there is no anchor to cite until
+       * the chain is named, and inventing one would be exactly the guess the
+       * whole identity fix exists to prevent. `ui.js:rememberQuestions` already
+       * reads this as `r.authorizationRef || null`.
+       */
+      authorizationRef?: string;
       questions: Question[];
     }
   | {
@@ -86,8 +96,12 @@ export type EngagementResult =
  * surface, and `github.com/acme/vault` gets its own id rather than collapsing onto
  * `github.com`.
  */
-export async function ensureProgram(env: UiEnv, raw: string): Promise<string> {
-  return ensureProgramRow(env, raw);
+export async function ensureProgram(
+  env: UiEnv,
+  raw: string,
+  chainId: number | null = null,
+): Promise<string> {
+  return ensureProgramRow(env, raw, chainId);
 }
 
 /**
@@ -108,10 +122,19 @@ export { authorizationFor };
  * so the Mini App and the bot cannot tell the operator different things — and the
  * commands it names are the ones that exist.
  */
-function refusalFor(programId: string): string {
-  const ref = resolveTargetRef(programId);
+function refusalFor(programId: string, raw: string, chainId: number | null): string {
+  // THE COLLAPSE BUG. This used to resolve the PROGRAM ID ('unscoped') instead of
+  // the operator's text, so an address that had failed to resolve to a chain came
+  // back as `kind: 'none'` and the card offered '/policy | /seed | /own' - three
+  // commands, none of which can put a chain on a contract. The one correct next
+  // action, tapping the chain button, was never shown.
+  const ref = resolveTargetRef(raw, false, chainId);
   return authorizationRefusal(
-    { program: programId, kind: ref.kind, ...(ref.kind === 'address' ? { address: ref.address } : {}) },
+    {
+      program: programId,
+      kind: ref.kind,
+      ...(ref.kind === 'address' ? { address: ref.address } : {}),
+    },
     'text',
   );
 }
@@ -127,17 +150,51 @@ export async function compileEngagement(
   hints: EngagementHints = {},
   answers: Partial<Record<string, string>> = {},
 ): Promise<EngagementResult> {
-  const programId = await ensureProgram(
-    env,
-    answers['target'] ? `${raw} ${answers['target']}` : raw,
-  );
+  const text = answers['target'] ? `${raw} ${answers['target']}` : raw;
+
+  // The avatar of the Telegram bug this fixes: `ensureSelfProgram` there has always
+  // taken a `chainId` and passed it to `ensureProgramRow`; this one never did, so a
+  // contract could not be identified on the Mini App at all. `answers.chain` is the
+  // chain question's own answer (see `intake.ts:compile`, which asks it), and a
+  // `chain:8453` typed inline is the same declaration. Neither is a guess.
+  const chainId =
+    (answers.chain ? parseChainToken(`chain:${answers.chain}`) : null) ??
+    parseChainToken(raw);
+
+  // ASK, DO NOT REFUSE.
+  //
+  // `intake.ts:compile` already asks this question, but it is only reached AFTER
+  // the authorization gate - and the gate has nothing to look up until the chain
+  // is named, so the operator hit a refusal that named three commands which cannot
+  // put a chain on a contract. Hoisting the question above the gate is what turns
+  // the Mini App's contract path from a dead end into a tap, and it is the same
+  // question, from the same source (`forkableChains`), with the same answer key
+  // (`chain`) that `compile` reads. Nothing is authorized by asking it.
+  if (chainId === null && ADDRESS_IN_TEXT.test(text)) {
+    return {
+      kind: 'questions',
+      programId: 'unscoped',
+      questions: [
+        {
+          key: 'chain',
+          text: 'Which chain is that contract on? (the same address exists on every chain)',
+          options: forkableChains().map((c) => ({
+            label: `${c.name} (${c.id})`,
+            value: String(c.id),
+          })),
+        },
+      ],
+    };
+  }
+
+  const programId = await ensureProgram(env, text, chainId);
   const authRef = await authorizationFor(env, programId);
 
   if (!authRef) {
     return {
       kind: 'unauthorized',
       programId,
-      message: refusalFor(programId),
+      message: refusalFor(programId, text, chainId),
     };
   }
 

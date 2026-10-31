@@ -421,7 +421,11 @@ function readAnswers(raw: unknown): Partial<Record<string, string>> {
   if (typeof raw !== 'object' || raw === null) return {};
   const src = raw as Record<string, unknown>;
   const out: Partial<Record<string, string>> = {};
-  for (const k of ['target', 'class', 'depth', 'confirm'] as const) {
+  // 'chain' is here because work.ts asks for it ABOVE the authorization gate and
+  // intake.ts:compile reads it as answers.chain. Leaving it out silently discarded
+  // the operator's chain tap - the button rendered, the tap posted, and the server
+  // ignored it, which re-created the dead end one layer deeper.
+  for (const k of ['target', 'class', 'depth', 'confirm', 'chain'] as const) {
     const v = src[k];
     if (typeof v === 'string' && v.trim()) out[k] = v.trim().slice(0, 300);
   }
