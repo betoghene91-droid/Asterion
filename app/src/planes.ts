@@ -633,6 +633,15 @@ export const PLANES: ReadonlyMap<Cls, Plane> = new Map<Cls, Plane>([
         'sol.signature',
         'sol.delegatecall',
         'sol.flashloan',
+        // Promoted with the playbook rows: the harnesses already existed.
+        'sol.overflow',
+        'sol.mev',
+        // Newly written harnesses, landed with their playbook rows.
+        'sol.erc4626',
+        'sol.erc20',
+        'sol.proxy',
+        'sol.erc4337',
+        'sol.signature.ecdsa',
       ]),
       build: buildSolidity,
     },

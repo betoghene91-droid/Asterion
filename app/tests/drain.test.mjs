@@ -1270,11 +1270,13 @@ test('a multi-leg plan broadcasts every leg in order', async () => {
 // 11. GENERIC — every class drains through the same ladder
 // ═══════════════════════════════════════════════════════════════════════════
 
-test('all ten classes are drainable', () => {
-  assert.equal(Object.keys(DRAIN_CLASSES).length, 10);
+test('all seventeen classes are drainable', () => {
+  assert.equal(Object.keys(DRAIN_CLASSES).length, 17);
   assert.deepEqual(Object.keys(DRAIN_CLASSES).sort(), [
-    'sol.accesscontrol', 'sol.delegatecall', 'sol.dos', 'sol.flashloan', 'sol.inflation',
-    'sol.oracle', 'sol.reentrancy', 'sol.rounding', 'sol.signature', 'sol.upgrade',
+    'sol.accesscontrol', 'sol.delegatecall', 'sol.dos', 'sol.erc20', 'sol.erc4337',
+    'sol.erc4626', 'sol.flashloan', 'sol.inflation', 'sol.mev', 'sol.oracle',
+    'sol.overflow', 'sol.proxy', 'sol.reentrancy', 'sol.rounding', 'sol.signature',
+    'sol.signature.ecdsa', 'sol.upgrade',
   ]);
 });
 
@@ -1316,7 +1318,9 @@ test('every class produces an executable plan through the identical ladder', asy
     assert.equal(r.status, 'simulated_ok', `${cls}: ${r.refusal ? r.refusal.reason : ''}`);
     planned++;
   }
-  assert.equal(planned, 10);
+  // Every class in DRAIN_CLASSES, counted rather than assumed: the point of the
+  // test is that the loop runs the same ladder for all of them.
+  assert.equal(planned, Object.keys(DRAIN_CLASSES).length);
 });
 
 test('every declared vector is reachable from at least one class', () => {

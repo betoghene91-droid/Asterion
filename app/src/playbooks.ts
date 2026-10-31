@@ -463,6 +463,128 @@ export const PLAYBOOKS: Playbook[] = [
     proof: 'A function becomes permanently uncallable once a user-controlled array grows.',
     evidence: 'tx_trace',
   },
+
+  // ─────────────── solidity additions (Round 2) ───────────────
+  //
+  // Two rows, not seven. `sol.overflow` and `sol.mev` already had a working
+  // harness above in poc.ts, parked in `UNPLAYBOOKED_HARNESSES` for want of
+  // exactly this: a playbook row. Giving them one is what promotes them from
+  // "implemented but unreachable" to dispatchable, and the harness needed no
+  // change at all.
+  //
+  // Five more arrived with their harnesses in the same change, so the rule
+  // "every sol.* playbook has a harness" still holds without exception.
+  {
+    id: 'sol.overflow',
+    name: 'Arithmetic overflow, underflow, or unchecked downcast',
+    cls: 'solidity',
+    family: 'arithmetic',
+    mut: 'simulate',
+    requires: ['a value field behind unchecked maths or a narrowing cast', 'foundry'],
+    probes: [
+      { id: 'cast', desc: 'enumerate unchecked blocks and uint→uint narrowing casts' },
+      { id: 'bound', desc: 'drive the operand to the boundary', expect: 'wrapped value credited as valid' },
+      { id: 'poc', desc: 'fork-reproduce with the boundary operand', expect: 'attacker balance increases' },
+    ],
+    proof: 'A boundary operand wraps or truncates into a value the contract credits.',
+    evidence: 'tx_trace',
+    detect: ['unchecked', 'uint128(', 'uint96(', 'uint64(', 'uint32(', 'SafeMath', 'pragma solidity 0.'],
+  },
+  {
+    id: 'sol.mev',
+    name: 'MEV-extractable ordering: sandwich, backrun, JIT liquidity',
+    cls: 'solidity',
+    family: 'mev',
+    mut: 'simulate',
+    requires: ['a swap or liquidity path visible in the mempool', 'a slippage bound an attacker can sit inside'],
+    probes: [
+      { id: 'slippage', desc: 'read minAmountOut / maxAmountIn and the deadline on the swap path' },
+      { id: 'depth', desc: 'measure pool depth against the intended trade size' },
+      { id: 'poc', desc: 'front-run + victim + back-run in one block', expect: 'attacker profit net of gas and fee' },
+    ],
+    proof: 'A one-block bundle around a real swap profits net of gas and pool fee.',
+    evidence: 'tx_trace',
+    detect: ['swapExact', 'minAmountOut', 'amountOutMin', 'deadline', 'addLiquidity', 'removeLiquidity'],
+  },  {
+    id: 'sol.erc4626',
+    name: 'ERC-4626 vault accounting: share price, rounding, first-depositor donation',
+    cls: 'solidity',
+    family: 'vault',
+    mut: 'simulate',
+    requires: ['an ERC-4626 or 4626-like vault', 'totalAssets() reading a live balance', 'no virtual offset or dead shares'],
+    probes: [
+      { id: 'round', desc: 'check deposit rounds down and withdraw rounds down, both vault-favourable' },
+      { id: 'donate', desc: 'deposit 1 wei then donate directly to the vault' },
+      { id: 'poc', desc: 'let a second depositor enter', expect: 'their shares round to zero and attacker redeems both' },
+    ],
+    proof: 'A donation sequence makes a later depositor receive fewer assets than the attacker extracts.',
+    evidence: 'tx_trace',
+    detect: ['ERC4626', 'convertToShares', 'convertToAssets', 'totalAssets', 'previewRedeem', 'deposit(', 'redeem('],
+  },
+  {
+    id: 'sol.erc20',
+    name: 'Non-standard ERC-20 behaviour: fee-on-transfer, rebase, hook, missing return',
+    cls: 'solidity',
+    family: 'token',
+    mut: 'simulate',
+    requires: ['an integrated token whose transfer semantics may differ', 'protocol accounting that assumes received == sent'],
+    probes: [
+      { id: 'delta', desc: 'compare credited amount against measured balance delta' },
+      { id: 'hook', desc: 'check for ERC777 / ERC1363 transfer hooks on the path' },
+      { id: 'poc', desc: 'deposit a fee-on-transfer token', expect: 'withdrawable exceeds deposited' },
+    ],
+    proof: 'A deposit credits more than was received, so a withdrawer takes more than they supplied.',
+    evidence: 'tx_trace',
+    detect: ['safeTransfer', 'safeTransferFrom', 'balanceOf(address(this))', 'transferFrom(', 'IERC20('],
+  },
+  {
+    id: 'sol.proxy',
+    name: 'Proxy and storage-collision defect beyond a plain upgrade',
+    cls: 'solidity',
+    family: 'proxy',
+    mut: 'simulate',
+    requires: ['a proxy pattern with a custom slot, diamond storage, or shared initializer flags', 'foundry'],
+    probes: [
+      { id: 'slot', desc: 'read the implementation and admin slots and compare against EIP-1967 constants' },
+      { id: 'layout', desc: 'walk the implementation layout for a slot that collides with the proxy admin' },
+      { id: 'poc', desc: 'write the colliding slot as an unprivileged caller', expect: 'privileged state corrupted or read' },
+    ],
+    proof: 'Two values occupy one slot and an unprivileged caller can set one of them.',
+    evidence: 'tx_trace',
+    detect: ['delegatecall', 'EIP1967', 'implementation()', 'initialize(', 'Diamond', 'facet', 'beacon'],
+  },
+  {
+    id: 'sol.erc4337',
+    name: 'Account abstraction: userOp validation, paymaster drain, cross-EntryPoint replay',
+    cls: 'solidity',
+    family: 'aa',
+    mut: 'simulate',
+    requires: ['an ERC-4337 EntryPoint integration, smart account or paymaster', 'a signature scheme the account trusts'],
+    probes: [
+      { id: 'hash', desc: 'check validateUserOp hashes against entryPoint.getUserOpHash' },
+      { id: 'paymaster', desc: 'check the paymaster validates sender and bounds callData' },
+      { id: 'poc', desc: 'replay one signed userOp twice', expect: 'both succeed, or paymaster pays twice' },
+    ],
+    proof: 'One signed userOp executes twice, or a paymaster pays for a call it never agreed to.',
+    evidence: 'tx_trace',
+    detect: ['validateUserOp', 'getUserOpHash', 'EntryPoint', 'paymasterAndData', 'userOp', 'validatePaymasterUserOp'],
+  },
+  {
+    id: 'sol.signature.ecdsa',
+    name: 'ECDSA specifics: zero-address ecrecover, malleability, missing domain separator',
+    cls: 'solidity',
+    family: 'signature',
+    mut: 'simulate',
+    requires: ['an ecrecover or ECDSA.recover site gating a value-moving action', 'a digest the protocol assembles itself'],
+    probes: [
+      { id: 'zero', desc: 'recover from a malformed signature and check whether address(0) is rejected' },
+      { id: 'replay', desc: 'resubmit one signature, and against a second contract sharing the digest' },
+      { id: 'poc', desc: 'execute the value-moving action twice', expect: 'both succeed' },
+    ],
+    proof: 'A signature the protocol accepted once is accepted again, or validates a signer it never meant.',
+    evidence: 'tx_trace',
+    detect: ['ecrecover', 'ECDSA.recover', 'toEthSignedMessageHash', 'DOMAIN_SEPARATOR', 'nonces[', 'permit('],
+  },
 ];
 
 /**

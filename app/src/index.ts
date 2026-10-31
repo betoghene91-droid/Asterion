@@ -48,6 +48,8 @@ import {
 } from './desk/cards.js';
 import { latestCalibration } from './desk/logger.js';
 import { deskStatus } from './desk/pipeline.js';
+import { armState } from './desk/arming.js';
+import { realizedEquity } from './desk/db.js';
 import {
   answerCb,
   editText,
@@ -1983,6 +1985,167 @@ async function dashboardApi(env: Env, path: string): Promise<Response> {
           snapshot_summary: r.detail.slice(0, 120),
         })),
       );
+    }
+
+    // ── trade: the paper desk as a trading screen ──────────────────────────
+    // Two reads, both derived from desk_* only, both GET. Positions and kills
+    // already exist per-surface; this one endpoint answers the question the
+    // trading screen actually asks: what is my equity curve, what is open, and
+    // what is the win/loss ledger. No live quote is taken here (a dashboard read
+    // must not spend the subrequest budget), so every mark is the last stored
+    // price and `stale` says so in the payload rather than in a footnote.
+    case '/api/desk/trade': {
+      const arm = await armState(env);
+      const equity = await realizedEquity(env);
+      const open = await env.DB.prepare(
+        `SELECT mint, symbol, filled_usd, entry_price, stop_price, opened_at, peak_price, trail_armed
+         FROM desk_positions WHERE state='open' ORDER BY opened_at DESC LIMIT 100`,
+      ).all<{
+        mint: string; symbol: string | null; filled_usd: number; entry_price: number;
+        stop_price: number; opened_at: number; peak_price: number; trail_armed: number;
+      }>();
+      const closed = await env.DB.prepare(
+        `SELECT symbol, mint, pnl_usd, pnl_pct, exit_reason, opened_at, closed_at
+         FROM desk_positions WHERE state='closed' ORDER BY closed_at DESC LIMIT 100`,
+      ).all<{
+        symbol: string | null; mint: string; pnl_usd: number | null; pnl_pct: number | null;
+        exit_reason: string | null; opened_at: number; closed_at: number;
+      }>();
+      const totals = await env.DB.prepare(
+        `SELECT COUNT(*) AS n,
+                SUM(CASE WHEN pnl_usd > 0 THEN 1 ELSE 0 END) AS wins,
+                SUM(CASE WHEN pnl_usd < 0 THEN 1 ELSE 0 END) AS losses,
+                SUM(pnl_usd) AS net
+         FROM desk_positions WHERE state='closed'`,
+      ).first<{ n: number; wins: number | null; losses: number | null; net: number | null }>();
+
+      const rows = closed.results ?? [];
+      const n = totals?.n ?? 0;
+      const wins = totals?.wins ?? 0;
+      const losses = totals?.losses ?? 0;
+      // Profit factor needs gross win and gross loss separately; deriving it from
+      // the net alone would hide a fat-tail loss behind a run of small wins.
+      let grossWin = 0;
+      let grossLoss = 0;
+      for (const r of rows) {
+        const v = r.pnl_usd ?? 0;
+        if (v > 0) grossWin += v;
+        else grossLoss += -v;
+      }
+      // Equity curve, oldest first, cumulative. Built from the SAME rows the
+      // totals come from, so the chart and the number can never disagree.
+      const curve: { at: number; equity: number }[] = [];
+      let running = 0;
+      for (const r of [...rows].reverse()) {
+        running += r.pnl_usd ?? 0;
+        curve.push({ at: r.closed_at, equity: Number(running.toFixed(2)) });
+      }
+
+      return json({
+        mode: arm.mode,
+        armed: arm.armed,
+        gates_unmet: arm.unmet ?? [],
+        equity,
+        stale: true,
+        open: (open.results ?? []).map((r) => ({
+          symbol: r.symbol ?? r.mint.slice(0, 6),
+          mint: r.mint,
+          size: r.filled_usd,
+          entry: r.entry_price,
+          stop: r.stop_price,
+          peak: r.peak_price,
+          trailing: r.trail_armed === 1,
+          opened_at: r.opened_at,
+        })),
+        closed: rows.map((r) => ({
+          symbol: r.symbol ?? r.mint.slice(0, 6),
+          mint: r.mint,
+          pnl: r.pnl_usd ?? 0,
+          pnl_pct: r.pnl_pct ?? 0,
+          exit_reason: r.exit_reason ?? 'unknown',
+          closed_at: r.closed_at,
+        })),
+        stats: {
+          trades: n,
+          wins,
+          losses,
+          win_rate: n > 0 ? Number((wins / n).toFixed(4)) : null,
+          profit_factor: grossLoss > 0 ? Number((grossWin / grossLoss).toFixed(3)) : null,
+          net: totals?.net ?? 0,
+        },
+        curve,
+      });
+    }
+
+    // ── targets: what the desk is actually hunting, and what it has already
+    // thrown away. This is the surface the operator was missing: the Desk panel
+    // showed status, and Kills showed rejects, but nothing showed the live
+    // universe the scout and filter are working through right now.
+    //
+    // Read from desk_universe (the scout/filter output), not from `watchlist`.
+    // `watchlist` is the SECURITY sentinel's table, populated by a different
+    // path; conflating the two is what made "no targets" look like "no hunting".
+    case '/api/desk/targets': {
+      const counts = await env.DB.prepare(
+        `SELECT state, COUNT(*) AS n FROM desk_universe GROUP BY state`,
+      ).all<{ state: string; n: number }>();
+      const rows = await env.DB.prepare(
+        `SELECT mint, symbol, dex, mcap_usd, liq_usd, vol_24h_usd, holders, price_usd,
+                pair_created_at, last_seen, state
+         FROM desk_universe
+         ORDER BY CASE state WHEN 'passed' THEN 0 WHEN 'scored' THEN 1 WHEN 'in' THEN 2 ELSE 3 END,
+                  last_seen DESC
+         LIMIT 60`,
+      ).all<{
+        mint: string; symbol: string | null; dex: string | null; mcap_usd: number;
+        liq_usd: number; vol_24h_usd: number; holders: number; price_usd: number;
+        pair_created_at: number; last_seen: number; state: string;
+      }>();
+      // The newest scores, so a passed token shows WHY it passed and a killed one
+      // shows the reason code rather than a bare count.
+      // No time window here on purpose. A 24h cutoff looked reasonable and was
+      // wrong twice over: `desk_scores.ts` is written by the tick in SECONDS, and
+      // a desk that has been quiet for a day (which is normal) would then show
+      // every target with a null score. The LIMIT already bounds the payload, so
+      // the window bought nothing and cost the whole screen.
+      const scores = await env.DB.prepare(
+        `SELECT mint, total, passed, why, ts FROM desk_scores
+         ORDER BY ts DESC LIMIT 500`,
+      ).all<{
+        mint: string; total: number; passed: number; why: string; ts: number;
+      }>();
+      const byMint = new Map<string, { total: number; passed: boolean; why: string }>();
+      for (const sc of scores.results ?? []) {
+        if (!byMint.has(sc.mint)) {
+          byMint.set(sc.mint, { total: sc.total, passed: sc.passed === 1, why: sc.why });
+        }
+      }
+      const tally: Record<string, number> = { in: 0, scored: 0, passed: 0, killed: 0, expired: 0 };
+      for (const c of counts.results ?? []) tally[c.state] = c.n;
+
+      return json({
+        tally,
+        total: Object.values(tally).reduce((a, b) => a + b, 0),
+        targets: (rows.results ?? []).map((r) => {
+          const sc = byMint.get(r.mint);
+          return {
+            symbol: r.symbol ?? r.mint.slice(0, 6),
+            mint: r.mint,
+            dex: r.dex ?? '',
+            mcap: r.mcap_usd,
+            liquidity: r.liq_usd,
+            volume_24h: r.vol_24h_usd,
+            holders: r.holders,
+            price: r.price_usd,
+            age_seconds: Math.max(0, Math.floor(Date.now() / 1000 - r.pair_created_at / 1000)),
+            seen: r.last_seen,
+            state: r.state,
+            score: sc ? sc.total : null,
+            score_passed: sc ? sc.passed : null,
+            why: sc ? sc.why : '',
+          };
+        }),
+      });
     }
 
     case '/api/desk/calib': {

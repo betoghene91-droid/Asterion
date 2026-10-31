@@ -2,7 +2,7 @@
   "name": "asterion",
   "version": "4.0.0",
   "private": true,
-  "description": "Asterion — one app. Worker + Telegram bot (intake, dispatch, policy, skills, corpus, learning) and the proof engine (capture, counterfactual, judge, fuzz, patch, plan).",
+  "description": "Asterion \u2014 one app. Worker + Telegram bot (intake, dispatch, policy, skills, corpus, learning) and the proof engine (capture, counterfactual, judge, fuzz, patch, plan).",
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
@@ -23,7 +23,8 @@
     "set-webhook": "node scripts/set-webhook.mjs",
     "skills:build": "node scripts/build-skills-embed.mjs",
     "corpus:check": "node scripts/load-corpus.mjs --check",
-    "distill": "python3 eval/distill.py"
+    "distill": "python3 eval/distill.py",
+    "test:render": "node --test tests/ui-desk-render.test.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20261028.1",

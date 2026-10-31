@@ -140,24 +140,23 @@ test('the 3 dispatchable classes that motivated B7 are harnessed and dispatchabl
     assert.ok(DISPATCHER_CLASSES.has(byId(id).cls), `${id} must still be dispatchable`);
     assert.ok(dispatchable().includes(id), `${id} must appear in the dispatchable set`);
   }
-  assert.equal(HARNESSED.size, 10, 'HARNESSED is 10 sol.* classes; pinned so drift is visible');
-  assert.equal(PLAYBOOKS.filter((p) => p.cls === 'solidity').length, 10, 'and matches the playbook set');
+  assert.equal(HARNESSED.size, 17, 'HARNESSED is 12 sol.* classes; pinned so drift is visible');
+  assert.equal(PLAYBOOKS.filter((p) => p.cls === 'solidity').length, 17, 'and matches the playbook set');
 });
 
-test('sol.overflow and sol.mev have real harnesses but are NOT claimed as classes', () => {
-  // Both were specified as part of B7 and both are implemented in full (attack +
-  // control + nocond, measured delta). But neither has a PLAYBOOKS row and neither
-  // has a class in corpus-digest.json, and a capability is added to this project by
-  // adding a playbook. So the harness exists and is registered as such, while
-  // HARNESSED — which `rank()` and the coverage invariant read — stays honest and
-  // does not claim a class the operator cannot select.
+test('sol.overflow and sol.mev are now PLAYED, so they carry a playbook and a harness', () => {
+  // This test used to assert the opposite: both harnesses existed but neither had
+  // a PLAYBOOKS row, so they sat in UNPLAYBOOKED_HARNESSES as reachable code with
+  // nothing routing to it. Giving each a playbook row is the whole change that
+  // promotes them — the harness itself needed no edit. The assertions below are
+  // the same ones, inverted, plus the harness-is-not-a-stub checks kept intact so
+  // the promotion cannot hide a stub.
   for (const id of ['sol.overflow', 'sol.mev']) {
-    assert.ok(UNPLAYBOOKED_HARNESSES.has(id), `${id} must be registered as an implemented harness`);
-    assert.equal(byId(id), undefined, `${id} must genuinely have no playbook`);
-    assert.equal(hasHarness(id), false, `${id} must not be claimed as a harnessed CLASS`);
-    assert.equal(dispatchable().includes(id), false, `${id} cannot be dispatchable`);
+    assert.equal(UNPLAYBOOKED_HARNESSES.has(id), false, `${id} is no longer unplayed`);
+    assert.ok(byId(id), `${id} must now have a playbook row`);
+    assert.equal(hasHarness(id), true, `${id} must be a harnessed class`);
 
-    // The harness itself is real, not a stub.
+    // The harness itself is still real, not a stub.
     const spec = synthesize(lead(id), { contract: 'Vault', forkBlock: 30_000_000, chainId: 8453 });
     assert.ok(spec, `${id}: harness must synthesize`);
     assert.ok(spec.solidity.length > 500, `${id}: harness body implausibly short (a stub?)`);
@@ -273,24 +272,23 @@ test('the 3 dispatchable classes that motivated B7 are harnessed and dispatchabl
     assert.ok(DISPATCHER_CLASSES.has(byId(id).cls), `${id} must still be dispatchable`);
     assert.ok(dispatchable().includes(id), `${id} must appear in the dispatchable set`);
   }
-  assert.equal(HARNESSED.size, 10, 'HARNESSED is 10 sol.* classes; pinned so drift is visible');
-  assert.equal(PLAYBOOKS.filter((p) => p.cls === 'solidity').length, 10, 'and matches the playbook set');
+  assert.equal(HARNESSED.size, 17, 'HARNESSED is 12 sol.* classes; pinned so drift is visible');
+  assert.equal(PLAYBOOKS.filter((p) => p.cls === 'solidity').length, 17, 'and matches the playbook set');
 });
 
-test('sol.overflow and sol.mev have real harnesses but are NOT claimed as classes', () => {
-  // Both were specified as part of B7 and both are implemented in full (attack +
-  // control + nocond, measured delta). But neither has a PLAYBOOKS row and neither
-  // has a class in corpus-digest.json, and a capability is added to this project by
-  // adding a playbook. So the harness exists and is registered as such, while
-  // HARNESSED — which `rank()` and the coverage invariant read — stays honest and
-  // does not claim a class the operator cannot select.
+test('sol.overflow and sol.mev are now PLAYED, so they carry a playbook and a harness', () => {
+  // This test used to assert the opposite: both harnesses existed but neither had
+  // a PLAYBOOKS row, so they sat in UNPLAYBOOKED_HARNESSES as reachable code with
+  // nothing routing to it. Giving each a playbook row is the whole change that
+  // promotes them — the harness itself needed no edit. The assertions below are
+  // the same ones, inverted, plus the harness-is-not-a-stub checks kept intact so
+  // the promotion cannot hide a stub.
   for (const id of ['sol.overflow', 'sol.mev']) {
-    assert.ok(UNPLAYBOOKED_HARNESSES.has(id), `${id} must be registered as an implemented harness`);
-    assert.equal(byId(id), undefined, `${id} must genuinely have no playbook`);
-    assert.equal(hasHarness(id), false, `${id} must not be claimed as a harnessed CLASS`);
-    assert.equal(dispatchable().includes(id), false, `${id} cannot be dispatchable`);
+    assert.equal(UNPLAYBOOKED_HARNESSES.has(id), false, `${id} is no longer unplayed`);
+    assert.ok(byId(id), `${id} must now have a playbook row`);
+    assert.equal(hasHarness(id), true, `${id} must be a harnessed class`);
 
-    // The harness itself is real, not a stub.
+    // The harness itself is still real, not a stub.
     const spec = synthesize(lead(id), { contract: 'Vault', forkBlock: 30_000_000, chainId: 8453 });
     assert.ok(spec, `${id}: harness must synthesize`);
     assert.ok(spec.solidity.length > 500, `${id}: harness body implausibly short (a stub?)`);

@@ -1,0 +1,36 @@
+{
+  "id": "sol.mev",
+  "version": 1,
+  "name": "MEV-extractable ordering: sandwich, backrun, or JIT liquidity",
+  "cls": "solidity",
+  "family": "mev",
+  "requires": [
+    "a swap or liquidity path whose price impact is visible in the mempool",
+    "no slippage bound, or a bound the attacker can sit inside",
+    "a pool with enough depth to move and enough volume to extract from",
+    "foundry with a fork RPC at the target block"
+  ],
+  "questions": [
+    "Does the swap pass minAmountOut / maxAmountIn, and is it derived from a live quote or a stale one?",
+    "Is the slippage tolerance wide enough that a sandwich of the observed depth still profits after fees?",
+    "Is the router callable by a contract that can front-run and back-run in one bundle?",
+    "Is there a deadline, and is it the block timestamp or a far-future constant?",
+    "Does the protocol itself rebalance on a schedule with no slippage bound?",
+    "Is a liquidation or oracle update callable in the same block as the price move it depends on?",
+    "For JIT: can liquidity be added before a swap and removed after within one block, keeping the fee?",
+    "What does the victim lose net of the attacker's gas and pool fee?"
+  ],
+  "false_positives": [
+    "Slippage is tight enough that the sandwich is unprofitable after fees",
+    "The swap is private / routed through a private mempool, so it cannot be front-run",
+    "Pool depth means the price impact needed costs more than the extractable amount",
+    "The protocol uses a TWAP the single-block move cannot shift"
+  ],
+  "poc_must_show": [
+    "a simulation of front-run + victim + back-run in one block with the attacker delta measured",
+    "a control run of the victim swap alone, same block, showing the difference",
+    "gas and pool fee deducted so the figure is net",
+    "the victim's loss stated alongside the attacker's gain"
+  ],
+  "impact_bar": "Reportable as a protocol-level MEV exposure when a generalised attacker profits net of fees at observed depth. Not reportable where the only cost bearer is the swapping user's own slippage setting."
+}

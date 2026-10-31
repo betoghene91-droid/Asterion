@@ -5,21 +5,34 @@ Discovery → proof → disclosure. No laptop required for any of it.
 
 ---
 
+## New here? Read `BEGINNER.md`
+
+`BEGINNER.md` explains every screen and every control in plain language, assuming
+no crypto background at all, including what each empty state means and why it is
+usually correct. This README is the engineering record; that file is the manual.
+
+---
+
 ## Read this first: what it does not do
 
 Stated up front because burying it is how people lose money and reputation.
 
-- **The desk is wired, tested, and still cannot trade.** `app/src/desk/` holds 16
-  modules, `/desk /desk paper|live /pos /kills /thesis /calib` are dispatchable, the
-  four read-only `GET /api/desk*` endpoints exist, all three desk crons are
-  composed onto the existing triggers, and `schema.sql` creates all 7 `desk_`
-  tables. Its suites pass: **28/28** unit and **13/13** API, part of **530 pass /
-  0 fail** overall, with 7/7 negative controls proved. **Green here does not mean
-  it trades:** the filter refuses to judge tokens whose flow gates need trade
-  indexing the free data tier lacks, so it opens nothing until a `FlowProvider`
-  is wired. See `app/desk/DESK.md` §9. Live order submission is
-  deliberately unimplemented — `executor.submit` throws `live_signer_not_wired` —
-  so even a fully armed desk refuses; it runs as a paper-only research instrument.
+- **The desk is wired and it now judges tokens. It still cannot spend real money.**
+  `app/src/desk/` holds 16 modules, `/desk /desk paper|live /pos /kills /thesis
+  /calib` are dispatchable, six read-only `GET /api/desk*` endpoints exist, all
+  three desk crons are composed onto the existing triggers, and `schema.sql`
+  creates all 7 `desk_` tables. Its suites pass, part of **1184 pass / 0 fail**
+  overall, with the negative controls proved.
+  **What changed:** the flow gate used to be the blocker. The filter refuses to
+  judge a token whose flow fields are null, so every candidate was written as a
+  `NOT JUDGED — coverage gap` score and nothing ever opened. The `FlowProvider`
+  that closes it (`flowProviderFromRpc`, a bounded trade sample over free RPC) is
+  now wired into `liveSource` and can be switched off with
+  `DESK_FLOW_PROVIDER=off`. So the desk reaches a verdict now instead of skipping.
+  **What is still true:** live order submission is deliberately unimplemented —
+  `executor.submit` throws `live_signer_not_wired` — so even a fully armed desk
+  refuses. It is a paper-only research instrument until a signer is wired.
+  See `app/desk/DESK.md` §9 and `BEGINNER.md` §11.
 - **It cannot submit to Immunefi, Code4rena or CodeHawks.** Deliberate: their
   terms ban AI-generated reports. See *Known gaps*.
 - **It is web3-only in practice.** The 180,907-row corpus is web3 audit findings.

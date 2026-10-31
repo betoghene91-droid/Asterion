@@ -851,3 +851,21 @@ pre.json {
     scroll-behavior: auto !important;
   }
 }
+
+/* Trade page: an equity curve with no chart library and no markup injection.
+   Each bar is one closed trade; the container is the zero line. */
+.spark {
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+  height: 72px;
+  margin: 6px 0 14px;
+  padding: 0 2px;
+  border-bottom: 1px solid var(--line, #2a2a2a);
+}
+.spark-bar { flex: 1 1 auto; min-width: 1px; border-radius: 1px 1px 0 0; }
+.spark-bar.pos { background: var(--pos, #3ddc84); }
+.spark-bar.neg { background: var(--neg, #ff5c5c); }
+.big { font-size: 1.25em; }
+.pos { color: var(--pos, #3ddc84); }
+.neg { color: var(--neg, #ff5c5c); }

@@ -1,0 +1,36 @@
+{
+  "id": "sol.erc4626",
+  "version": 1,
+  "name": "ERC-4626 vault accounting: share price, rounding, and donation",
+  "cls": "solidity",
+  "family": "vault",
+  "requires": [
+    "an ERC-4626 or 4626-like vault holding user funds",
+    "convertToShares / convertToAssets or the equivalent internal maths",
+    "a deposit, mint, withdraw or redeem path an unprivileged caller can reach",
+    "foundry with a fork RPC"
+  ],
+  "questions": [
+    "Does deposit round shares down and withdraw round assets down, both in the vault's favour?",
+    "Is the first depositor able to donate to inflate share price before a second depositor enters?",
+    "Does totalAssets() read a live balance (donation-sensitive) or an internal ledger?",
+    "Is there a virtual offset, dead shares, or a minimum initial deposit?",
+    "Can a redeem be front-run by a donation that makes it worth fewer assets?",
+    "Does previewRedeem match the actual redeem for the same block?",
+    "Is there a fee-on-transfer or rebasing asset where the vault credits more than it received?",
+    "Does a harvest or skim function let anyone move the value that sets share price?"
+  ],
+  "false_positives": [
+    "Virtual shares or dead shares already neutralise the inflation attack",
+    "totalAssets uses an internal ledger a donation cannot touch",
+    "The asset cannot be donated to the vault address (no transfer to self)",
+    "A minimum initial deposit makes the griefing cost exceed the gain"
+  ],
+  "poc_must_show": [
+    "the attacker's asset delta across the full sequence, measured before and after",
+    "a control deposit with no donation, showing the honest share count",
+    "the victim's realized loss, so the attacker gain has a source",
+    "no privileged role used and no capital left stranded"
+  ],
+  "impact_bar": "Reportable when an unprivileged sequence extracts value from other depositors, quantified. Informational for rounding that only trims dust with no victim."
+}

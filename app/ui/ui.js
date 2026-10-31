@@ -1988,6 +1988,33 @@ function viewOpsDetail(id) {
   return swr(route, RENDERERS[id] || ((v) => h('div', { class: 'card' }, [jsonBlock(v)])), { label });
 }
 
+
+/**
+ * A sparkline without markup and without a chart library. Each point becomes a
+ * thin column whose height is scaled between the series min and max; the neutral
+ * line is where the series crosses zero. Built with createElement, so a series
+ * cannot inject anything even if a number arrives as a string.
+ */
+function sparkline(values) {
+  const box = h('div', { class: 'spark', role: 'img', 'aria-label': 'equity curve, ' + values.length + ' points' });
+  const nums = values.filter((v) => typeof v === 'number' && Number.isFinite(v));
+  if (!nums.length) return box;
+  const lo = Math.min(...nums, 0);
+  const hi = Math.max(...nums, 0);
+  const span = hi - lo || 1;
+  const step = Math.max(1, Math.ceil(nums.length / 60));
+  for (let i = 0; i < nums.length; i += step) {
+    const v = nums[i];
+    const pct = ((v - lo) / span) * 100;
+    const up = v >= 0;
+    box.appendChild(h('i', {
+      class: up ? 'spark-bar pos' : 'spark-bar neg',
+      style: 'height:' + Math.max(2, pct).toFixed(1) + '%',
+    }));
+  }
+  return box;
+}
+
 const RENDERERS = {
   status(v) {
     const out = h('div', {});
@@ -2161,6 +2188,155 @@ const RENDERERS = {
     for (const k of keys.filter((x) => typeof v[x] === 'object').slice(0, 4)) {
       out.appendChild(header(k));
       out.appendChild(h('div', { class: 'card' }, [jsonBlock(v[k])]));
+    }
+    return out;
+  },
+  'targets-hunt'(v) {
+    // The live universe the scout and filter are working through. Grouped by
+    // state because that is the pipeline order: passed is what is actually
+    // tradeable now, scored is what survived the coarse gates, in is raw scout
+    // output, and killed/expired is what was thrown away and why.
+    //
+    // Deliberately reads desk_universe, not `watchlist`. The old Watchlist panel
+    // reads the SECURITY sentinel's table and was empty because nothing writes
+    // it; this panel reads the table the desk actually fills.
+    const out = h('div', {});
+    const t = v.tally || {};
+    const total = v.total || 0;
+
+    out.appendChild(kv([
+      ['passed', h('b', { class: (t.passed || 0) > 0 ? 'pos' : '', text: num(t.passed || 0) })],
+      ['scored', num(t.scored || 0)],
+      ['in (raw)', num(t.in || 0)],
+      ['killed', num(t.killed || 0)],
+      ['expired', num(t.expired || 0)],
+    ]));
+
+    if (!total) {
+      out.appendChild(emptyState(
+        '\\u25CE',
+        'The universe is empty. The scout has not written a target yet.',
+        'See the desk',
+        () => go('/ops/desk'),
+      ));
+      out.appendChild(h('div', { class: 'note', text: 'The desk tick runs inside the 5-minute cron. An empty universe means either the cron has not run since deploy, or every candidate failed the coarse gates before a row was written.' }));
+      return out;
+    }
+
+    const labels = {
+      passed: 'passed, tradeable now',
+      scored: 'scored, awaiting a thesis',
+      in: 'raw scout output',
+      killed: 'killed',
+      expired: 'expired',
+    };
+    const order = ['passed', 'scored', 'in', 'killed', 'expired'];
+    const list = v.targets || [];
+
+    for (const st of order) {
+      const mine = list.filter((x) => x.state === st);
+      if (!mine.length) continue;
+      out.appendChild(header(labels[st] + ' (' + mine.length + ')'));
+      const card = h('div', { class: 'card' });
+      for (const x of mine) {
+        const bits = [
+          x.dex,
+          '$' + num(Math.round(x.mcap)) + ' mcap',
+          '$' + num(Math.round(x.liquidity)) + ' liq',
+          num(x.holders) + ' holders',
+          'age ' + (x.age_seconds > 86400 ? Math.floor(x.age_seconds / 86400) + 'd' : Math.floor(x.age_seconds / 3600) + 'h'),
+        ].filter(Boolean).join('  \\u00b7  ');
+        const right = x.score === null
+          ? tag(st, st === 'passed' ? 'ok' : st === 'killed' ? 'bad' : 'warn')
+          : h('span', { class: x.score_passed ? 'tag ok' : 'tag warn', text: x.score.toFixed(0) + '/100' });
+        const r = row(x.symbol, bits, right);
+        if (x.why) {
+          r.appendChild(h('div', { class: 'card-sub', text: x.why }));
+        }
+        card.appendChild(r);
+      }
+      out.appendChild(card);
+    }
+
+    out.appendChild(h('div', { class: 'note', text: 'A score under a floor is killed even if the total looks respectable. The why line says which floor failed, which is the only part worth reading.' }));
+    return out;
+  },
+  trade(v) {
+    // A trading screen, not a status page. Order of reading is deliberate:
+    // equity and P&L first (what am I worth), then the curve (how did I get
+    // here), then open risk (what can still hurt me), then the ledger (what
+    // actually happened). Everything below is derived from desk_positions.
+    const out = h('div', {});
+    const st = v.stats || {};
+
+    out.appendChild(kv([
+      ['equity', h('b', { class: 'big', text: money(v.equity) })],
+      ['net', h('b', { class: (st.net || 0) >= 0 ? 'pos' : 'neg', text: money(st.net || 0) })],
+      ['mode', v.armed ? h('b', { class: 'tag warn', text: 'LIVE' }) : h('span', { class: 'tag', text: 'paper' })],
+    ]));
+
+    // The curve. A sparkline drawn from the same rows the totals come from, so
+    // the shape and the number cannot disagree.
+    const curve = v.curve || [];
+    if (curve.length > 1) {
+      out.appendChild(header('equity curve \\u00b7 ' + curve.length + ' closed'));
+      out.appendChild(sparkline(curve.map((p) => p.equity)));
+    } else if (curve.length === 1) {
+      out.appendChild(h('div', { class: 'note', text: 'One closed trade so far. A curve needs two points to have a shape.' }));
+    } else {
+      out.appendChild(h('div', { class: 'note', text: 'No closed trades yet, so there is no curve to draw. Paper mode is running; the first exit writes the first point.' }));
+    }
+
+    out.appendChild(header('performance'));
+    out.appendChild(kv([
+      ['trades', num(st.trades || 0)],
+      ['win rate', st.win_rate === null || st.win_rate === undefined ? '\\u2014' : (st.win_rate * 100).toFixed(1) + '%'],
+      ['profit factor', st.profit_factor === null || st.profit_factor === undefined ? 'n/a (no losses yet)' : String(st.profit_factor)],
+      ['wins / losses', num(st.wins || 0) + ' / ' + num(st.losses || 0)],
+    ]));
+    if (st.profit_factor === null && (st.trades || 0) > 0) {
+      out.appendChild(h('div', { class: 'note', text: 'Every closed trade has won, so gross loss is zero and the ratio is undefined. That is arithmetic, not a good sign on its own.' }));
+    }
+
+    const open = v.open || [];
+    out.appendChild(header('open risk (' + open.length + ')'));
+    if (!open.length) out.appendChild(emptyLine('Flat. Nothing at risk right now.'));
+    else {
+      const card = h('div', { class: 'card' });
+      for (const p of open) {
+        card.appendChild(row(
+          p.symbol,
+          'size ' + money(p.size) + '  \\u00b7  entry ' + money(p.entry) + '  \\u00b7  stop ' + money(p.stop) + (p.trailing ? '  \\u00b7  trailing' : ''),
+          tag(ago(p.opened_at)),
+        ));
+      }
+      out.appendChild(card);
+      out.appendChild(h('div', { class: 'note', text: 'Marks are the last stored price. Distance to stop is what matters, not the P&L you cannot see here.' }));
+    }
+
+    const closed = v.closed || [];
+    out.appendChild(header('closed (' + closed.length + ')'));
+    if (!closed.length) out.appendChild(emptyLine('No exits yet.'));
+    else {
+      const card = h('div', { class: 'card' });
+      for (const c of closed.slice(0, 25)) {
+        const win = (c.pnl || 0) >= 0;
+        card.appendChild(row(
+          c.symbol,
+          money(c.pnl) + '  \\u00b7  ' + (c.pnl_pct * 100).toFixed(1) + '%  \\u00b7  ' + c.exit_reason,
+          h('span', { class: win ? 'tag ok' : 'tag bad', text: win ? 'WIN' : 'LOSS' }),
+        ));
+      }
+      out.appendChild(card);
+      if (closed.length > 25) out.appendChild(h('div', { class: 'note', text: 'Showing the 25 most recent of ' + closed.length + '.' }));
+    }
+
+    if ((v.gates_unmet || []).length) {
+      out.appendChild(header('cannot go live yet'));
+      const card = h('div', { class: 'card' });
+      for (const g of v.gates_unmet) card.appendChild(row(String(g), '', tag('unmet', 'warn')));
+      out.appendChild(card);
+      out.appendChild(h('div', { class: 'note', text: 'Arming is a server-side decision, not a button here. A web control that can start real trading is one leaked URL away from an empty wallet.' }));
     }
     return out;
   },

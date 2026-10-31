@@ -82,7 +82,14 @@ export type DrainClass =
   | 'sol.dos'
   | 'sol.delegatecall'
   | 'sol.signature'
-  | 'sol.flashloan';
+  | 'sol.flashloan'
+  | 'sol.overflow'
+  | 'sol.mev'
+  | 'sol.erc4626'
+  | 'sol.erc20'
+  | 'sol.proxy'
+  | 'sol.erc4337'
+  | 'sol.signature.ecdsa';
 
 /**
  * The extraction step kinds. This vocabulary is bug-class-agnostic on purpose:
@@ -191,6 +198,34 @@ export const DRAIN_CLASSES: Record<DrainClass, ClassSpec> = {
   'sol.flashloan': {
     authority: 'uncollateralised capital inside one transaction',
     vectors: ['flashloan_roundtrip', 'oracle_swap', 'direct_pull'],
+  },
+  'sol.overflow': {
+    authority: 'a boundary operand wraps into credit the contract honours',
+    vectors: ['direct_pull', 'mint_then_redeem'],
+  },
+  'sol.mev': {
+    authority: 'ordering against a public mempool, not a state defect',
+    vectors: ['oracle_swap', 'direct_pull'],
+  },
+  'sol.erc4626': {
+    authority: 'share-price maths a donation sequence can bend',
+    vectors: ['mint_then_redeem', 'direct_pull'],
+  },
+  'sol.erc20': {
+    authority: 'credited amount differs from received amount',
+    vectors: ['direct_pull', 'mint_then_redeem'],
+  },
+  'sol.proxy': {
+    authority: 'a colliding slot or an unguarded implementation initializer',
+    vectors: ['upgrade_then_sweep', 'direct_pull'],
+  },
+  'sol.erc4337': {
+    authority: 'a userOp accepted twice, or a paymaster that pays for anything',
+    vectors: ['direct_pull', 'approve_then_pull'],
+  },
+  'sol.signature.ecdsa': {
+    authority: 'a signature replayed, or recovery to a signer never intended',
+    vectors: ['approve_then_pull', 'direct_pull'],
   },
 };
 

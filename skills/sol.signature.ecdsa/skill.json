@@ -1,0 +1,36 @@
+{
+  "id": "sol.signature.ecdsa",
+  "version": 1,
+  "name": "ECDSA specifics: malleability, zero-address ecrecover, and domain separation",
+  "cls": "solidity",
+  "family": "signature",
+  "requires": [
+    "an ecrecover or ECDSA.recover site gating a value-moving action",
+    "a signed message or digest the protocol assembles itself",
+    "no nonce, or a nonce the attacker can influence",
+    "foundry with a fork RPC"
+  ],
+  "questions": [
+    "Is the address returned by ecrecover compared against address(0) before it is trusted as a signer?",
+    "Is s constrained to the lower half of the curve order, or does the protocol accept both malleable forms?",
+    "Does recovery happen against a digest the protocol built itself, and does that digest bind this contract and this chain or only the payload?",
+    "Is the nonce part of the signed payload, and is it consumed exactly once before any value moves?",
+    "Can the same signature be replayed on a second contract, or a forked chain, that shares this digest construction?",
+    "Is the hash built with abi.encodePacked over two dynamic types, where a length collision can be forced?",
+    "Does the signed struct hash omit any field that the executor later reads when it moves value?",
+    "Is the signer a single EOA or an owner set, and who can mutate that set while a signature is outstanding?"
+  ],
+  "false_positives": [
+    "OpenZeppelin ECDSA.recover is used, which rejects s above half-order and address(0)",
+    "The digest carries a full EIP-712 domain separator and a consumed nonce",
+    "The contract is the only one that can verify this digest",
+    "The signature is single-use by an on-chain record"
+  ],
+  "poc_must_show": [
+    "the same signature accepted twice, or on two contracts, with both results shown",
+    "a control run where the nonce is consumed and the replay must revert",
+    "the ecrecover-returns-zero case if it is the defect, printed",
+    "no privileged role used"
+  ],
+  "impact_bar": "Reportable when a signature can be replayed or forged to move value, quantified. Informational for missing malleability hardening where replay is already blocked by a nonce."
+}

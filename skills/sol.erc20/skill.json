@@ -1,0 +1,36 @@
+{
+  "id": "sol.erc20",
+  "version": 1,
+  "name": "Non-standard ERC-20 behaviour: fee-on-transfer, rebase, hooks, missing return",
+  "cls": "solidity",
+  "family": "token",
+  "requires": [
+    "a token the protocol integrates, whose transfer semantics may differ from the standard",
+    "protocol accounting that assumes received == sent",
+    "a deposit, repay, or collateral path using that token",
+    "foundry with a fork RPC"
+  ],
+  "questions": [
+    "Does the protocol credit the requested amount or the measured balance delta after transfer?",
+    "Is the token fee-on-transfer, and does the fee apply on transferFrom as well?",
+    "Does the token rebase, so a stored balance drifts from the real one?",
+    "Does transfer/transferFrom return bool, or return nothing (USDT-style)?",
+    "Is the integration using safeTransfer, or a raw transfer whose return is unchecked?",
+    "Does the token have a transfer hook (ERC777, ERC1363) that can reenter?",
+    "Is the token blocklist/blacklist capable, so a transfer can revert and strand funds?",
+    "Does the protocol hold the token balance and compute shares from address(this).balance?"
+  ],
+  "false_positives": [
+    "The protocol measures the balance delta, which is correct for all of these",
+    "The token is a known-standard immutable with no fee and no hook",
+    "safeTransfer is used everywhere, so a missing return cannot silently pass",
+    "The rebase is positive-only and the protocol only ever reads its own ledger"
+  ],
+  "poc_must_show": [
+    "a deposit where credited amount and received amount are both printed and differ",
+    "the resulting position or share count that is now wrong",
+    "a control run with a standard token at the same amount",
+    "the eventual loss or insolvency path, quantified"
+  ],
+  "impact_bar": "Reportable when the mismatch creates a withdrawable amount exceeding what was deposited, or strands funds, quantified per token. Informational for a token the protocol does not actually integrate."
+}

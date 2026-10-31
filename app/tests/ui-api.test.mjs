@@ -631,7 +631,10 @@ test('GET /api/ui/catalog enumerates every playbook and every pack, and joins th
   }
 
   // Ordering is stable: domains in DOMAIN_ORDER, then family, then id.
-  const order = { sol: 0, mob: 1, web: 2, infra: 3, other: 4 };
+  // Mirrors DOMAIN_ORDER in catalog.ts. `svm` was added when the three
+  // sol.svm-* Solana packs stopped being filed under "Solidity"; a test that
+  // pins the order has to learn the new member or it silently blesses a wrong sort.
+  const order = { sol: 0, svm: 1, mob: 2, web: 3, infra: 4, other: 5 };
   for (let i = 1; i < j.entries.length; i++) {
     const a = j.entries[i - 1];
     const b = j.entries[i];
@@ -665,7 +668,9 @@ test('the catalog derives its domains instead of hardcoding them', async () => {
   // "exactly these two" - a later change adding mob.* or infra.* packs must show
   // up here with no edit to catalog.ts. What is pinned is the DERIVATION: every
   // domain label is one of the four the operator thinks in, plus a catch-all.
-  const allowed = new Set(['sol', 'mob', 'web', 'infra', 'other']);
+  // `svm` is a real domain now, not a stray: the Solana packs carry prefix
+  // `sol.` but class `solana`, and the class is what decides the heading.
+  const allowed = new Set(['sol', 'svm', 'mob', 'web', 'infra', 'other']);
   for (const d of j.domains) {
     assert.ok(allowed.has(d.id), `unexpected domain ${d.id}`);
     assert.equal(d.entries, j.entries.filter((e) => e.domain === d.id).length);
@@ -766,4 +771,88 @@ test('the pre-existing dashboard API is untouched: /api/status still answers una
   assert.equal(res.status, 200);
   const j = await res.json();
   assert.ok('worker' in j && 'programs' in j && 'pending' in j);
+});
+
+// ── the two desk screens added this round ────────────────────────────────────
+//
+// Both are exercised at the shipped router, against a real schema, because the
+// thing worth testing is the SQL and the shape the renderer receives, not the
+// renderer (which is browser-verified separately). Each test inserts the exact
+// rows the desk would write and asserts the numbers a trader would read.
+
+test('GET /api/desk/trade returns a real ledger, curve and stats from desk_positions', async () => {
+  const { raw, env } = makeEnv();
+  // Three closed trades: two wins, one loss. Net must be +30, profit factor 3.0.
+  raw.exec(`INSERT INTO desk_positions
+    (id,mint,symbol,mode,opened_at,closed_at,entry_price,size_usd,filled_usd,qty,stop_price,peak_price,trail_pct,atr14,liq_at_entry,state,exit_price,exit_reason,pnl_usd,pnl_pct)
+    VALUES
+    ('p1','m1','AAA','paper',1000,1100,1.0,100,100,100,0.9,1.2,0.12,0.01,60000,'closed',1.2,'trail',20,0.2),
+    ('p2','m2','BBB','paper',1200,1300,1.0,100,100,100,0.9,1.1,0.12,0.01,60000,'closed',1.1,'trail',10,0.1),
+    ('p3','m3','CCC','paper',1400,1500,1.0,100,100,100,0.9,1.0,0.12,0.01,60000,'closed',1.0,'stop',-10,-0.1)`);
+  // One open position, so `open` is not empty in this fixture.
+  raw.exec(`INSERT INTO desk_positions
+    (id,mint,symbol,mode,opened_at,entry_price,size_usd,filled_usd,qty,stop_price,peak_price,trail_pct,atr14,liq_at_entry,trail_armed,state)
+    VALUES ('p4','m4','DDD','paper',1600,2.0,50,50,25,1.7,2.0,0.12,0.02,60000,1,'open')`);
+
+  const res = await call('/api/desk/trade', { env });
+  assert.equal(res.status, 200);
+  const j = await res.json();
+
+  assert.equal(j.stats.trades, 3);
+  assert.equal(j.stats.wins, 2);
+  assert.equal(j.stats.losses, 1);
+  assert.equal(j.stats.net, 20);
+  assert.equal(j.stats.profit_factor, 3, 'gross win 30 / gross loss 10');
+  assert.equal(j.stats.win_rate, 0.6667);
+
+  assert.equal(j.curve.length, 3, 'one point per closed trade');
+  assert.deepEqual(j.curve.map((p) => p.equity), [20, 30, 20], 'cumulative, oldest first');
+  assert.equal(j.curve[2].equity, j.stats.net, 'the last point must equal net');
+
+  assert.equal(j.open.length, 1);
+  assert.equal(j.open[0].symbol, 'DDD');
+  assert.equal(j.open[0].trailing, true);
+  assert.equal(j.stale, true, 'marks are stored prices and the payload must say so');
+
+  assert.equal(j.closed[0].exit_reason, 'stop', 'newest first');
+});
+
+test('GET /api/desk/trade with no trades is empty but still answers', async () => {
+  const { env } = makeEnv();
+  const res = await call('/api/desk/trade', { env });
+  assert.equal(res.status, 200);
+  const j = await res.json();
+  assert.equal(j.stats.trades, 0);
+  assert.equal(j.stats.profit_factor, null, 'no losses yet means the ratio is undefined, not infinite');
+  assert.deepEqual(j.curve, []);
+  assert.deepEqual(j.open, []);
+  assert.deepEqual(j.closed, []);
+});
+
+test('GET /api/desk/targets reads desk_universe, not watchlist', async () => {
+  const { raw, env } = makeEnv();
+  raw.exec(`INSERT INTO desk_universe
+    (mint,pair_address,dex,pair_created_at,first_seen,last_seen,mcap_usd,liq_usd,vol_24h_usd,price_usd,holders,state)
+    VALUES
+    ('mintPass','pairA','raydium', 1700000000000, 1700000100, 1700000200, 500000, 60000, 200000, 0.01, 900, 'passed'),
+    ('mintKill','pairB','orca',    1700000000000, 1700000100, 1700000200, 900000, 5000,  1000,   0.02, 12,  'killed')`);
+  raw.exec(`INSERT INTO desk_scores (id,mint,ts,total,subscores,floor_failed,passed,why)
+    VALUES ('s1','mintKill',1700000200,41,'{}','["liquidity"]',0,'liquidity below the mcap-relative floor')`);
+
+  const res = await call('/api/desk/targets', { env });
+  assert.equal(res.status, 200);
+  const j = await res.json();
+
+  assert.equal(j.total, 2);
+  assert.equal(j.tally.passed, 1);
+  assert.equal(j.tally.killed, 1);
+
+  const passed = j.targets.find((t) => t.symbol !== undefined && t.mint === 'mintPass');
+  assert.equal(passed.state, 'passed');
+  assert.ok(j.targets[0].state === 'passed', 'passed sorts first, because it is what is tradeable now');
+
+  const killed = j.targets.find((t) => t.mint === 'mintKill');
+  assert.equal(killed.score, 41);
+  assert.equal(killed.score_passed, false);
+  assert.match(killed.why, /liquidity/, 'the why line is what makes a kill readable');
 });

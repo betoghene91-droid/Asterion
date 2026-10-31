@@ -1,0 +1,37 @@
+{
+  "id": "sol.overflow",
+  "version": 1,
+  "name": "Arithmetic overflow / underflow or unchecked cast",
+  "cls": "solidity",
+  "family": "arithmetic",
+  "requires": [
+    "solidity <0.8.0 without SafeMath, or >=0.8.0 with an unchecked block",
+    "an arithmetic result that feeds a balance, share, price, or accounting write",
+    "a value the caller can push toward the boundary",
+    "foundry with a fork RPC"
+  ],
+  "questions": [
+    "Is the pragma below 0.8.0, and does every arithmetic site on value use SafeMath, or only some?",
+    "Where a 0.8.0 contract uses unchecked{}, what bounds the operands there?",
+    "Is any uint256 narrowed by a cast to uint128/uint96/uint64/uint32 without a range check first?",
+    "Does a downcast silently truncate a user-supplied or oracle-supplied amount?",
+    "At the boundary, does the wrap produce a number the code later treats as valid credit?",
+    "Is the wrapped value a balance, a debt, a share count, or a loop bound?",
+    "Can the caller reach the boundary in one transaction, or does it need many?",
+    "Does a require() on the result sit before the write, or after the value has already moved?"
+  ],
+  "false_positives": [
+    "The pragma is >=0.8.0 and the block is not unchecked, so the compiler reverts",
+    "SafeMath wraps every arithmetic site on that variable",
+    "The cast is guarded by a prior bounds check that the same value cannot violate",
+    "The wrapped value is only a display column, not accounting",
+    "Reaching the boundary needs a supply the token cannot reach in the test window"
+  ],
+  "poc_must_show": [
+    "a before/after balance delta that moves in the attacker's favour, measured on a fork",
+    "a control run at a non-boundary value showing normal behaviour",
+    "the exact operand pair that wraps, printed",
+    "no privileged role used"
+  ],
+  "impact_bar": "Reportable when the wrap moves real value to an unprivileged caller, with the amount quantified. Informational for a wrap reachable only by an already-privileged role or with no value consequence."
+}

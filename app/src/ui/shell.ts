@@ -112,6 +112,8 @@ export const UI_OPS: UiOpsView[] = [
   { id: 'history', label: 'History', glyph: '\u26D3', route: '/api/ui/history', auth: true, group: 'Evidence' },
   { id: 'ledger', label: 'Ledger', glyph: '\u26D3', route: '/api/ledger', auth: false, group: 'Evidence' },
   { id: 'watchlist', label: 'Watchlist', glyph: '\u2691', route: '/api/watchlist', auth: false, group: 'Evidence' },
+  { id: 'trade', label: 'Trade', glyph: '\u2197', route: '/api/desk/trade', auth: false, group: 'Desk' },
+  { id: 'targets-hunt', label: 'Hunt targets', glyph: '\u25CE', route: '/api/desk/targets', auth: false, group: 'Desk' },
   { id: 'desk', label: 'Desk', glyph: '\u26FD', route: '/api/desk', auth: false, group: 'Desk' },
   { id: 'positions', label: 'Positions', glyph: '\u25A4', route: '/api/desk/positions', auth: false, group: 'Desk' },
   { id: 'kills', label: 'Kills', glyph: '\u2715', route: '/api/desk/kills', auth: false, group: 'Desk' },

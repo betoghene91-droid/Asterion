@@ -1,0 +1,36 @@
+{
+  "id": "sol.erc4337",
+  "version": 1,
+  "name": "Account abstraction: userOp validation, paymaster, and signature replay",
+  "cls": "solidity",
+  "family": "aa",
+  "requires": [
+    "an ERC-4337 EntryPoint integration, a smart account, or a paymaster",
+    "validateUserOp or a paymaster validation path",
+    "a signature scheme the account trusts",
+    "foundry with a fork RPC"
+  ],
+  "questions": [
+    "Does validateUserOp check the signature is over the full userOp hash including chainId and entryPoint?",
+    "Is the nonce from the EntryPoint, or a local counter that can be reset?",
+    "Does the paymaster check the sender against its own allow-list, or validate for anyone?",
+    "Can a paymaster be drained by a userOp whose callData the paymaster does not bound?",
+    "Is there a gas-limit or prefund check that a malicious account can inflate to grief the paymaster?",
+    "Does the account allow an arbitrary target and calldata from its owner with no further check?",
+    "Is the signature validated with ecrecover over a hash an attacker can choose?",
+    "Can a userOp be replayed across a second EntryPoint or a forked chain?"
+  ],
+  "false_positives": [
+    "The account uses a battle-tested base with the canonical hash",
+    "The paymaster bounds gas and validates the sender strictly",
+    "Nonce comes from EntryPoint and cannot be reset",
+    "Replay is blocked by a chainId in the domain separator"
+  ],
+  "poc_must_show": [
+    "two executions of the same signed userOp, both succeeding, on the same chain or across two",
+    "a control where the nonce is incremented and the second must fail",
+    "the paymaster balance delta showing who paid",
+    "no privileged role used"
+  ],
+  "impact_bar": "Reportable when replay or unbounded paymaster use costs the paymaster or the account real value, quantified. Informational for a validation order that is merely non-canonical."
+}

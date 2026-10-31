@@ -27,10 +27,18 @@ import { PLAYBOOKS } from '../playbooks.js';
 import { listSkills, skillLoadReport } from '../skills.js';
 import type { UiEnv } from './env.js';
 
-export type Domain = 'sol' | 'mob' | 'web' | 'infra' | 'other';
+export type Domain = 'sol' | 'svm' | 'mob' | 'web' | 'infra' | 'other';
 
+/**
+ * `svm` is separate from `sol` on purpose, and this was a real defect until it
+ * was split: `sol.svm-account`, `sol.svm-cpi` and `sol.svm-signer` are Solana
+ * programmes whose id prefix is `sol.`, so a prefix-only grouping filed them
+ * under a heading that reads "Solidity". The class is the correct key here, not
+ * the prefix, because the prefix lies about the chain.
+ */
 export const DOMAIN_LABEL: Record<Domain, string> = {
   sol: 'Solidity',
+  svm: 'Solana',
   mob: 'Mobile',
   web: 'Web / API',
   infra: 'Infrastructure',
@@ -38,14 +46,21 @@ export const DOMAIN_LABEL: Record<Domain, string> = {
 };
 
 /** Display order. A domain nobody has a capability in is simply absent. */
-export const DOMAIN_ORDER: Domain[] = ['sol', 'mob', 'web', 'infra', 'other'];
+export const DOMAIN_ORDER: Domain[] = ['sol', 'svm', 'mob', 'web', 'infra', 'other'];
 
 function asDomain(head: string): Domain {
   return head === 'sol' || head === 'mob' || head === 'web' || head === 'infra' ? head : 'other';
 }
 
-/** A pack's domain is its id prefix. Robust even when `cls` is a poor fit. */
-export function domainOfPackId(id: string): Domain {
+/**
+ * A pack's domain is its class first, its id prefix second.
+ *
+ * Class first is the fix: a `sol.*` pack that declares `cls: 'solana'` is a
+ * Solana programme and belongs under Solana regardless of its prefix.
+ */
+export function domainOfPackId(id: string, cls?: string): Domain {
+  if (cls === 'solana') return 'svm';
+  if (cls === 'solidity') return 'sol';
   const head = id.split('.')[0];
   return head ? asDomain(head) : 'other';
 }
@@ -53,9 +68,10 @@ export function domainOfPackId(id: string): Domain {
 /** A playbook's domain comes from its class, which is the routing key. */
 export function domainOfPlaybook(cls: string, id: string): Domain {
   if (cls === 'solidity') return 'sol';
+  if (cls === 'solana') return 'svm';
   if (cls === 'web2') return 'web';
   if (cls === 'infra') return 'infra';
-  return domainOfPackId(id);
+  return domainOfPackId(id, cls);
 }
 
 /**
@@ -147,7 +163,7 @@ export function buildCatalog(_env?: UiEnv): Catalog {
     entries.push({
       id: pack.id,
       name: pack.name,
-      domain: domainOfPackId(pack.id),
+      domain: domainOfPackId(pack.id, pack.cls),
       cls: pack.cls,
       family: pack.family,
       hasPlaybook: false,
