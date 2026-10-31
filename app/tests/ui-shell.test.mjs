@@ -215,3 +215,25 @@ test('the one irreversible action asks first', () => {
   const decideBody = JS.slice(JS.indexOf('async function decide('));
   assert.match(decideBody.slice(0, 400), /await confirmAction\(/);
 });
+
+// --- the launch fragment must be READ before it is STRIPPED ------------------
+//
+// Regression: boot() used to call forgetLaunchFragment() on its own before the
+// first request. In a real Telegram client the fragment is the ONLY source of
+// initData (the shipped shell loads no SDK, by CSP), so stripping it first made
+// the first request carry no payload and the gate answered `missing` - the
+// operator saw "Not signed in" on a phone that had launched correctly.
+
+test('boot reads the launch fragment before stripping it', () => {
+  assert.ok(JS.includes('resolveInitDataNow();'), 'boot must resolve initData');
+  const bootAt = JS.indexOf('async function boot()');
+  assert.ok(bootAt !== -1, 'boot() must exist');
+  const bootBody = JS.slice(bootAt, JS.indexOf('\n}', bootAt));
+  const resolveAt = bootBody.indexOf('resolveInitDataNow();');
+  const forgetAt = bootBody.indexOf('forgetLaunchFragment();');
+  assert.ok(resolveAt !== -1, 'boot() must call resolveInitDataNow()');
+  // A bare forgetLaunchFragment() call in boot means the fragment is destroyed
+  // before it is read. It is allowed only inside resolveInitDataNow.
+  assert.strictEqual(forgetAt, -1, 'boot() must not strip the fragment before reading it');
+  assert.ok(resolveAt < (forgetAt === -1 ? Infinity : forgetAt), 'read must precede strip');
+});

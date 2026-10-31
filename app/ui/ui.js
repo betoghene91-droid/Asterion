@@ -2236,9 +2236,14 @@ async function boot() {
   initPlatform();
   applyTheme();
 
-  // Read the launch parameters BEFORE the first request, so the fragment is
-  // stripped and remembered even when the request itself fails.
-  forgetLaunchFragment();
+  // READ the launch parameters before the first request, and only then strip the
+  // fragment. resolveInitDataNow reads them, remembers them for this tab and
+  // strips them. Calling forgetLaunchFragment() on its own here - which is what
+  // this used to do - strips the ONLY source of the session before anything has
+  // read it, and the first request then goes out with no payload at all and the
+  // gate answers `missing`. That is exactly how a real Telegram launch rendered
+  // "Not signed in": the fragment was destroyed a moment before it was needed.
+  resolveInitDataNow();
 
   let session = null;
   try {
