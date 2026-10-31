@@ -727,6 +727,56 @@ test('desk-data: marks are stored, counted and dense-mint is reported honestly',
   assert.equal(MARKS.minWindowSeconds, 6 * 3600);
 });
 
+// ── D1 rows_written: the marks write cadence ─────────────────────────
+//
+// The account hit 76% of the 100,000/day D1 free tier by 08:15 and was told D1
+// would start returning ERRORS. `snapshotUniverseMarks` was the cause: up to 200
+// mark rows per `*/5` cron tick, 288 ticks a day, 57,600 rows/day on its own.
+// A mark row per mint per five minutes is not evidence any consumer can use -
+// `measureFromMarks` needs `minMarks` samples across a 6h window.
+
+test('desk-data: the marks snapshot honours a write cadence instead of writing every tick', async () => {
+  const e = makeEnv();
+  const base = Math.floor(NOW / 1000);
+  const { snapshotUniverseMarks } = await import('../build/desk/marks.js');
+
+  // A source that reports the same two mints every time it is asked.
+  const source = {
+    candidates: async () => [],
+    dossier: async () => ({}),
+    quote: async () => ({}),
+  };
+  // `withMarkHistory` decorates the source with a universe read; simpler to seed
+  // desk_universe directly, which is what snapshotUniverseMarks reads.
+  // desk_universe is what snapshotUniverseMarks reads. Only the NOT NULL columns
+  // that have no default are supplied.
+  e.raw.prepare(
+    `INSERT INTO desk_universe (mint,symbol,state,pair_created_at,first_seen,last_seen,price_usd,liq_usd,mcap_usd)
+     VALUES ('M1','ONE','passed',?,?,?,1,1,1), ('M2','TWO','passed',?,?,?,1,1,1)`,
+  ).run(base, base, base, base, base, base);
+
+  const first = await snapshotUniverseMarks(e.env, NOW, 200, 3600);
+  assert.equal(first.written, 2, 'the first tick writes both mints');
+
+  // Five minutes later: same mints, well inside the one-hour gap. Nothing written.
+  const second = await snapshotUniverseMarks(e.env, NOW + 5 * 60 * 1000, 200, 3600);
+  assert.equal(second.written, 0, 'a five-minute-old mark must not be rewritten');
+  assert.equal(second.considered, 0);
+
+  // An hour and a minute later: the gap has elapsed, so both are sampled again.
+  const third = await snapshotUniverseMarks(e.env, NOW + 61 * 60 * 1000, 200, 3600);
+  assert.equal(third.written, 2, 'an elapsed gap must still produce a sample');
+
+  // The series stayed usable: two marks per mint across a one-hour span.
+  const stats = await markStats(e.env);
+  assert.equal(stats.mints, 2);
+  assert.equal(stats.marks, 4);
+
+  // And the default (no cadence) still writes every call - existing behaviour.
+  const fourth = await snapshotUniverseMarks(e.env, NOW + 62 * 60 * 1000);
+  assert.equal(fourth.written, 2, 'minGapSeconds=0 keeps the old per-call behaviour');
+});
+
 // ── the registry ─────────────────────────────────────────────────────────
 
 test('desk-data: every registry entry is cited, and only listed entries are excluded', () => {
