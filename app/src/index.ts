@@ -10,6 +10,21 @@
  */
 
 import { assessJobs, renderDeadmanAlert, type JobName } from './deadman.js';
+import {
+  authorizationFor as sharedAuthorizationFor,
+  authorizationRefusal,
+  authorizeWithPolicy,
+  anchorFreeFor,
+  ensureProgramRow,
+  gateMode,
+  GATE_MODES,
+  isGateMode,
+  resolveTargetRef,
+  selfAssertRepo,
+  setGateMode,
+  type AuthEnv,
+  type GateMode,
+} from './authorize.js';
 import { crawlTick, seed } from './discovery.js';
 import { approveAndDispatch, type DispatchDb } from './dispatch.js';
 import { renderBrief, type Brief, type Question } from './intake.js';
@@ -17,6 +32,7 @@ import { append as ledgerAppend, verify as ledgerVerify } from './ledger.js';
 import { LlmUnavailable, parseJson } from './llm.js';
 import { compileWithEnrichment, describeEnrichment } from './intake-enrich.js';
 import { byId, PLAYBOOKS, type Cls } from './playbooks.js';
+import { parseChainToken } from './chains.js';
 import { getSkill } from './skills.js';
 import { priorFor, renderPrecedent, retrieve, type CorpusDigest } from './corpus.js';
 import { PolicyEngine, roeFromBrief, type Action, type Mut } from './policy.js';
@@ -328,9 +344,98 @@ async function handleUpdate(env: Env, u: TgUpdate): Promise<void> {
     return;
   }
 
-  if (text.startsWith('/seed ')) {
-    const n = await seed(env, text.slice(6).split(/[\s,]+/));
+  if (text === '/seed' || text.startsWith('/seed ')) {
+    // Bare `/seed` used to fall through to the compiler, which answered with "THREE
+    // QUESTIONS" — so the refusal card offered a command that behaved like free text
+    // when typed without arguments. It now answers as itself either way.
+    const hosts = text.slice(5).trim();
+    if (!hosts) {
+      await send(
+        env,
+        [
+          '<b>SEED</b>',
+          rule(),
+          '<code>/seed &lt;hosts…&gt;</code>',
+          '',
+          'Queues hosts for the discovery crawl, which reads their',
+          '<code>/.well-known/security.txt</code> and records the policy it finds.',
+          '',
+          'Separate several with spaces or commas:',
+          '  <code>/seed app.example.com, api.example.com</code>',
+          '',
+          'To record a policy you already have the URL for, use <code>/policy</code> —',
+          'that is immediate, this waits for the next hourly tick.',
+        ].join('\n'),
+        KEYBOARDS.back(),
+        chatId,
+      );
+      return;
+    }
+    const n = await seed(env, hosts.split(/[\s,]+/));
     await send(env, `queued <b>${n}</b> hosts for discovery.`, KEYBOARDS.back(), chatId);
+    return;
+  }
+
+  // ── the authorization ingress ─────────────────────────────────────────────
+  // These two are the ONLY paths that can create an anchor, and they are the two
+  // commands the refusal card now names. Dispatched BEFORE the free-text fallback
+  // so neither can be swallowed by the compiler.
+  if (text.startsWith('/policy')) {
+    const arg = text.slice(7).trim();
+    const sp = arg.indexOf(' ');
+    const target = sp === -1 ? arg : arg.slice(0, sp).trim();
+    const policyUrl = sp === -1 ? '' : arg.slice(sp + 1).trim();
+    await send(env, await policyCard(env, target, policyUrl), KEYBOARDS.back(), chatId);
+    return;
+  }
+
+  if (text.startsWith('/own')) {
+    const arg = text.slice(4).trim();
+    await send(env, await ownCard(env, arg, env.OPERATOR_NAME ?? 'operator'), KEYBOARDS.back(), chatId);
+    return;
+  }
+
+  // ── the operator's gate setting ───────────────────────────────────────────
+  // The gate's POLICY half is the operator's to waive; its CORRECTNESS half is
+  // not. See `authorize.ts:GateMode` for the reasoning and for the four things
+  // that never change in any mode.
+  if (text === '/gate' || text.startsWith('/gate ')) {
+    const arg = text.slice(5).trim().toLowerCase();
+    const operator = env.OPERATOR_NAME ?? 'operator';
+    if (!arg) {
+      await send(env, await gateCard(env), KEYBOARDS.back(), chatId);
+      return;
+    }
+    if (!isGateMode(arg)) {
+      await send(
+        env,
+        [
+          '<b>UNKNOWN MODE</b>',
+          rule(),
+          `<code>${esc(arg)}</code> is not a gate mode.`,
+          '',
+          'Modes: <code>strict</code>, <code>own_scope</code>, <code>open</code>',
+          '  <code>/gate strict</code>     every class needs a fetched policy',
+          '  <code>/gate own_scope</code>  repos and chain addresses need only your word',
+          '  <code>/gate open</code>       no anchor required for any class',
+        ].join('\n'),
+        KEYBOARDS.back(),
+        chatId,
+      );
+      return;
+    }
+    const before = await gateMode(env as AuthEnv);
+    await setGateMode(env as AuthEnv, arg, operator, async (kind, payload) => {
+      await ledgerAppend(env, kind, payload);
+    });
+    await env.DB.prepare(
+      `INSERT INTO kv (key,value,ts) VALUES ('gate_changed_by',?,?)
+       ON CONFLICT(key) DO UPDATE SET value=excluded.value, ts=excluded.ts`,
+    )
+      .bind(operator, Math.floor(Date.now() / 1000))
+      .run()
+      .catch(() => undefined);
+    await send(env, await gateCard(env, { from: before, to: arg }), KEYBOARDS.back(), chatId);
     return;
   }
 
@@ -525,6 +630,207 @@ async function routeButton(env: Env, chatId: number, msgId: number, data: string
 
 // ─────────────────────────────── hunt flow ───────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────────
+// the authorization ingress — cards
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The anchor refusal, rendered once for BOTH surfaces.
+ *
+ * `authorize.ts:authorizationRefusal` builds the lines; this wraps them in the
+ * HTML the Telegram card needs. The Mini App work layer renders the same function
+ * with `mode: 'text'`, which is why the two can no longer give different
+ * instructions — a parity test strips the tags and diffs them.
+ */
+function anchorRefusalText(targets: string[] | undefined, programId: string): string {
+  const ref = resolveTargetRef(programId);
+  return authorizationRefusal(
+    {
+      program: programId,
+      targets: targets ?? [],
+      kind: ref.kind,
+      ...(ref.kind === 'address' ? { address: ref.address } : {}),
+    },
+    'html',
+  );
+}
+
+/** The `/policy` reply: what was fetched, what the machine decided, why it refused. */
+async function policyCard(env: Env, target: string, policyUrl: string): Promise<string> {
+  if (!target || !policyUrl) {
+    return [
+      '<b>USAGE</b>',
+      rule(),
+      '<code>/policy &lt;target&gt; &lt;policy-url&gt;</code>',
+      '',
+      'The target is a host or a repository:',
+      '  <code>/policy example.com https://example.com/security</code>',
+      '  <code>/policy acme/vault https://github.com/acme/vault/blob/main/SECURITY.md</code>',
+      '',
+      'The policy URL must be <b>https</b> and must live on the target’s own site or on a',
+      'programme platform that hosts its brief, so a document there can actually speak for it.',
+      '',
+      'I fetch it, classify it with the same classifier discovery uses, and record the',
+      'verdict. If it prohibits automated testing I record that and refuse.',
+    ].join('\n');
+  }
+
+  const out = await authorizeWithPolicy(env as AuthEnv, target, policyUrl);
+
+  if (out.ok) {
+    return [
+      '<b>POLICY RECORDED</b>',
+      rule(),
+      `program   <code>${esc(out.program)}</code>`,
+      `source    <code>${esc(out.policyUrl)}</code>`,
+      `fetched   ${out.bytes} bytes, sha256 <code>${out.sha.slice(0, 16)}…</code>`,
+      '',
+      `automation  <b>${out.automation}</b>  <i>(classified from the document, not from you)</i>`,
+      `reward      ${esc(out.reward)}`,
+      '',
+      `anchor    <code>${esc(out.anchor)}</code>`,
+      '',
+      'That target can be hunted now. Nothing else about the gate changed.',
+    ].join('\n');
+  }
+
+  if (out.reason === 'prohibited') {
+    return [
+      '<b>PROHIBITED — NOT AUTHORIZED</b>',
+      rule(),
+      `program   <code>${esc(out.program)}</code>`,
+      `source    <code>${esc(out.policyUrl)}</code>`,
+      `fetched   ${out.bytes} bytes, sha256 <code>${out.sha.slice(0, 16)}…</code>`,
+      '',
+      'That document prohibits automated testing, so it is recorded as',
+      '<b>prohibited</b> and this target stays refused. The recording is deliberate:',
+      'the prohibition is the finding, and writing it makes it durable against a later',
+      'crawl. I cannot and will not overwrite it into permission.',
+    ].join('\n');
+  }
+
+  const why: Record<'bad_target' | 'bad_url' | 'not_https' | 'cross_site' | 'budget' | 'unreachable' | 'unusable', string> = {
+    bad_target: 'the target is not something I can authorize',
+    bad_url: 'that policy URL is not a URL',
+    not_https: 'only https policy URLs are fetched',
+    cross_site: 'that document cannot speak for this target',
+    budget: 'the daily policy-fetch budget is spent',
+    unreachable: 'that URL could not be read',
+    unusable: 'that URL had nothing usable in it',
+  };
+
+  return [
+    '<b>NOT RECORDED</b>',
+    rule(),
+    `program   <code>${esc(out.program)}</code>`,
+    `reason    ${esc(why[out.reason] ?? out.reason)}`,
+    '',
+    esc(out.detail),
+    '',
+    'Nothing was written. The row is exactly as it was.',
+  ].join('\n');
+}
+
+/** The `/own` reply: what was recorded, or which rule refused it. */
+async function ownCard(env: Env, target: string, operator: string): Promise<string> {
+  if (!target) {
+    return [
+      '<b>USAGE</b>',
+      rule(),
+      '<code>/own &lt;owner&gt;/&lt;repo&gt;</code>',
+      '',
+      'For source you own and can already clone:',
+      '  <code>/own acme/vault</code>',
+      '  <code>/own https://github.com/acme/vault</code>',
+      '  <code>/own github.com/acme/vault</code>',
+      '',
+      'REPOSITORIES ONLY. A host, an IP, a CIDR or a chain address is a running',
+      'third-party system: "this is mine" is not authorization for it, and I cannot',
+      'check the claim. Use <code>/policy</code> for a host.',
+      '',
+      'This records an audit-only assertion under a <code>self:</code> anchor, with your',
+      'name and the time, so anyone reading the database can tell it from a fetched',
+      'policy. It will not overwrite a prohibition, and it will not replace a real',
+      'policy already on file.',
+    ].join('\n');
+  }
+
+  const out = await selfAssertRepo(env as AuthEnv, target, operator);
+
+  if (out.ok) {
+    return [
+      '<b>SELF-ASSERTED REPO AUDIT</b>',
+      rule(),
+      `program   <code>${esc(out.program)}</code>`,
+      `operator  <b>${esc(operator)}</b>`,
+      `anchor    <code>${esc(out.selfRef ?? '')}</code>`,
+      '',
+      'Recorded as <b>not_mentioned</b>, because no policy mentions automation — that is',
+      'the literal truth. The <code>self:</code> prefix marks it as your assertion rather',
+      'than a document, and it stays that way in the brief and the report.',
+      '',
+      'This authorises a read-only audit of that repository only. It grants nothing on',
+      'any host, address or deployment.',
+    ].join('\n');
+  }
+
+  const title: Record<typeof out.reason, string> = {
+    ok: '',
+    not_a_repo: 'REFUSED — NOT A REPOSITORY',
+    address: 'REFUSED — THAT IS AN ADDRESS',
+    prohibited: 'REFUSED — PROHIBITED ON FILE',
+    already_fetched: 'REFUSED — A POLICY IS ALREADY ON FILE',
+  };
+
+  return [
+    `<b>${title[out.reason] ?? 'REFUSED'}</b>`,
+    rule(),
+    `program   <code>${esc(out.program)}</code>`,
+    '',
+    esc(out.detail),
+    '',
+    'Nothing was written.',
+  ].join('\n');
+}
+
+/** The `/gate` card: the current mode, what it permits, and how to change it. */
+async function gateCard(
+  env: Env,
+  change?: { from: GateMode; to: GateMode },
+): Promise<string> {
+  const mode = await gateMode(env as AuthEnv);
+  const row = await env.DB.prepare("SELECT value, ts FROM kv WHERE key='policy_gate'")
+    .first<{ value: string; ts: number }>();
+  const by = await env.DB.prepare("SELECT value FROM kv WHERE key='gate_changed_by'")
+    .first<{ value: string }>();
+
+  const what: Record<GateMode, string> = {
+    strict: 'every class needs a fetched policy anchor (the old behaviour)',
+    own_scope: 'repos and chain addresses need only your declaration; hosts still need a policy',
+    open: 'no anchor required for any class',
+  };
+
+  return [
+    change ? `<b>GATE CHANGED</b>` : `<b>GATE</b>`,
+    rule(),
+    change ? `was       ${change.from}` : null,
+    `mode      <b>${mode}</b>`,
+    row?.ts ? `set       ${new Date(row.ts * 1000).toISOString().slice(0, 16)} UTC${by?.value ? ` by ${esc(by.value)}` : ''}` : 'set       never (default)',
+    '',
+    esc(what[mode]),
+    rule(),
+    '<b>what this never changes</b>',
+    '  · per-target identity — one hunt can never authorise another contract or repo',
+    '  · the chain is asked for, never guessed — a bare address still needs chain_id',
+    '  · <code>prohibited</code> is terminal for that exact target',
+    '  · the same address on two chains stays two separate engagements',
+    '',
+    '<code>/gate strict</code>  <code>/gate own_scope</code>  <code>/gate open</code>',
+  ]
+    .filter((l) => l !== null)
+    .join('\n');
+}
+
 async function startHunt(
   env: Env,
   chatId: number,
@@ -570,10 +876,25 @@ async function huntFrom(
   // A hunt needs a program row to hang off. Default to a self-scoped one. An
   // answered target joins the text exactly as the Mini App's path joins it, so
   // the same host resolves whether it was typed or tapped.
-  const programId = await ensureSelfProgram(env, answers['target'] ? `${raw} ${answers['target']}` : raw);
+  //
+  // THE CHAIN IS READ HERE, FROM AN ANSWER, AND NOWHERE ELSE. When the operator
+  // answers the chain question, `answers.chain` holds the number they tapped and
+  // `intake.ts:compile` turns it into `brief.chain_id`; the same value has to
+  // resolve the program row, or the brief would be pinned to one chain while the
+  // approval row was keyed to another — which is precisely the "one approval
+  // covered a target nobody chose" failure. Absent an answer, an explicit
+  // `chain:…` token still counts; absent both, the address resolves to `unscoped`
+  // and the refusal explains that the chain is what is missing.
+  const chainId = answers['chain'] ? parseChainToken(`chain:${answers['chain']}`) : parseChainToken(raw);
+  const programId = await ensureSelfProgram(
+    env,
+    answers['target'] ? `${raw} ${answers['target']}` : raw,
+    chainId,
+  );
   // May be null. See the note above: null means "no approvals row, no dispatch",
   // not "refuse to think".
-  const authRef = await authorizationFor(env, programId);
+  const mode = await gateMode(env as AuthEnv);
+  const authRef = await authorizationFor(env, programId, mode);
 
   const compiled = await compileWithEnrichment(
     env,
@@ -618,20 +939,20 @@ async function huntFrom(
     // The anchor refusal, unchanged in substance and now reached AFTER the
     // compiler rather than instead of it. Fail-closed: no approvals row is
     // written and nothing can be dispatched from here.
+    //
+    // THE COPY NOW NAMES ONLY PATHS THAT EXIST. It used to offer a second option,
+    // "paste the exact policy sentence that authorizes testing", which named an
+    // ingress the code did not implement - following it dead-ended. Worse, it would
+    // have been the WRONG fix if it had existed: authorization is decided from
+    // fields, never from prose (`policy.ts`), so letting a sentence in as an anchor
+    // is precisely what the engine is built to refuse. The three commands below are
+    // all dispatched by `handleUpdate`, and `authorize-ingress.test.mjs` drives each
+    // one through the webhook to prove the copy is truthful.
     await reply(
       env,
       chatId,
       editTo,
-      [
-        '<b>NO AUTHORIZATION ON FILE</b>',
-        rule(),
-        'I will not touch a target whose program policy is not recorded.',
-        '',
-        `Compiled, but not queued: <code>${esc(result.brief.targets.join(', ') || programId)}</code>`,
-        'Two ways forward:',
-        '  1. <code>/seed example.com</code> then let discovery parse its policy',
-        '  2. paste the exact policy sentence that authorizes testing',
-      ].join('\n'),
+      anchorRefusalText(result.brief.targets, programId),
       KEYBOARDS.back(),
     );
     return;
@@ -773,36 +1094,32 @@ async function scopeHintsFor(env: Env, programId: string): Promise<string[]> {
   return [...new Set(out)].slice(0, 4);
 }
 
-async function ensureSelfProgram(env: Env, raw: string): Promise<string> {
-  const m = raw.match(/\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}\b/i);
-  const host = m?.[0]?.toLowerCase() ?? 'unscoped';
-  await env.DB.prepare(
-    `INSERT INTO programs (id,name,platform,homepage,status,discovered_at)
-     VALUES (?,?,?,?,'new',?) ON CONFLICT(id) DO NOTHING`,
-  )
-    .bind(host, host, 'self', `https://${host}`, Math.floor(Date.now() / 1000))
-    .run();
-  return host;
+/**
+ * The program row a hunt hangs off, and the anchor gate.
+ *
+ * Both are now thin delegates into `authorize.ts` rather than private copies. That
+ * is the fix for two separate problems at once:
+ *
+ *   · IDENTITY. The body that used to live here matched a HOSTNAME regex over the
+ *     raw text, so `https://github.com/acme/vault` resolved to the program
+ *     `github.com` — one row shared by every repository on the forge, and therefore
+ *     one `automation` verdict shared by all of them. `authorize.ts:resolveTargetRef`
+ *     runs the repo arms FIRST and gives each repo `host:owner/name`.
+ *   · DRIFT. The Mini App's work layer kept a hand-written mirror of both functions,
+ *     with a comment explaining that it could not share them. Two implementations of
+ *     a security gate is two places for a refusal to become a pass, so there is now
+ *     one, and the parity test asserts the two surfaces agree.
+ *
+ * The anchor logic itself is unchanged in substance — see `authorize.ts:authorizationFor`
+ * for what was and was not touched. The `.bind(programId)` that fixed B1 is preserved
+ * there, and the `prohibited` arm is still the first thing it reads.
+ */
+async function ensureSelfProgram(env: Env, raw: string, chainId: number | null = null): Promise<string> {
+  return ensureProgramRow(env, raw, chainId);
 }
 
-async function authorizationFor(env: Env, programId: string): Promise<string | null> {
-  // B1. `WHERE id=?` without `.bind(programId)` is not a query for this program:
-  // D1 rejects the unbound placeholder and node:sqlite raises, so the anchor was
-  // never resolved for ANY program and the free-text path was 100% dead. The
-  // bind is the whole fix; the branch logic below was always correct.
-  const row = await env.DB.prepare(
-    'SELECT automation, policy_url, policy_text FROM programs WHERE id=?',
-  )
-    .bind(programId)
-    .first<{ automation: string; policy_url: string | null; policy_text: string | null }>();
-  if (!row) return null;
-  if (row.automation === 'prohibited') return null;
-  if (row.automation === 'allowed' && row.policy_url) {
-    return `${row.policy_url} permits automated testing`;
-  }
-  // not_mentioned still needs an explicit anchor; use the policy URL if present.
-  if (row.policy_url) return `${row.policy_url} (no prohibition on automated testing)`;
-  return null;
+async function authorizationFor(env: Env, programId: string, mode?: GateMode): Promise<string | null> {
+  return sharedAuthorizationFor(env, programId, mode);
 }
 
 function renderQuestions(qs: Question[]): string {

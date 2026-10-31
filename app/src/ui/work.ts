@@ -5,7 +5,7 @@
  *   (a) an unchanged call into an exported function of the existing system
  *       (`compileWithEnrichment`, `renderBrief`, `approveAndDispatch`,
  *       `ledgerAppend`), or
- *   (b) a four-line mirror of a private helper in index.ts.
+ *   (b) a call into `authorize.ts`, which both this file and `index.ts` share.
  *
  * Nothing in this file re-implements the suggestion engine. The "the bot proposes
  * the hunt, you say yes" behaviour - the third of the three ways into intake.ts -
@@ -14,13 +14,24 @@
  * drives the real `/tg` path and this path against one database and diffs the
  * resulting briefs byte for byte, so the claim is tested rather than asserted.
  *
- * The two mirrors (`ensureProgram`, `authorizationFor`) exist because index.ts's
- * `ensureSelfProgram` / `authorizationFor` are module-private, and this change is
- * not allowed to add an export to index.ts. Both are pure D1 reads/writes with no
- * branching logic worth diverging, and the parity test covers them too: it asserts
- * both paths create the same `programs` row and the same `approvals` row.
+ * THE TWO MIRRORS ARE GONE. This file used to carry a hand-written copy of
+ * `ensureSelfProgram` and of `authorizationFor`, with a header explaining that
+ * index.ts's versions were module-private and could not be exported without
+ * adding an export outside the change's permission. The refused-anchor message was
+ * a third copy of the same copy. Three implementations of one security gate is
+ * three places for a refusal to quietly become a pass, so both now live in
+ * `authorize.ts` and both entry points call them. The parity test still asserts
+ * the two paths create the same `programs` row and the same `approvals` row - and
+ * now it can assert they render the same refusal, which was impossible while the
+ * strings were duplicated.
  */
 
+import {
+  authorizationFor,
+  authorizationRefusal,
+  ensureProgramRow,
+  resolveTargetRef,
+} from '../authorize.js';
 import { approveAndDispatch, type ApproveOutcome } from '../dispatch.js';
 import { renderBrief, type Brief, type Question } from '../intake.js';
 import { compileWithEnrichment, describeEnrichment } from '../intake-enrich.js';
@@ -69,59 +80,40 @@ export type EngagementResult =
     };
 
 /**
- * MIRROR of index.ts `ensureSelfProgram`. Resolve the program row a hunt hangs
- * off, creating a self-scoped one on first use.
- *
- * The only difference is the argument: the caller may pass the operator's
- * answered target appended to the raw text, so a target supplied as a follow-up
- * answer still resolves. It cannot change behaviour for any input the Telegram
- * path resolves, because the regex takes the FIRST host in the string and the
- * raw text is still first.
+ * Resolve the program row a hunt hangs off, creating a self-scoped one on first
+ * use. Delegates to `authorize.ts:ensureProgramRow`, which both this file and the
+ * Telegram webhook call — so a repo reference resolves to the same row on either
+ * surface, and `github.com/acme/vault` gets its own id rather than collapsing onto
+ * `github.com`.
  */
 export async function ensureProgram(env: UiEnv, raw: string): Promise<string> {
-  const m = raw.match(/\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}\b/i);
-  const host = m?.[0]?.toLowerCase() ?? 'unscoped';
-  await env.DB.prepare(
-    `INSERT INTO programs (id,name,platform,homepage,status,discovered_at)
-     VALUES (?,?,?,?,'new',?) ON CONFLICT(id) DO NOTHING`,
-  )
-    .bind(host, host, 'self', `https://${host}`, Math.floor(Date.now() / 1000))
-    .run();
-  return host;
+  return ensureProgramRow(env, raw);
 }
 
 /**
- * MIRROR of index.ts `authorizationFor`, WITH ITS DEFECT FIXED.
+ * Resolve the authorization anchor, or `null` for "refuse".
  *
- * The pre-existing helper in index.ts builds `... WHERE id=?` and never calls
- * `.bind(programId)` - the parameter is declared and unused. The consequence is
- * that no authorization anchor can ever be resolved: depending on the driver the
- * query either raises a binding error or matches nothing, and either way the
- * function returns null, so `startHunt` answers "NO AUTHORIZATION ON FILE" for
- * every target. It is pinned as an observed defect in `ui-parity.test.mjs`, and
- * it is NOT fixed here because index.ts may only receive the router branch this
- * change is permitted to add.
- *
- * This copy binds the parameter, because a Mini App whose every submission ends
- * in a refusal would be a second, useless implementation of the same dead end.
- * The divergence is therefore deliberate, documented, and asserted: the parity
- * test drives both entry points against identical seeds and shows the UI reaches
- * the compiler while the shipped webhook cannot.
+ * Delegates to `authorize.ts:authorizationFor`. This function used to be a mirror
+ * with a header noting that the index.ts copy had B1 (`... WHERE id=?` without
+ * `.bind(programId)`) and that the mirror deliberately did not. There is one
+ * implementation now, B1's bind included, so the two entry points cannot diverge
+ * on whether a target is authorized — which is the one divergence that would matter.
  */
-export async function authorizationFor(env: UiEnv, programId: string): Promise<string | null> {
-  const row = await env.DB.prepare(
-    'SELECT automation, policy_url, policy_text FROM programs WHERE id=?',
-  )
-    .bind(programId)
-    .first<{ automation: string; policy_url: string | null; policy_text: string | null }>();
-  if (!row) return null;
-  if (row.automation === 'prohibited') return null;
-  if (row.automation === 'allowed' && row.policy_url) {
-    return `${row.policy_url} permits automated testing`;
-  }
-  // not_mentioned still needs an explicit anchor; use the policy URL if present.
-  if (row.policy_url) return `${row.policy_url} (no prohibition on automated testing)`;
-  return null;
+export { authorizationFor };
+
+/**
+ * The refusal copy, built by `authorize.ts:authorizationRefusal` in `text` mode.
+ *
+ * Telegram renders the same function in `html` mode. One string, two renderings,
+ * so the Mini App and the bot cannot tell the operator different things — and the
+ * commands it names are the ones that exist.
+ */
+function refusalFor(programId: string): string {
+  const ref = resolveTargetRef(programId);
+  return authorizationRefusal(
+    { program: programId, kind: ref.kind, ...(ref.kind === 'address' ? { address: ref.address } : {}) },
+    'text',
+  );
 }
 
 /**
@@ -145,11 +137,7 @@ export async function compileEngagement(
     return {
       kind: 'unauthorized',
       programId,
-      message:
-        'NO AUTHORIZATION ON FILE - this Worker will not touch a target whose ' +
-        'program policy is not recorded. Two ways forward: seed the host so ' +
-        'discovery can parse its policy, or record the exact policy sentence ' +
-        'that authorizes testing.',
+      message: refusalFor(programId),
     };
   }
 

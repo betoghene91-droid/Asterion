@@ -156,6 +156,20 @@ export function describeChain(id: number | null | undefined): string {
 }
 
 /**
+ * The chains a fork can actually be taken on, in registry order, minus Anvil.
+ *
+ * Anvil is excluded because it can only be resolved inside the prove workflow
+ * (`FORK_RPC_31337`), and a network has no `localhost` node to fork from. So this
+ * is the list a chain question may offer: every chain that could produce a real
+ * PoC. Used by `intake.ts` to build the one-tap chain answer.
+ */
+export function forkableChains(): ChainSpec[] {
+  return Object.values(CHAINS)
+    .filter((c) => c.explorer !== '')
+    .sort((a, b) => a.id - b.id);
+}
+
+/**
  * An explicit chain token in free text: `chain:1`, `chain_id:8453`, `chain=1`.
  *
  * Two constraints, both load-bearing:

@@ -14,7 +14,7 @@
  */
 
 import { PLAYBOOKS, route, type Cls, type Mut, type Playbook } from './playbooks.js';
-import { parseChainToken } from './chains.js';
+import { forkableChains, parseChainToken } from './chains.js';
 import { isSolanaPubkey } from './solana.js';
 
 export interface Brief {
@@ -54,7 +54,13 @@ export interface Brief {
 }
 
 export interface Question {
-  key: 'target' | 'class' | 'depth' | 'confirm';
+  /**
+   * `chain` is in the union because `answers.chain` has always been a documented
+   * answer key (`compile()` reads it via `parseChainToken`) — but no question ever
+   * produced it, which is why a contract address had no way to state its chain.
+   * See the chain question in `compile()`.
+   */
+  key: 'target' | 'class' | 'depth' | 'chain' | 'confirm';
   text: string;
   options: { label: string; value: string }[];
 }
@@ -183,6 +189,35 @@ export function compile(
         { label: 'Smart contract', value: 'solidity' },
         { label: 'DNS / infrastructure', value: 'infra' },
       ],
+    });
+  }
+
+  // THE CHAIN QUESTION.
+  //
+  // An address does not identify its chain: the same 20 bytes exist on every EVM
+  // chain. `policy.ts:chainForBrief` therefore REFUSES an address brief that names
+  // no `chain_id`, and that refusal is correct — the previous behaviour filed every
+  // address under 8453 (Base), so authorising an Ethereum mainnet contract
+  // authorised it as a Base address. The bug was never the requirement; it was that
+  // NOTHING EVER ASKED. `answers.chain` was already plumbed through
+  // `parseChainToken(\`chain:${answers.chain}\`)` below, but no question ever
+  // produced it, so the operator went straight from "here is a contract" to a dead
+  // end.
+  //
+  // So this asks, with one button per forkable chain, and only when the operator has
+  // supplied an address or a chain pin already. It is never a guess: choosing a
+  // button IS the operator declaring the chain, which is the same class of evidence
+  // as typing `chain:8453`.
+  const hasAddress = targets.some((t) => /^0x[0-9a-fA-F]{40}$/.test(t));
+  const chainAlreadyKnown = Boolean(answers.chain) || parseChainToken(raw) !== null;
+  if (hasAddress && !chainAlreadyKnown) {
+    questions.push({
+      key: 'chain',
+      text: 'Which chain is that contract on? (the same address exists on every chain)',
+      options: forkableChains().map((c) => ({
+        label: `${c.name} (${c.id})`,
+        value: String(c.id),
+      })),
     });
   }
 

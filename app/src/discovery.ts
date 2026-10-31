@@ -120,26 +120,96 @@ export interface CrawlFetcher {
   }>;
 }
 
-async function getText(url: string, doFetch?: CrawlFetcher): Promise<string | null> {
+/**
+ * One outbound read, with the reason attached when it fails.
+ *
+ * `null` used to mean "no body", which collapsed a DNS failure, a 404, a non-text
+ * content type and a truncation into the same silence. The crawl does not care — a
+ * host that answers nothing is a lead to try later — but the `/policy` ingress MUST
+ * tell the operator which of those happened, because "unreachable" and "not a
+ * policy document" call for different fixes. So the reason is returned rather than
+ * logged and dropped.
+ */
+export type PolicyFetch =
+  | { ok: true; text: string; status: number; url: string }
+  | {
+      ok: false;
+      reason: 'network' | 'http' | 'not_text';
+      status: number | null;
+      url: string;
+      detail: string;
+    };
+
+/**
+ * Fetch a policy document and say exactly what happened.
+ *
+ * The SAME user-agent, timeout and content-type gate the crawler uses,
+ * deliberately: a policy the operator hands us from chat must be read under the
+ * same rules as one the crawler found, or the two could classify the same bytes
+ * differently for a reason nobody can see. `redirect: 'follow'` is kept because
+ * programmes legitimately redirect `/security` to `/security.html`, and the caller
+ * has already vetted the URL it asked for (`authorize.ts:policySourceAllowed`).
+ */
+export async function fetchPolicyDocument(url: string, doFetch?: CrawlFetcher): Promise<PolicyFetch> {
   const impl = doFetch ?? (globalThis.fetch as unknown as CrawlFetcher);
-  if (typeof impl !== 'function') return null;
+  if (typeof impl !== 'function') {
+    return { ok: false, reason: 'network', status: null, url, detail: 'no fetch implementation available' };
+  }
+  let res: { ok: boolean; status: number; headers: { get(n: string): string | null }; text(): Promise<string> };
   try {
     const ctl = new AbortController();
     const t = setTimeout(() => ctl.abort(), TIMEOUT_MS);
-    const res = await impl(url, {
-      redirect: 'follow',
-      signal: ctl.signal,
-      headers: { 'user-agent': 'asterion/1.0 (+security.txt discovery; read-only)' },
-    });
-    clearTimeout(t);
-    if (!res.ok) return null;
-    const ct = res.headers.get('content-type') ?? '';
-    if (!/text\/plain|text\/|application\/octet-stream/i.test(ct)) return null;
-    const body = await res.text();
-    return body.slice(0, 20000);
-  } catch {
-    return null;
+    try {
+      res = await impl(url, {
+        redirect: 'follow',
+        signal: ctl.signal,
+        headers: { 'user-agent': 'asterion/1.0 (+policy check; read-only)' },
+      });
+    } finally {
+      clearTimeout(t);
+    }
+  } catch (e) {
+    return {
+      ok: false,
+      reason: 'network',
+      status: null,
+      url,
+      detail: (e as Error)?.message || 'the request failed',
+    };
   }
+  if (!res.ok) {
+    return { ok: false, reason: 'http', status: res.status, url, detail: `HTTP ${res.status}` };
+  }
+  const ct = res.headers.get('content-type') ?? '';
+  if (!/text\/plain|text\/|application\/octet-stream/i.test(ct)) {
+    return {
+      ok: false,
+      reason: 'not_text',
+      status: res.status,
+      url,
+      detail: ct ? `content-type ${ct}` : 'no content-type',
+    };
+  }
+  let body: string;
+  try {
+    body = await res.text();
+  } catch (e) {
+    return {
+      ok: false,
+      reason: 'network',
+      status: res.status,
+      url,
+      detail: (e as Error)?.message || 'the body could not be read',
+    };
+  }
+  // Same 20 KB ceiling as the crawl: a "policy" larger than that is a marketing
+  // page, and classifying its first 20 KB is the most we would do anyway.
+  return { ok: true, text: body.slice(0, 20000), status: res.status, url };
+}
+
+async function getText(url: string, doFetch?: CrawlFetcher): Promise<string | null> {
+  const got = await fetchPolicyDocument(url, doFetch);
+  return got.ok ? got.text : null;
 }
 
 /**
@@ -235,6 +305,47 @@ export function classifyReward(policyText: string): 'monetary' | 'swag' | 'recog
 }
 
 /**
+ * SELF-MINTED IDENTITIES ARE NOT CRAWL CANDIDATES.
+ *
+ * A hunt, `/own` or a chain identity mints a `programs` row to hang an engagement
+ * off. It is not a discovered programme, and there is no security.txt at
+ * `https://unscoped/.well-known/security.txt` or at
+ * `https://github.com/.well-known/security.txt`.
+ *
+ * Without this filter those rows are selected FIRST — they carry the NULL
+ * `next_check` that sorts to the front — consume the per-tick budget probing URLs
+ * that can never parse, and then get pushed 14 days out. The real queue behind them
+ * never drains, so `programs (N parsed)` stays 0 and `huntable` stays 0 forever.
+ * That is what made the refusal card's advice — "/seed a host, then let discovery
+ * parse its policy" — false in practice: discovery was never reaching the host.
+ *
+ * THE DISCRIMINATOR IS ID SHAPE, NOT `platform`. `platform='self'` is ambiguous: it
+ * marks every row this bot created, including genuine hosts seeded with `/seed` or
+ * by hunting a hostname, which SHOULD be crawled. So the rule is a statement about
+ * what can be probed at all:
+ *
+ *   · `unscoped`                         — a name, not a host. No DNS entry exists.
+ *   · any id containing ':'              — a repo (`github.com:owner/name`) or a
+ *                                          chain address (`chain:1:0x…`). Neither is
+ *                                          a hostname, and a hostname never contains
+ *                                          a colon, so this cannot exclude a real
+ *                                          target.
+ *
+ * A row created by hunting a real hostname keeps a host-shaped id and stays in the
+ * queue on purpose: that host may well publish a security.txt, and finding it is
+ * the whole point of the crawl.
+ */
+const CRAWL_CANDIDATE_SQL = `SELECT id, name, homepage, policy_text FROM programs
+     WHERE status IN ('new','crawled')
+       AND (next_check IS NULL OR next_check <= ?)
+       AND id <> 'unscoped'
+       AND instr(id, ':') = 0
+       AND homepage IS NOT NULL
+       AND homepage <> 'https://unscoped'
+     ORDER BY priority DESC, COALESCE(next_check, 0) ASC
+     LIMIT ?`;
+
+/**
  * One crawler tick. Reads the front of the work queue, probes, writes back.
  * Never throws on a single host failure: a dead host is data, not an error.
  */
@@ -245,13 +356,7 @@ export async function crawlTick(
   const now = Math.floor(Date.now() / 1000);
   const limit = Math.max(0, Math.floor(options.limit ?? MAX_CANDIDATES));
   if (limit === 0) return { probed: 0, found: 0, limit };
-  const due = await env.DB.prepare(
-    `SELECT id, name, homepage, policy_text FROM programs
-     WHERE status IN ('new','crawled')
-       AND (next_check IS NULL OR next_check <= ?)
-     ORDER BY priority DESC, COALESCE(next_check, 0) ASC
-     LIMIT ?`,
-  )
+  const due = await env.DB.prepare(CRAWL_CANDIDATE_SQL)
     .bind(now, limit)
     .all<{ id: string; name: string; homepage: string | null; policy_text: string | null }>();
 
