@@ -99,8 +99,39 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           mkdir -p ../backups
+
+          # WHY THIS IS NOT A PLAIN FULL EXPORT. The first real run of this
+          # workflow exported the whole database fine (6,987,101 bytes) and
+          # then could not restore it: `wrangler d1 execute` died with
+          # "statement too long: SQLITE_TOOBIG". A dump that cannot be loaded
+          # is not a backup, so the restore test caught what the export could
+          # not.
+          #
+          # The cause is corpus_digest.digest: the distilled 181k-finding
+          # corpus, far over D1's 100 KB statement cap (reproduced locally:
+          # 300 KB -> SQLITE_TOOBIG, 97 KB -> ok). It is also the one table
+          # whose contents are already in git at build time (the deploy step
+          # loads it from src/corpus-digest.json, and schema.sql calls it
+          # "frozen opinion" that never updates), so excluding its DATA loses
+          # nothing that is not already versioned -- while excluding its
+          # SCHEMA would leave a restored database the Worker cannot read.
+          #
+          # So: every other table with data, corpus_digest schema only. The
+          # guard below fails the job if that exclusion ever stops being safe.
+          tables=$(grep -oE 'CREATE TABLE IF NOT EXISTS [a-z_]+' schema.sql \
+                     | awk '{print $NF}' | grep -vx corpus_digest)
+          args=""
+          for t in $tables; do args="$args --table $t"; done
+          # shellcheck disable=SC2086
           npx wrangler d1 export asterion --remote --skip-confirmation \
-            --output ../backups/asterion.sql
+            $args --output ../backups/asterion.sql
+
+          # Re-add the excluded table's definition so the restored schema is
+          # complete (36 tables, not 35).
+          npx wrangler d1 export asterion --remote --skip-confirmation \
+            --table corpus_digest --no-data \
+            --output ../backups/corpus-digest-schema.sql
+          cat ../backups/corpus-digest-schema.sql >> ../backups/asterion.sql
 
       - name: sanity-check the dump
         run: |
@@ -114,7 +145,15 @@ jobs:
           done
           test "$missing" -eq 0
           echo "dump bytes: $(wc -c < "$f")"
-          echo "ledger rows in dump: $(grep -c 'INSERT INTO ledger' "$f" || true)"
+          echo "ledger rows in dump: $(grep -c 'INSERT INTO "ledger"' "$f" || true)"
+
+          # The exclusion above is only safe while corpus_digest can be rebuilt
+          # from the repo. Assert that instead of trusting it.
+          echo "corpus_digest rows in dump: $(grep -c 'INSERT INTO "corpus_digest"' "$f" || true) (expect 0: schema only)"
+          test -f src/corpus-digest.json || {
+            echo 'src/corpus-digest.json missing: nothing can rebuild corpus_digest' >&2
+            exit 1
+          }
 
       # The restore is what makes this a backup rather than a hope. It runs
       # entirely locally: a fresh .wrangler/state, the dump ingested with
@@ -154,6 +193,12 @@ jobs:
                   sys.exit(f"BROKEN LINK at seq {r['seq']}: prev_hash={r['prev_hash'][:12]} != {prev[:12]}")
               prev = r['hash']
           print('ledger chain: unbroken' if rows else 'ledger chain: EMPTY (nothing to verify)')
+
+          # corpus_digest is deliberately schema-only in the dump (see the
+          # export step). Say so out loud so a reader of the log cannot
+          # mistake its absence for a truncated restore.
+          cd_ = q('select count(*) n from corpus_digest')[0]['n']
+          print(f'corpus_digest rows restored: {cd_} (expected 0; rebuilt from src/corpus-digest.json)')
           PY
 
       # Guard against the two silent failure modes of a scheduled job: never
