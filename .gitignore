@@ -4,8 +4,11 @@ build/
 dist/
 out/
 .corpus/
-eval/data/
-eval/out/
+# `**/` on purpose: eval.yml runs with working-directory `app`, so the
+# corpus lands in app/eval/data and the scoreboard in app/eval/out.
+# Root-anchored patterns left both of those committable.
+**/eval/data/
+**/eval/out/
 .dev.vars
 __pycache__/
 *.pyc

@@ -1,14 +1,17 @@
 name: eval
-# The learning loop. Runs nightly on free Actions minutes.
+# The learning loop. Runs nightly.
 #
 # What it does, and why it matters more than any detector:
 #   1. pull the audit-findings corpus (180k expert-labelled findings)
 #   2. pick a random slice, weight recent + high severity
 #   3. run the deterministic detectors over each one's code at pre-fix state
-#   4. write precision / recall per bug class to D1
+#   4. write precision / recall per bug class
 #   5. open an issue naming the weakest class -> that becomes tomorrow's focus
 #
 # Without this, "the bot is learning" is a feeling. With it, it is a number.
+#
+# This workflow has now failed twice, in two different ways, both of which looked
+# like success. Both are pinned by an assertion below so they cannot come back.
 
 on:
   schedule:
@@ -27,7 +30,23 @@ permissions:
 jobs:
   eval:
     runs-on: ubuntu-latest
-    timeout-minutes: 350
+    # This is offline file processing over one gzipped corpus, capped at
+    # MAX_SCAN = 250k rows in harness.py. A few minutes is the real shape of
+    # it. The old 350-minute ceiling was inherited from a design that checked
+    # out one project per finding; that is a v2 capability and is not done
+    # here. On a private repo those minutes are billable, so a hung nightly
+    # run would quietly consume the account's included compute.
+    timeout-minutes: 30
+    # The harness lives at app/eval/harness.py, writes its output to
+    # eval/out RELATIVE TO ITS CWD, and defaults its corpus to ../.corpus.
+    # That means app/ is the only working directory it was written for.
+    # deploy.yml scopes both of its jobs this way (lines 23-25, 67-69);
+    # eval.yml was the one workflow that forgot, so `python eval/harness.py`
+    # ran from the repo root, found no such file, and died with Errno 2
+    # before measuring anything.
+    defaults:
+      run:
+        working-directory: app
     steps:
       - uses: actions/checkout@v4
 
@@ -35,25 +54,60 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: fetch corpus manifest
+      # Default-deny on spending: if this repo is ever made private (it is
+      # private today), the nightly run must not silently start billing
+      # minutes. Public repos are free; private ones draw on the account's
+      # included compute. Setting a budget with "Stop usage when budget limit
+      # is reached" is the account-level half of this; this comment is the
+      # half that lives with the code.
+
+      - name: fetch corpus
         run: |
           mkdir -p eval/data
-          curl -sSL --retry 3 --max-time 300 \
+          # --fail matters: without it a 404 or an HTML error page is written
+          # to the output file and the step still exits 0. The old step also
+          # ended in `|| echo 'manifest fetch failed'`, which swallowed the
+          # real exit status, so a failed download could not fail the job.
+          curl -sSL --fail --retry 3 --max-time 300 \
             https://github.com/DicksonWu654/web3-audit-corpus/releases/latest/download/findings.jsonl.gz \
-            -o eval/data/findings.jsonl.gz || echo 'manifest fetch failed' 
-          ls -lh eval/data || true
+            -o eval/data/findings.jsonl.gz
+          # Prove it is a real, complete gzip before the harness ever sees it.
+          test -s eval/data/findings.jsonl.gz
+          gzip -t eval/data/findings.jsonl.gz
+          echo "corpus bytes: $(wc -c < eval/data/findings.jsonl.gz)"
 
       - name: run eval harness
         env:
           SAMPLE_SIZE: ${{ inputs.sample_size || '60' }}
-          CF_EVAL_ENDPOINT: ${{ vars.EVAL_ENDPOINT }}
-          CF_EVAL_TOKEN: ${{ secrets.CF_EVAL_TOKEN }}
+          # The fetch step downloads to eval/data/ (i.e. app/eval/data/), but
+          # harness.py otherwise defaults to ../.corpus/findings.jsonl.gz and
+          # returns an empty row list when that is absent -- which the run then
+          # reports as a green "sampled 0". Pointing it at the file we actually
+          # downloaded is the difference between a green run that measured
+          # nothing and a green run that measured.
+          CORPUS: eval/data/findings.jsonl.gz
+        # CF_EVAL_ENDPOINT / CF_EVAL_TOKEN used to be passed here. No code
+        # reads them: harness.py posts nowhere and touches no D1 (it writes
+        # eval/out/*.json and exits). Passing them implied a handoff to the
+        # Worker that does not exist.
         run: python eval/harness.py
+
+      # The assertion that makes the two bugs above un-repeatable. corpus_rows
+      # is the harness's own count of rows it actually read, so this fails when
+      # the corpus is missing, empty, or not where CORPUS says it is -- the
+      # exact condition that previously produced exit 0 and a scoreboard.
+      - name: assert the run read a corpus
+        run: |
+          rows=$(python3 -c 'import json;print(json.load(open("eval/out/scoreboard.json"))["corpus_rows"])')
+          echo "corpus_rows=$rows"
+          test "$rows" -gt 0
 
       - name: upload results
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: eval-results
-          path: eval/out/
+          # Resolved against GITHUB_WORKSPACE, not the job's
+          # working-directory, so this is app/-qualified on purpose.
+          path: app/eval/out/
           retention-days: 90
