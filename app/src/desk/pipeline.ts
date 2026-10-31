@@ -632,7 +632,21 @@ export async function deskStatus(env: DeskEnv, now = Date.now()): Promise<{
   // Today, in UTC. `Math.floor(ms/86_400_000)*86_400` is seconds since epoch for
   // midnight UTC — the same convention llm.ts and quota use.
   const dayStart = Math.floor(Math.floor(now / 86_400_000) * 86_400);
-  const kills = await db(env).first<{ n: number }>('SELECT COUNT(*) AS n FROM desk_kills WHERE ts>=?', dayStart);
+  // ── DISTINCT TOKENS, NOT ROWS ─────────────────────────────────────────────
+  // This used to be `COUNT(*)`. A sweep re-evaluates the SAME token on every
+  // 5-minute tick, and every re-evaluation that fails a gate appends another
+  // desk_kills row, so COUNT(*) measured "how many times did we look at a bad
+  // token" rather than "how many tokens did we reject today". The production
+  // dump at the time of this fix is the proof: 4,791 kill rows covering 554
+  // distinct mints (one mint re-killed 19 times), which is why OPS read
+  // "kills today 3,180" while the ledger - which is only written by the FILTER
+  // stage - showed 117 desk.kill rows. COUNT(DISTINCT mint) is the number a
+  // reader of that label can defend: one token is one rejection, however many
+  // times the scanner revisited it.
+  const kills = await db(env).first<{ n: number }>(
+    'SELECT COUNT(DISTINCT mint) AS n FROM desk_kills WHERE ts>=?',
+    dayStart,
+  );
   const gaps = await db(env).first<{ n: number }>(
     "SELECT COUNT(*) AS n FROM desk_scores WHERE why LIKE 'NOT JUDGED%' AND ts>=?",
     dayStart,

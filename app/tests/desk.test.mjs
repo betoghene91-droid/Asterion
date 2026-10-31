@@ -676,6 +676,58 @@ test('desk: a coverage gap is not a kill and does not open a position', async ()
   assert.equal(kills.n, 0);
 });
 
+// --- kills_today counts TOKENS, not scan passes -----------------------------
+//
+// Regression, from the production dump: `kills_today` was COUNT(*), and a sweep
+// re-evaluates the same token on every 5-minute tick, appending a fresh
+// desk_kills row each time the token still fails a gate. The dump held 4,791
+// kill rows over 554 distinct mints (one mint re-killed 19 times), so OPS
+// showed "kills today 3,180" while the ledger - written only by the filter stage
+// - showed 117 rows. The number was an order of magnitude wrong, in exactly the
+// direction a re-scan inflates it.
+//
+// This seeds three rows for one mint plus one row for a second mint on the same
+// day, so COUNT(*) = 4 and COUNT(DISTINCT mint) = 2. Before the fix the first
+// assertion reads 4.
+
+test('desk: kills_today counts distinct tokens, not repeated scan passes', async () => {
+  const e = makeEnv();
+  const TODAY = 1793300000; // seconds, inside the fixed NOW's UTC day
+  const insert = e.raw.prepare(
+    `INSERT INTO desk_kills (id, mint, symbol, ts, reason, detail, snapshot, outcome)
+     VALUES (?,?,?,?,?,?,?,'unknown')`,
+  );
+  // One token, seen and rejected on three consecutive ticks.
+  for (const n of [0, 1, 2]) {
+    insert.run(`kill_rep_${n}`, 'MINT_REPEATED', 'REP', TODAY + n * 300, 'mcap_out_of_band', 'too small', '{}');
+  }
+  // A second token, rejected once.
+  insert.run('kill_once', 'MINT_ONCE', 'ONCE', TODAY + 600, 'age_out_of_band', 'too new', '{}');
+
+  const s = await deskStatus(e.env, NOW);
+  assert.equal(s.kills_today, 2, 'one rejected token is one kill, however often it was re-scanned');
+  assert.notEqual(s.kills_today, 4, 'COUNT(*) is the bug this pins');
+
+  // The honest value is still bounded by the rows that exist today.
+  const rows = e.raw.prepare('SELECT COUNT(*) AS n FROM desk_kills WHERE ts>=?').get(TODAY).n;
+  assert.equal(rows, 4);
+  assert.ok(s.kills_today <= rows);
+});
+
+test('desk: kills_today ignores kills from an earlier UTC day', async () => {
+  const e = makeEnv();
+  const YESTERDAY = 1793300000 - 86400;
+  e.raw
+    .prepare(
+      `INSERT INTO desk_kills (id, mint, symbol, ts, reason, detail, snapshot, outcome)
+       VALUES (?,?,?,?,?,?,?,'unknown')`,
+    )
+    .run('kill_old', 'MINT_OLD', 'OLD', YESTERDAY, 'mcap_out_of_band', 'too small', '{}');
+
+  const s = await deskStatus(e.env, NOW);
+  assert.equal(s.kills_today, 0, 'the window is the current UTC day');
+});
+
 test('desk: deskStatus reports mode paper and the unmet gates for the API', async () => {
   const e = makeEnv({ DESK_PRIO_FEE_USD: '0.0005' });
   const s = await deskStatus(e.env, NOW);
