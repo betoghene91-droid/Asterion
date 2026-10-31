@@ -39,6 +39,18 @@ export interface Brief {
    * have no chain, do not have to invent one.
    */
   chain_id?: number;
+  /**
+   * Requests per second this engagement's target may receive from us.
+   *
+   * OPTIONAL, and absent means "the default of 3" — see
+   * `policy.ts:RoEBriefInput.rate_limit_rps` for why that specific default is the
+   * non-change. Carried here because a brief is what an operator approves: a rate
+   * that is only discoverable afterwards is not a limit anyone agreed to.
+   *
+   * Validated, not trusted: `pace.ts:normalizeRateLimitRps` clamps to [0.1, 20]
+   * and refuses to read 0 / negative / non-finite as "unlimited".
+   */
+  rate_limit_rps?: number;
 }
 
 export interface Question {
@@ -121,6 +133,8 @@ export function inferDepth(raw: string): string {
  * Compile sloppy text into either a Brief or a short list of questions.
  * Rule: never ask more than 3 questions, and only for facts that change
  * what runs. Everything else gets a sane default the operator can override.
+ * @param answers Partial<Record<string, string>>, keyed by Question['key'] plus
+ *   the optional `chain` and `rate_limit_rps` overrides.
  */
 export function compile(
   raw: string,
@@ -180,6 +194,12 @@ export function compile(
     parseChainToken(raw) ??
     undefined;
 
+  // A declared rate limit is the same class of evidence as a declared chain: an
+  // explicit statement of intent, so it is taken from an ANSWER (the operator was
+  // asked or typed it) and never inferred from prose. Absent means the caller gets
+  // no key at all, which is what keeps every existing brief byte-identical.
+  const rate_limit_rps = rateFromAnswers(answers);
+
   return {
     brief: {
       program_id: ctx.program_id,
@@ -196,8 +216,28 @@ export function compile(
       out_of_scope: ctx.out_of_scope ?? [],
       notes: raw.slice(0, 2000),
       ...(chain_id !== undefined ? { chain_id } : {}),
+      ...(rate_limit_rps !== undefined ? { rate_limit_rps } : {}),
     },
   };
+}
+
+/**
+ * The rate limit an operator declared, if any.
+ *
+ * Only a clean positive finite number survives: `compile()` is the floor, so a
+ * garbage answer leaves the field OFF the brief rather than putting `NaN` on it
+ * and relying on a downstream clamp to notice. Anything genuinely out of range
+ * (too slow, too fast) is left ON the brief on purpose — the brief must carry
+ * what the operator said, and `normalizeRateLimitRps` is the single place that
+ * decides what is usable, so the clamping is auditable in one place instead of
+ * being silently pre-applied here.
+ */
+function rateFromAnswers(answers: Partial<Record<string, string>>): number | undefined {
+  const raw = answers['rate_limit_rps'];
+  if (raw === undefined || raw === null || raw === '') return undefined;
+  const n = Number(String(raw).trim());
+  if (!Number.isFinite(n) || n <= 0) return undefined;
+  return n;
 }
 
 /** Only keep playbooks whose mutability fits the chosen depth. */
