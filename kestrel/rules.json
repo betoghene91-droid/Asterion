@@ -1,0 +1,222 @@
+{
+  "_comment": "Royan edits this file. No code changes needed to add a rule.",
+  "_schema": {
+    "id": "stable string, used in reports and dedupe",
+    "hat": "red | white | grey",
+    "title": "what it says in the report",
+    "severity": "critical | high | medium | low | info",
+    "kind": "api | evm | log | any",
+    "when": "all keys must match the observation",
+    "remediation": "what to do",
+    "evidence": "which observation keys to keep"
+  },
+  "_matchers": {
+    "eq": "obs[key] == value",
+    "neq": "obs[key] != value",
+    "in": "obs[key] in value[]",
+    "nin": "obs[key] not in value[]",
+    "contains": "value in obs[key] (string)",
+    "icontains": "case-insensitive contains",
+    "regex": "re.search(value, obs[key])",
+    "exists": "key present and truthy",
+    "missing": "key absent or falsy",
+    "gt / gte / lt / lte": "numeric compare",
+    "any_of": "any sub-clause matches",
+    "all_of": "every sub-clause matches"
+  },
+
+  "rules": [
+    {
+      "id": "API-AUTHZ-01",
+      "hat": "red",
+      "kind": "api",
+      "title": "Admin-like path answers without authentication",
+      "severity": "high",
+      "when": {
+        "all_of": [
+          { "regex": "obs.path", "value": "(?i)/(admin|internal|manage|debug|backoffice)" },
+          { "eq": "obs.unauth_status", "value": 200 },
+          { "eq": "obs.authed_status", "value": 200 }
+        ]
+      },
+      "remediation": "Enforce auth server side on admin paths, not just in the UI router.",
+      "evidence": ["path", "unauth_status", "authed_status", "unauth_len"]
+    },
+    {
+      "id": "API-AUTHZ-02",
+      "hat": "red",
+      "kind": "api",
+      "title": "Endpoint returns data unauthenticated that requires auth elsewhere",
+      "severity": "medium",
+      "when": {
+        "all_of": [
+          { "eq": "obs.unauth_status", "value": 200 },
+          { "eq": "obs.authed_status", "value": 401 },
+          { "gt": "obs.unauth_len", "value": 0 }
+        ]
+      },
+      "remediation": "Confirm the unauthenticated body is sensitive, then require the token.",
+      "evidence": ["path", "unauth_status", "authed_status", "unauth_len"]
+    },
+    {
+      "id": "API-INFO-01",
+      "hat": "red",
+      "kind": "api",
+      "title": "OpenAPI or schema document exposed",
+      "severity": "low",
+      "when": {
+        "all_of": [
+          { "regex": "obs.path", "value": "(?i)(openapi|swagger|api-docs|/docs$)" },
+          { "eq": "obs.unauth_status", "value": 200 },
+          { "icontains": "obs.content_type", "value": "json" }
+        ]
+      },
+      "remediation": "Serve the spec behind auth, or strip internal hosts from it.",
+      "evidence": ["path", "content_type", "unauth_len"]
+    },
+    {
+      "id": "API-CORS-01",
+      "hat": "red",
+      "kind": "api",
+      "title": "CORS reflects an arbitrary origin with credentials",
+      "severity": "high",
+      "when": {
+        "all_of": [
+          { "exists": "obs.acao" },
+          { "neq": "obs.acao", "value": "" },
+          { "icontains": "obs.acac", "value": "true" },
+          { "eq": "obs.acao_is_echo", "value": true }
+        ]
+      },
+      "remediation": "Allow-list origins instead of echoing Origin back with credentials.",
+      "evidence": ["path", "origin_sent", "acao", "acac"]
+    },
+    {
+      "id": "API-CORS-02",
+      "hat": "grey",
+      "kind": "api",
+      "title": "Wildcard CORS on an API host",
+      "severity": "info",
+      "when": {
+        "all_of": [
+          { "eq": "obs.acao", "value": "*" },
+          { "regex": "obs.host", "value": "(?i)^api\\." }
+        ]
+      },
+      "remediation": "Wildcard is fine for public data; prove it is not credentialed before filing.",
+      "evidence": ["host", "path", "acao"]
+    },
+    {
+      "id": "API-LEAK-01",
+      "hat": "red",
+      "kind": "api",
+      "title": "Secret-shaped string in a response body",
+      "severity": "medium",
+      "when": {
+        "all_of": [
+          { "eq": "obs.unauth_status", "value": 200 },
+          { "regex": "obs.body", "value": "(?i)(api[_-]?key|secret|token|passwd|password)\\s*[\":=]\\s*[\"'][A-Za-z0-9_\\-]{16,}" }
+        ]
+      },
+      "remediation": "Move secrets server side; return a reference, not the value.",
+      "evidence": ["path", "body_match_redacted"]
+    },
+    {
+      "id": "API-SERVER-01",
+      "hat": "grey",
+      "kind": "api",
+      "title": "Server or framework version disclosed",
+      "severity": "info",
+      "when": {
+        "regex": "obs.server",
+        "value": "(?i)(apache|nginx|openresty|iis|tomcat|jetty)/[0-9]"
+      },
+      "remediation": "Report-only unless a known CVE matches the exact version.",
+      "evidence": ["server", "path"]
+    },
+    {
+      "id": "EVM-PROXY-01",
+      "hat": "red",
+      "kind": "evm",
+      "title": "Upgradeable proxy with an empty admin slot",
+      "severity": "high",
+      "when": {
+        "all_of": [
+          { "exists": "obs.implementation" },
+          { "eq": "obs.admin_is_zero", "value": true }
+        ]
+      },
+      "remediation": "Set an admin behind a timelock, or document who can call the upgrade path.",
+      "evidence": ["address", "implementation", "admin"]
+    },
+    {
+      "id": "EVM-OWNER-01",
+      "hat": "red",
+      "kind": "evm",
+      "title": "owner() is a single EOA",
+      "severity": "medium",
+      "when": {
+        "all_of": [
+          { "exists": "obs.owner" },
+          { "eq": "obs.owner_is_contract", "value": false },
+          { "neq": "obs.owner", "value": "0x0000000000000000000000000000000000000000" }
+        ]
+      },
+      "remediation": "Move ownership to a multisig with a timelock.",
+      "evidence": ["address", "owner"]
+    },
+    {
+      "id": "EVM-SELFDESTRUCT-01",
+      "hat": "red",
+      "kind": "evm",
+      "title": "SELFDESTRUCT opcode present in deployed bytecode",
+      "severity": "medium",
+      "when": { "eq": "obs.selfdestruct", "value": true },
+      "remediation": "Confirm the destroy path is gated or unreachable.",
+      "evidence": ["address"]
+    },
+    {
+      "id": "EVM-NODE-01",
+      "hat": "red",
+      "kind": "evm",
+      "title": "RPC node holds unlocked accounts",
+      "severity": "high",
+      "when": { "gt": "obs.node_account_count", "value": 0 },
+      "remediation": "Expose a keyless node; eth_accounts should be empty.",
+      "evidence": ["node_account_count", "first_account"]
+    },
+    {
+      "id": "LOG-RUG-01",
+      "hat": "white",
+      "kind": "log",
+      "title": "Proxy upgrade observed",
+      "severity": "critical",
+      "when": { "eq": "obs.rule", "value": "R1.proxy_upgrade" },
+      "remediation": "Verify the upgrade was announced and inside its timelock.",
+      "evidence": ["tx", "block", "detail"]
+    },
+    {
+      "id": "LOG-RUG-02",
+      "hat": "white",
+      "kind": "log",
+      "title": "Unlimited approval to a fresh spender",
+      "severity": "high",
+      "when": { "eq": "obs.rule", "value": "R2.unlimited_approval" },
+      "remediation": "Check the spender is a known router; revoke otherwise.",
+      "evidence": ["tx", "block", "detail"]
+    },
+    {
+      "id": "LOG-RUG-03",
+      "hat": "white",
+      "kind": "log",
+      "title": "Ownership moved",
+      "severity": "high",
+      "when": {
+        "in": "obs.rule",
+        "value": ["R1.ownership_transfer", "R1.ownership_renounced"]
+      },
+      "remediation": "Confirm the new owner is the announced multisig.",
+      "evidence": ["tx", "block", "detail"]
+    }
+  ]
+}

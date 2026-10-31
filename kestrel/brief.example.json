@@ -1,0 +1,11 @@
+{
+  "name": "example-engagement",
+  "api": [
+    { "url": "https://api.github.com", "paths": ["/", "/api/v1/users", "/version"] }
+  ],
+  "chain": [
+    { "rpc": "https://ethereum-rpc.publicnode.com",
+      "address": "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2",
+      "blocks": 200 }
+  ]
+}
