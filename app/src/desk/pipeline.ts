@@ -577,7 +577,12 @@ export async function deskTick(env: DeskEnv, source?: DeskSource, now = Date.now
   //
   // This is the only place marks are taken, and it adds no cron slot — the desk
   // already runs inside the existing `*/5` composition root.
-  const marks = await snapshotUniverseMarks(env, now).catch(() => ({ written: 0, considered: 0 }));
+  // Hourly, not per-tick: the desk ticks every five minutes, and a mark row per
+  // mint per tick is 57,600 of the 100,000 daily D1 rows_written on its own. The
+  // series only has to support `minMarks` samples over a 6h window, so hourly is
+  // far denser than any consumer needs.
+  const marks = await snapshotUniverseMarks(env, now, 200, 3600)
+    .catch(() => ({ written: 0, considered: 0 }));
   return { ...sweep, risk, marks };
 }
 

@@ -132,6 +132,7 @@ export async function snapshotUniverseMarks(
   env: DeskEnv,
   now = Date.now(),
   limit = 200,
+  minGapSeconds = 0,
 ): Promise<{ written: number; considered: number }> {
   const rows = await db(env).all<{
     mint: string;
@@ -149,9 +150,31 @@ export async function snapshotUniverseMarks(
     liqUsd: r.liq_usd,
     mcapUsd: r.mcap_usd,
   }));
-  const marks = snapshotMarks(markets, now, 'dexscreener');
+  // D1 FREE TIER: rows_written is the metered resource, and this function is the
+  // largest single producer of them. At the `*/5` cron cadence a full universe
+  // wrote up to 200 rows 288 times a day - 57,600 rows, 58% of the 100k daily cap
+  // before the sweep itself writes anything. The account was already at 76% by
+  // 08:15, so the desk was on course to start returning D1 errors every day.
+  //
+  // `minGapSeconds` is a WRITE CADENCE, not a data loss: a mint that already has a
+  // mark newer than the gap is skipped, because a second sample five minutes later
+  // adds nothing that `measureFromMarks` can use - it needs `minMarks` samples
+  // across `minWindowSeconds` (6h), which an hourly series satisfies many times
+  // over. Reads are a different quota (25bn/month), so the check is nearly free.
+  let fresh: typeof markets = markets;
+  if (minGapSeconds > 0 && markets.length) {
+    const since = Math.floor(now / 1000) - minGapSeconds;
+    const recent = await db(env).all<{ mint: string }>(
+      'SELECT DISTINCT mint FROM desk_marks WHERE ts >= ?',
+      since,
+    );
+    const seen = new Set(recent.map((r) => r.mint));
+    fresh = markets.filter((m) => !seen.has(m.mint));
+  }
+
+  const marks = snapshotMarks(fresh, now, 'dexscreener');
   const written = await recordMarks(env, marks);
-  return { written, considered: rows.length };
+  return { written, considered: fresh.length };
 }
 
 /** Drop marks past the retention window. Called from the maintenance slot. */
