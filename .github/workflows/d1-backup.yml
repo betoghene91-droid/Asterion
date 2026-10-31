@@ -205,9 +205,15 @@ jobs:
       # running at all, and running but never committing.
       - name: guard against a silently dead schedule
         run: |
-          last=$(git log -1 --format=%ct -- backups/asterion.sql 2>/dev/null || echo 0)
+          # NOTE: an empty result here is NOT zero. `git log ... -- backups/
+          # asterion.sql` on a path with no history prints nothing, and the
+          # old `$(... || echo 0)` never fired because git log exits 0. The
+          # arithmetic then became `(now - )/86400` = 20757 DAYS, so the very
+          # first run failed its own freshness guard. Caught by dispatch, not
+          # by review.
+          last=$(git log -1 --format=%ct -- backups/asterion.sql 2>/dev/null)
           now=$(date +%s)
-          if [ "$last" = "0" ]; then
+          if [ -z "$last" ] || [ "$last" = "0" ]; then
             echo "no prior backup commit; this run will create the first one"
             exit 0
           fi
