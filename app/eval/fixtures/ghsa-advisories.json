@@ -1,0 +1,1920 @@
+{
+ "_README": [
+  "Real advisory records from github/advisory-database, advisories/github-reviewed/2024/{11,12}.",
+  "Reduced to the fields the CWE->web.* mapper reads, with the ORIGINAL nesting kept",
+  "(database_specific.cwe_ids) because flattening it silently reclassifies every",
+  "record as no_cwe \u2014 a failure this fixture was used to catch.",
+  "Selection: up to 2 advisories per CWE in eval/ingest-more.py CWE_TO_CLASS, plus 1 each",
+  "of CWE-94/78/77 which are deliberately UNMAPPED. Sorted by advisory id. Reproducible.",
+  "Tests read this file; they never fetch. Licence: CC-BY-4.0 (GitHub Advisory Database)."
+ ],
+ "source": "github/advisory-database",
+ "licence": "CC-BY-4.0",
+ "advisories": [
+  {
+   "id": "GHSA-25w9-wqfq-gwqx",
+   "published": "2024-12-11T18:44:50Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"
+    },
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:N/VA:N/SC:N/SI:N/SA:N"
+    }
+   ],
+   "summary": "SiYuan has an arbitrary file read and path traversal via /api/export/exportResources",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-22"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Go",
+      "name": "github.com/siyuan-note/siyuan/kernel"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-2697-96mv-3gfm",
+   "published": "2024-12-30T15:31:59Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:L/I:N/A:N"
+    },
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:L/VI:N/VA:N/SC:N/SI:N/SA:N"
+    }
+   ],
+   "summary": "TeamPass does not properly check whether a folder is in a user's allowed folders list",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-266",
+     "CWE-285"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Packagist",
+      "name": "nilsteampassnet/teampass"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-27hp-xhwr-wr2m",
+   "published": "2024-12-20T18:31:32Z",
+   "severity": [
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N/E:U"
+    }
+   ],
+   "summary": "Apache Tomcat Time-of-check Time-of-use (TOCTOU) Race Condition vulnerability",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-367"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Maven",
+      "name": "org.apache.tomcat:tomcat-catalina"
+     }
+    },
+    {
+     "package": {
+      "ecosystem": "Maven",
+      "name": "org.apache.tomcat:tomcat-catalina"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-27vq-hv74-7cqp",
+   "published": "2024-12-16T17:38:53Z",
+   "severity": [
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:N/AC:L/AT:P/PR:L/UI:N/VC:L/VI:L/VA:L/SC:N/SI:N/SA:N"
+    }
+   ],
+   "summary": "SurrealDB has Silent Failure to Overwrite Table Definition of Relation Type",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-732"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "crates.io",
+      "name": "surrealdb"
+     }
+    },
+    {
+     "package": {
+      "ecosystem": "crates.io",
+      "name": "surrealdb-core"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-27wf-5967-98gx",
+   "published": "2024-11-22T21:32:15Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N"
+    },
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:H/VI:H/VA:N/SC:N/SI:N/SA:N"
+    }
+   ],
+   "summary": " Kubernetes kubelet arbitrary command execution",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-22"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Go",
+      "name": "k8s.io/kubernetes"
+     }
+    },
+    {
+     "package": {
+      "ecosystem": "Go",
+      "name": "k8s.io/kubernetes"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-28p7-f6h6-3jh3",
+   "published": "2024-11-15T15:45:31Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:L/PR:H/UI:R/S:C/C:H/I:L/A:L"
+    }
+   ],
+   "summary": "LibreNMS has a Reflected XSS ('Cross-site Scripting') in librenms/includes/html/pages/wireless.inc.php",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-79"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Packagist",
+      "name": "librenms/librenms"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-29wx-vh33-7x7r",
+   "published": "2024-11-04T23:22:41Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:L/I:N/A:N"
+    },
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:P/VC:L/VI:N/VA:N/SC:N/SI:N/SA:N"
+    }
+   ],
+   "summary": "Bad documentation of error handling in ParseWithClaims can lead to potentially dangerous situations",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-347",
+     "CWE-755"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Go",
+      "name": "github.com/golang-jwt/jwt/v4"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-2hr5-cvwp-jr5w",
+   "published": "2024-12-20T18:31:32Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:L/I:N/A:N"
+    },
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:L/VI:N/VA:N/SC:N/SI:N/SA:N/E:P"
+    }
+   ],
+   "summary": "Oqtane Framework Insecure Direct Object Reference vulnerability",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-639",
+     "CWE-863"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "NuGet",
+      "name": "Oqtane.Framework"
+     }
+    },
+    {
+     "package": {
+      "ecosystem": "NuGet",
+      "name": "Oqtane.Client"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-2mj3-vfvx-fc43",
+   "published": "2024-11-29T18:34:03Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:N/A:H"
+    },
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:H/SC:N/SI:N/SA:N"
+    }
+   ],
+   "summary": "Moby Race Condition vulnerability",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-362"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Go",
+      "name": "github.com/moby/moby"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-2p6p-9rc9-62j9",
+   "published": "2024-12-18T19:47:26Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H/E:H"
+    },
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N/E:A"
+    }
+   ],
+   "summary": "Craft CMS has potential RCE when PHP `register_argc_argv` config setting is enabled",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-78",
+     "CWE-94"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Packagist",
+      "name": "craftcms/cms"
+     }
+    },
+    {
+     "package": {
+      "ecosystem": "Packagist",
+      "name": "craftcms/cms"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-2r9m-wg35-rfvc",
+   "published": "2024-11-07T15:31:52Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:L/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N"
+    },
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:L/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:N/SC:N/SI:N/SA:N/E:U"
+    }
+   ],
+   "summary": "Moodle vulnerable to cache poisoning via injection into storage",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-345",
+     "CWE-74"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Packagist",
+      "name": "moodle/moodle"
+     }
+    },
+    {
+     "package": {
+      "ecosystem": "Packagist",
+      "name": "moodle/moodle"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-2w5v-x29g-jw7j",
+   "published": "2024-11-07T21:31:44Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:N/I:H/A:N"
+    },
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:N/VI:N/VA:N/SC:N/SI:H/SA:N"
+    }
+   ],
+   "summary": "Hashicorp Nomad Incorrect Authorization vulnerability",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-863"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Go",
+      "name": "github.com/hashicorp/nomad"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-2x2g-32r7-p4x8",
+   "published": "2024-11-19T09:30:54Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N"
+    },
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:L/AC:L/AT:N/PR:L/UI:N/VC:H/VI:N/VA:N/SC:N/SI:N/SA:N"
+    }
+   ],
+   "summary": "Apache Kafka Clients: Privilege escalation to filesystem read-access via automatic ConfigProvider",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-269"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Maven",
+      "name": "org.apache.kafka:kafka-clients"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-2x5m-9ch4-qgrr",
+   "published": "2024-12-02T21:48:56Z",
+   "severity": [
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:P/VC:N/VI:N/VA:N/SC:L/SI:L/SA:N"
+    }
+   ],
+   "summary": "rails-html-sanitizer has XSS vulnerability with certain configurations",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-79"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "RubyGems",
+      "name": "rails-html-sanitizer"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-2xcc-vm3f-m8rw",
+   "published": "2024-11-26T15:39:38Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:C/C:H/I:L/A:L"
+    },
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:N/VC:N/VI:N/VA:N/SC:H/SI:L/SA:L"
+    }
+   ],
+   "summary": "@lobehub/chat Server Side Request Forgery vulnerability",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-918"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "npm",
+      "name": "@lobehub/chat"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-35fc-9hrj-3585",
+   "published": "2024-12-09T15:31:37Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:H/A:N"
+    },
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:N/AC:L/AT:P/PR:L/UI:N/VC:H/VI:H/VA:N/SC:N/SI:N/SA:N"
+    }
+   ],
+   "summary": "Apache Superset: Lower privilege users are able to create Role when FAB_ADD_SECURITY_API is enabled",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-285",
+     "CWE-863"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "PyPI",
+      "name": "apache-superset"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-3gf9-wv65-gwh9",
+   "published": "2024-11-05T00:31:28Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N"
+    },
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:H/VI:N/VA:N/SC:N/SI:N/SA:N/E:P"
+    }
+   ],
+   "summary": "gradio Server Side Request Forgery vulnerability",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-918"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "PyPI",
+      "name": "gradio"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-3hpf-ff72-j67p",
+   "published": "2024-12-06T21:24:30Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:L/AC:H/PR:H/UI:N/S:U/C:N/I:L/A:L"
+    }
+   ],
+   "summary": "shared_preferences_android vulnerability",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-502"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Pub",
+      "name": "shared_preferences_android"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-3qx8-rv27-j6gp",
+   "published": "2024-12-23T19:26:37Z",
+   "severity": [],
+   "summary": "Undefined behaviour in `kvm_ioctls::ioctls::vm::VmFd::create_device`",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-843"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "crates.io",
+      "name": "kvm-ioctls"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-43mq-6xmg-29vm",
+   "published": "2024-12-11T18:30:42Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+    },
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:N/AC:H/AT:P/PR:N/UI:N/VC:H/VI:H/VA:H/SC:H/SI:H/SA:H/S:N/AU:Y/R:A/V:C/RE:L/U:Red"
+    }
+   ],
+   "summary": "Apache Struts file upload logic is flawed",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-22",
+     "CWE-434",
+     "CWE-915"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Maven",
+      "name": "org.apache.struts:struts2-core"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-4cf2-cxp3-rjr7",
+   "published": "2024-11-05T18:32:11Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+    },
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:N/SC:N/SI:N/SA:N/E:P"
+    }
+   ],
+   "summary": "HAPI FHIR XML External Entity (XXE) vulnerability",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-601",
+     "CWE-611"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Maven",
+      "name": "ca.uhn.hapi.fhir:org.hl7.fhir.convertors"
+     }
+    },
+    {
+     "package": {
+      "ecosystem": "Maven",
+      "name": "ca.uhn.hapi.fhir:org.hl7.fhir.dstu2"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-4fwj-m62q-pp47",
+   "published": "2024-12-30T16:46:43Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:L/AC:H/PR:H/UI:N/S:U/C:H/I:H/A:N"
+    }
+   ],
+   "summary": "Password Pusher Allows Session Token Interception Leading to Potential Hijacking",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-384"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "RubyGems",
+      "name": "pwpush"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-4grw-m28r-q285",
+   "published": "2024-12-05T17:31:35Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H"
+    },
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:H/SC:N/SI:N/SA:N"
+    }
+   ],
+   "summary": "rPGP Potential Resource Exhaustion when handling Untrusted Messages",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-770"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "crates.io",
+      "name": "pgp"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-4hxw-gc2q-f6f3",
+   "published": "2024-11-07T16:14:13Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:L/PR:H/UI:R/S:U/C:L/I:N/A:N"
+    },
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:P/VC:L/VI:N/VA:N/SC:L/SI:N/SA:N"
+    }
+   ],
+   "summary": "Filament has exported files stored in default (`public`) filesystem if not reconfigured",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-1188"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Packagist",
+      "name": "filament/actions"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-4mhg-xv73-xq2x",
+   "published": "2024-12-03T18:39:12Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H"
+    },
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:H/SC:N/SI:N/SA:N"
+    }
+   ],
+   "summary": "Synapse denial of service through media disk space consumption",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-770"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "PyPI",
+      "name": "matrix-synapse"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-4v5x-9m47-cqr2",
+   "published": "2024-12-09T21:31:02Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:L/I:L/A:N"
+    }
+   ],
+   "summary": "Duplicate Advisory: WildFly Elytron OpenID Connect Client Extension authorization code injection attack",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-345"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Maven",
+      "name": "org.wildfly:wildfly-elytron-oidc-client-subsystem"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-577p-7j7h-2jgf",
+   "published": "2024-11-15T12:31:44Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+    }
+   ],
+   "summary": "Deserialization of Untrusted Data in dompdf/dompdf",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-502"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Packagist",
+      "name": "dompdf/dompdf"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-5j33-cvvr-w245",
+   "published": "2024-12-17T15:31:43Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+    },
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N/E:U"
+    }
+   ],
+   "summary": "Apache Tomcat Time-of-check Time-of-use (TOCTOU) Race Condition vulnerability",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-367"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Maven",
+      "name": "org.apache.tomcat:tomcat-catalina"
+     }
+    },
+    {
+     "package": {
+      "ecosystem": "Maven",
+      "name": "org.apache.tomcat:tomcat-catalina"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-5jfw-gq64-q45f",
+   "published": "2024-11-19T21:07:59Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:L/A:H"
+    }
+   ],
+   "summary": "HTML Cleaner allows crafted scripts in special contexts like svg or math to pass through",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-184",
+     "CWE-79",
+     "CWE-83"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "PyPI",
+      "name": "lxml-html-clean"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-5pf6-cq2v-23ww",
+   "published": "2024-12-19T15:22:43Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H"
+    }
+   ],
+   "summary": "WhoDB Allows Unbounded Memory Consumption in Authentication Middleware Can Lead to Denial of Service",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-400",
+     "CWE-770"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Go",
+      "name": "github.com/clidey/whodb/core"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-6377-hfv9-hqf6",
+   "published": "2024-11-06T19:52:31Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:H/PR:H/UI:N/S:U/C:L/I:N/A:N"
+    },
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:N/AC:L/AT:P/PR:H/UI:N/VC:L/VI:N/VA:N/SC:N/SI:N/SA:N"
+    }
+   ],
+   "summary": "Twig has unguarded calls to `__toString()` when nesting an object into an array",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-668"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Packagist",
+      "name": "twig/twig"
+     }
+    },
+    {
+     "package": {
+      "ecosystem": "Packagist",
+      "name": "twig/twig"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-653p-vg55-5652",
+   "published": "2024-12-17T15:31:43Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L"
+    },
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:L/SC:N/SI:N/SA:N"
+    }
+   ],
+   "summary": "Apache Tomcat Uncontrolled Resource Consumption vulnerability",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-400"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Maven",
+      "name": "org.apache.tomcat:tomcat"
+     }
+    },
+    {
+     "package": {
+      "ecosystem": "Maven",
+      "name": "org.apache.tomcat:tomcat"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-66q9-2rvx-qfj5",
+   "published": "2024-12-03T20:56:58Z",
+   "severity": [
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:L/AC:L/AT:P/PR:L/UI:N/VC:H/VI:H/VA:L/SC:N/SI:N/SA:N"
+    }
+   ],
+   "summary": "Kolide Agent Privilege Escalation (Windows, Versions >= 1.5.3, < 1.12.3)",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-276",
+     "CWE-456"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Go",
+      "name": "github.com/kolide/launcher"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-6q3q-6v5j-h6vg",
+   "published": "2024-11-27T19:00:53Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:L"
+    },
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:N/VA:L/SC:N/SI:N/SA:N"
+    }
+   ],
+   "summary": "Querydsl vulnerable to HQL injection through orderBy",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-89"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Maven",
+      "name": "io.github.openfeign.querydsl:querydsl-jpa"
+     }
+    },
+    {
+     "package": {
+      "ecosystem": "Maven",
+      "name": "io.github.openfeign.querydsl:querydsl-apt"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-7225-m954-23v7",
+   "published": "2024-11-20T18:23:51Z",
+   "severity": [
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:H/SC:N/SI:N/SA:N"
+    }
+   ],
+   "summary": "ASA-2024-010: cosmossdk.io/math: Mismatched bit-length validation in sdk.Int and sdk.Dec can lead to panic",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-190"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Go",
+      "name": "cosmossdk.io/math"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-752q-72qc-rc66",
+   "published": "2024-11-04T12:32:56Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N"
+    },
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:N/SC:N/SI:N/SA:N/E:U"
+    }
+   ],
+   "summary": "Apache Kylin Session Fixation vulnerability",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-384"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Maven",
+      "name": "org.apache.kylin:kylin"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-7845-crfj-phc4",
+   "published": "2024-11-13T21:30:38Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H"
+    }
+   ],
+   "summary": "Script security bypass vulnerability in Jenkins Shared Library Version Override Plugin ",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-862"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Maven",
+      "name": "io.jenkins.plugins:shared-library-version-override"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-7rm3-4w6j-8xx4",
+   "published": "2024-12-30T15:31:59Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:L/I:L/A:N"
+    },
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:N/VI:L/VA:N/SC:N/SI:N/SA:N"
+    }
+   ],
+   "summary": "TeamPass mail_me operation authorization issue",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-266",
+     "CWE-285"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Packagist",
+      "name": "nilsteampassnet/teampass"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-826h-p4c3-477p",
+   "published": "2024-12-16T09:31:10Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:L/I:L/A:N"
+    }
+   ],
+   "summary": "Mattermost Race Condition vulnerability",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-362"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Go",
+      "name": "github.com/mattermost/mattermost/server/v8"
+     }
+    },
+    {
+     "package": {
+      "ecosystem": "Go",
+      "name": "github.com/mattermost/mattermost/server/v8"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-8596-2jgr-ppj7",
+   "published": "2024-12-26T20:27:10Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:L/PR:L/UI:R/S:U/C:H/I:H/A:H"
+    },
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:P/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N"
+    }
+   ],
+   "summary": "Amazon Redshift JDBC Driver vulnerable to SQL Injection",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-89"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Maven",
+      "name": "com.amazon.redshift:redshift-jdbc42"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-8jhw-6pjj-8723",
+   "published": "2024-12-30T16:49:12Z",
+   "severity": [
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:N/SC:H/SI:H/SA:H"
+    }
+   ],
+   "summary": "Better Auth has an Open Redirect Vulnerability in Verify Email Endpoint",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-601"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "npm",
+      "name": "better-auth"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-8rxm-6783-qh55",
+   "published": "2024-11-12T18:30:58Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+    }
+   ],
+   "summary": "Duplicate Advisory: .NET and Visual Studio Remote Code Execution Vulnerability",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-843"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "NuGet",
+      "name": "System.Formats.Nrbf"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-938f-5r4f-h65v",
+   "published": "2024-12-10T00:31:27Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+    },
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:N/AC:H/AT:N/PR:L/UI:N/VC:N/VI:N/VA:L/SC:N/SI:N/SA:N"
+    }
+   ],
+   "summary": "Drupal core contains a potential PHP Object Injection vulnerability",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-502",
+     "CWE-915"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Packagist",
+      "name": "drupal/core"
+     }
+    },
+    {
+     "package": {
+      "ecosystem": "Packagist",
+      "name": "drupal/core"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-99w8-c5f6-96pp",
+   "published": "2024-11-15T12:31:45Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:N/I:H/A:N"
+    }
+   ],
+   "summary": "CSRF leading to delete account in wallabag/wallabag",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-352"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Packagist",
+      "name": "wallabag/wallabag"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-9wmc-988h-2mv2",
+   "published": "2024-12-30T15:31:59Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:L/I:L/A:N"
+    },
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:N/SC:N/SI:N/SA:N"
+    }
+   ],
+   "summary": "TeamPass privileges issue",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-472",
+     "CWE-639"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Packagist",
+      "name": "nilsteampassnet/teampass"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-c4pw-33h3-35xw",
+   "published": "2024-12-18T15:02:37Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:L/I:H/A:N"
+    }
+   ],
+   "summary": "Atro CSRF Middleware Bypass (security.checkOrigin)",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-352"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "npm",
+      "name": "astro"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-cc6x-8cc7-9953",
+   "published": "2024-11-05T15:08:57Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:L/I:L/A:L"
+    },
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:L/AC:L/AT:N/PR:L/UI:N/VC:L/VI:L/VA:L/SC:N/SI:N/SA:N"
+    }
+   ],
+   "summary": "OctoPrint has API key access in settings without reauthentication",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-306",
+     "CWE-620"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "PyPI",
+      "name": "OctoPrint"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-ccqv-43vm-4f3w",
+   "published": "2024-12-23T20:38:20Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AC:L/AV:N/A:H/C:H/I:H/PR:L/S:C/UI:N"
+    }
+   ],
+   "summary": "Gogs allows deletion of internal files",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-552"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Go",
+      "name": "gogs.io/gogs"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-cw6g-qmjq-6w2w",
+   "published": "2024-11-13T14:15:39Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:N/A:N"
+    },
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:H/VI:N/VA:N/SC:H/SI:N/SA:N/E:P"
+    }
+   ],
+   "summary": "Craft CMS Arbitrary System File Read",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-22",
+     "CWE-552"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Packagist",
+      "name": "craftcms/cms"
+     }
+    },
+    {
+     "package": {
+      "ecosystem": "Packagist",
+      "name": "craftcms/cms"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-cwq6-mjmx-47p6",
+   "published": "2024-12-12T19:21:16Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.0/AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:L/A:L"
+    }
+   ],
+   "summary": "XWiki's scheduler in subwiki allows scheduling operations for any main wiki user",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-862"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Maven",
+      "name": "org.xwiki.platform:xwiki-platform-scheduler-ui"
+     }
+    },
+    {
+     "package": {
+      "ecosystem": "Maven",
+      "name": "org.xwiki.platform:xwiki-platform-scheduler-ui"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-cwq8-g58r-32hg",
+   "published": "2024-12-16T17:27:53Z",
+   "severity": [
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:N/VI:H/VA:N/SC:N/SI:N/SA:N"
+    }
+   ],
+   "summary": "MinIO vulnerable to privilege escalation in IAM import API",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-269"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Go",
+      "name": "github.com/minio/minio"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-fhg2-r2h9-h7q8",
+   "published": "2024-11-20T12:30:35Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:N"
+    },
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:N/VI:L/VA:L/SC:N/SI:N/SA:N"
+    }
+   ],
+   "summary": "Moodle IDOR when deleting OAuth2 linked accounts",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-276",
+     "CWE-639"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Packagist",
+      "name": "moodle/moodle"
+     }
+    },
+    {
+     "package": {
+      "ecosystem": "Packagist",
+      "name": "moodle/moodle"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-fj5v-w2jp-wqvj",
+   "published": "2024-11-15T12:31:44Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.0/AV:N/AC:L/PR:L/UI:N/S:U/C:L/I:L/A:N"
+    }
+   ],
+   "summary": "Improper Access Control in janeczku/calibre-web",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-284",
+     "CWE-862"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "PyPI",
+      "name": "calibreweb"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-fpm5-2wcj-vfr7",
+   "published": "2024-11-06T15:57:57Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:C/C:H/I:H/A:N"
+    },
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:N/VC:H/VI:H/VA:N/SC:H/SI:H/SA:N"
+    }
+   ],
+   "summary": "codechecker authentication method confusion vulnerability allows logging in as the built-in root user from an external service",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-305"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "PyPI",
+      "name": "codechecker"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-g5vw-3h65-2q3v",
+   "published": "2024-11-04T23:23:35Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:H"
+    },
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:N/VA:N/SC:N/SI:N/SA:N/E:U"
+    }
+   ],
+   "summary": "Access control vulnerable to user data deletion by anonynmous users",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-269",
+     "CWE-284"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "PyPI",
+      "name": "AccessControl"
+     }
+    },
+    {
+     "package": {
+      "ecosystem": "PyPI",
+      "name": "Zope"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-hh33-46q4-hwm2",
+   "published": "2024-11-26T19:58:20Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:L/PR:H/UI:R/S:U/C:L/I:H/A:L"
+    },
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:N/AC:L/AT:N/PR:H/UI:A/VC:L/VI:H/VA:L/SC:N/SI:N/SA:N"
+    }
+   ],
+   "summary": "Re-creating a deleted user in lakeFS will re-enable previous user credentials that existed prior to its deletion",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-281",
+     "CWE-287"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Go",
+      "name": "github.com/treeverse/lakefs"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-hjwq-mjwj-4x6c",
+   "published": "2024-12-02T17:26:47Z",
+   "severity": [
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:L/VI:L/VA:L/SC:N/SI:N/SA:N/E:X/CR:X/IR:X/AR:X/MAV:X/MAC:X/MAT:X/MPR:X/MUI:X/MVC:X/MVI:X/MVA:X/MSC:X/MSI:X/MSA:X/S:X/AU:X/R:X/V:X/RE:X/U:X"
+    }
+   ],
+   "summary": "@intlify/shared Prototype Pollution vulnerability",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-1321"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "npm",
+      "name": "@intlify/shared"
+     }
+    },
+    {
+     "package": {
+      "ecosystem": "npm",
+      "name": "@intlify/vue-i18n-core"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-hrxh-9w67-g4cv",
+   "published": "2024-11-19T20:36:02Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:L/PR:L/UI:R/S:U/C:L/I:L/A:L"
+    },
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:L/AC:L/AT:P/PR:L/UI:A/VC:H/VI:H/VA:H/SC:L/SI:L/SA:L"
+    }
+   ],
+   "summary": "Rclone has Improper Permission and Ownership Handling on Symlink Targets with --links and --metadata",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-281"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Go",
+      "name": "github.com/rclone/rclone"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-hvm9-wc8j-mgrc",
+   "published": "2024-12-18T18:19:12Z",
+   "severity": [
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:P/VC:H/VI:H/VA:H/SC:L/SI:H/SA:H"
+    }
+   ],
+   "summary": "TShock Security Escalation Exploit",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-305",
+     "CWE-613",
+     "CWE-863"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "NuGet",
+      "name": "TShock"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-j4v3-wwwx-5gqv",
+   "published": "2024-11-20T12:30:35Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:L/PR:L/UI:R/S:U/C:L/I:L/A:L"
+    }
+   ],
+   "summary": "Django Filer Unrestricted Upload of File with Dangerous Type",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-20",
+     "CWE-434",
+     "CWE-80"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "PyPI",
+      "name": "django-filer"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-jjxq-ff2g-95vh",
+   "published": "2024-11-06T19:52:55Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:H/PR:H/UI:N/S:U/C:L/I:N/A:N"
+    },
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:N/AC:L/AT:P/PR:H/UI:N/VC:L/VI:N/VA:N/SC:N/SI:N/SA:N"
+    }
+   ],
+   "summary": "Twig has unguarded calls to `__isset()` and to array-accesses when the sandbox is enabled",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-668"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Packagist",
+      "name": "twig/twig"
+     }
+    },
+    {
+     "package": {
+      "ecosystem": "Packagist",
+      "name": "twig/twig"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-jxw2-jvxf-5vrp",
+   "published": "2024-12-17T21:30:34Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:L/PR:L/UI:R/S:U/C:H/I:H/A:N"
+    }
+   ],
+   "summary": "Databricks JDBC Driver Command Injection vulnerability",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-77"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Maven",
+      "name": "com.databricks:databricks-jdbc"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-m56h-5xx3-2jc2",
+   "published": "2024-12-18T15:50:09Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:L/I:N/A:N"
+    }
+   ],
+   "summary": "Prototype pollution in jsii.configureCategories",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-1321"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "npm",
+      "name": "jsii"
+     }
+    },
+    {
+     "package": {
+      "ecosystem": "npm",
+      "name": "jsii"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-q4xm-6fjc-5f6w",
+   "published": "2024-11-26T16:38:18Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:N/I:H/A:N"
+    },
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:L/AC:L/AT:N/PR:L/UI:N/VC:N/VI:H/VA:N/SC:N/SI:N/SA:N/E:P"
+    }
+   ],
+   "summary": "sigstore-java has vulnerability with bundle verification",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-345",
+     "CWE-347"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Maven",
+      "name": "dev.sigstore:sigstore-java"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-r6wx-627v-gh2f",
+   "published": "2024-12-05T22:37:32Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:L/PR:L/UI:R/S:U/C:H/I:N/A:N"
+    }
+   ],
+   "summary": "Directus has an HTML Injection in Comment",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-80"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "npm",
+      "name": "@directus/app"
+     }
+    },
+    {
+     "package": {
+      "ecosystem": "npm",
+      "name": "directus"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-v7vm-rhmg-8j2r",
+   "published": "2024-11-26T16:36:52Z",
+   "severity": [
+    {
+     "type": "CVSS_V3",
+     "score": "CVSS:3.1/AV:N/AC:L/PR:L/UI:R/S:U/C:H/I:N/A:N"
+    },
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:N/AC:L/AT:P/PR:L/UI:A/VC:H/VI:N/VA:N/SC:N/SI:N/SA:N/E:U"
+    }
+   ],
+   "summary": "Password Policy Bypass Vulnerability in Fides Webserver User Accept Invite API",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-602"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "PyPI",
+      "name": "ethyca-fides"
+     }
+    }
+   ]
+  },
+  {
+   "id": "GHSA-vm32-9rqf-rh3r",
+   "published": "2024-12-10T22:42:41Z",
+   "severity": [
+    {
+     "type": "CVSS_V4",
+     "score": "CVSS:4.0/AV:N/AC:H/AT:P/PR:N/UI:P/VC:N/VI:L/VA:N/SC:H/SI:H/SA:H"
+    }
+   ],
+   "summary": "pnpm no-script global cache poisoning via overrides / `ignore-scripts` evasion",
+   "database_specific": {
+    "cwe_ids": [
+     "CWE-346",
+     "CWE-426"
+    ]
+   },
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "npm",
+      "name": "pnpm"
+     }
+    }
+   ]
+  }
+ ]
+}

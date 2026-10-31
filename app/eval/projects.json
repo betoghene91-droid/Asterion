@@ -1,0 +1,68 @@
+{
+  "_README": [
+    "Pinned corpus projects with a resolvable repo URL, a pre-fix commit, and the",
+    "expert-labelled findings for that engagement.",
+    "",
+    "Every field here was verified, not guessed:",
+    "  commit          exists in the repo and is the last commit BEFORE the audit date",
+    "                  (checked with `git rev-list -1 --before=<audit_date>`).",
+    "  engagement      the corpus engagement_id; the ground truth is that engagement's",
+    "                  own rows, never the whole project's rows across several audits.",
+    "  ground_truth    severe (critical/high/medium) finding COUNT per class, derived by",
+    "                  running eval/harness.py's PLAYBOOK_MAP over the corpus rows.",
+    "                  It is a set of counts, not an instance list, because the corpus",
+    "                  does not pin each finding to a line of a pinned commit.",
+    "",
+    "eval-class-scoring.md explains why instance-level tp/fp/fn is not claimed."
+  ],
+  "projects": [
+    {
+      "id": "surge-2023",
+      "repo": "Surge-fi/surge-protocol-v1",
+      "checkout": "surge",
+      "commit": "b7cb1dc2a2dcb4bf22c765a4222d7520843187c6",
+      "audit_date": "2023-03-02",
+      "auditor": "Sherlock",
+      "engagement": "engagement:60600d61b72",
+      "ground_truth": {
+        "sol.rounding": 8,
+        "sol.inflation": 2,
+        "sol.delegatecall": 2
+      },
+      "ground_truth_note": "8 arithmetic + 2 logic_accounting(h) + 2 input_validation, all severe. The remaining logic_accounting rows on this engagement are medium and land on sol.inflation only if their leaf matches PLAYBOOK_MAP.",
+      "build": "foundry"
+    },
+    {
+      "id": "exit10-2023",
+      "repo": "open-bakery/exit10-protocol",
+      "checkout": "exit10",
+      "commit": "0b3c2782c5a93d2218234bc70fee31ec32f9e337",
+      "audit_date": "2023-04-30",
+      "auditor": "Electisec",
+      "engagement": "engagement:2d726283c4d",
+      "ground_truth": {
+        "sol.rounding": 5,
+        "sol.oracle": 7
+      },
+      "ground_truth_note": "The commit is the one the audit report itself links to (blob/<sha> appears 88 times in this engagement's body_text), i.e. the exact tree that was reviewed.",
+      "build": "foundry, needs via_ir = true or solc 0.8.20 fails with 'Stack too deep'"
+    },
+    {
+      "id": "poodl-2023",
+      "repo": "poodlTech/tokenAudit",
+      "checkout": "poodl",
+      "commit": "eebe267b3fdd75a82e09cc270b3c046b2c9f2c84",
+      "audit_date": "2023-03-07",
+      "auditor": "Guardian Audits",
+      "engagement": "engagement:c1db2d18bf5",
+      "ground_truth": {
+        "sol.reentrancy": 2,
+        "sol.dos": 3,
+        "sol.upgrade": 1,
+        "sol.delegatecall": 1
+      },
+      "ground_truth_note": "The commit is the one the audit report links to (12 references). Hardhat project with no committed lockfile/artifacts, so slither and aderyn could not compile it; only tools/detect.py ran. Kept in the set deliberately: a project where two of three tools are UNAVAILABLE is exactly the case the harness must report as unavailable rather than as a clean zero.",
+      "build": "hardhat, no artifacts committed"
+    }
+  ]
+}

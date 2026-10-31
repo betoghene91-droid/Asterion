@@ -424,7 +424,236 @@ export function blendDetail(
   };
 }
 
-// ─────────────────────────────────────────────────────────── learnedRanking ─────
+// ────────────────────────────────────────────────── detector precision ─────
+
+/**
+ * Shrinkage constant for the detector-precision path.
+ *
+ * SAME VALUE AS DEFAULT_PRIOR_STRENGTH, DIFFERENT JOB. That one shrinks the
+ * payout-frequency estimate toward the digest weight; this one shrinks the
+ * payout-frequency estimate toward the *detector's measured precision*. Kept as
+ * a separate named constant because tuning one must not silently retune the
+ * other, and because a reader deserves to see it named where it is used.
+ *
+ * k = 12 means: at 12 measurements the detector's precision and the class's own
+ * evidence carry equal weight. Below that the measured precision barely moves
+ * anything; above it, a detector that keeps firing on non-bugs dominates.
+ */
+export const DEFAULT_PRECISION_STRENGTH = 12;
+
+/**
+ * What one detector's measurement says about one class.
+ *
+ * ONLY PRECISION IS CONSUMED. tp/fp/fn are carried so a caller can see the
+ * arithmetic, but the prior is moved by precision alone: recall answers "did the
+ * detector see everything", which is a question about coverage, not about
+ * whether a hit is worth the operator's time. A detector with 30% recall and
+ * 95% precision is a good lead generator; mixing recall in here would punish it
+ * for a job it was never given.
+ */
+export interface DetectorPrecision {
+  cls: string;
+  /** tp / (tp + fp). `null` means NOT MEASURED — never 0. */
+  precision: number | null;
+  /** How many (project) measurements stand behind `precision`. */
+  n: number;
+  /** Where the number came from, for the report: `live:...` or `fixture:...`. */
+  provenance: string;
+  tool?: string;
+}
+
+/** One class row as `eval/scoring.py` writes it under `per_class`. */
+export interface ClassPrecisionRow {
+  cls: string;
+  tp: number;
+  fp: number;
+  fn?: number;
+  tools?: string[];
+}
+
+/** The shape `eval/scoring.py` writes, so the artifact can be passed straight in. */
+export interface ScoringArtifact {
+  /** Pooled per-class counts. This is the only block read here. */
+  per_class?: ClassPrecisionRow[];
+  tools?: Record<string, unknown>;
+  n_projects?: number;
+}
+
+/**
+ * Extract the per-class precision map from `eval/scoring.py` output.
+ *
+ * Deliberately narrow: it reads ONE block, `per_class`, whose rows are already
+ * pooled across tools and projects by the scorer. If that block is absent the
+ * result is an EMPTY map, which the caller treats as "nothing measured".
+ *
+ * An empty map is the right failure mode. The alternative — trying to
+ * reconstruct per-class counts from the per-tool, per-project block — is how a
+ * caller ends up reading a project-level ratio as if it were a class-level one,
+ * and no arithmetic can tell the difference once the number is a float.
+ */
+export function precisionFromScoring(
+  artifact: ScoringArtifact | null | undefined,
+  provenance: string,
+): Map<string, DetectorPrecision> {
+  const rows = artifact?.per_class;
+  if (!Array.isArray(rows)) return new Map();
+  return precisionFromRows(
+    rows.map((r) => ({ cls: r.cls, tp: r.tp, fp: r.fp, tool: (r.tools ?? []).join('+') })),
+    provenance,
+  );
+}
+
+function finish(
+  acc: Map<string, { tp: number; fp: number; n: number; tools: Set<string> }>,
+  provenance: string,
+): Map<string, DetectorPrecision> {
+  const out = new Map<string, DetectorPrecision>();
+  for (const [cls, v] of acc) {
+    const denom = v.tp + v.fp;
+    out.set(cls, {
+      cls,
+      precision: denom === 0 ? null : v.tp / denom,
+      n: v.n,
+      provenance,
+      tool: [...v.tools].sort().join('+'),
+    });
+  }
+  return out;
+}
+
+/**
+ * Build the per-class precision map from explicit (class, tp, fp) rows.
+ *
+ * This is the form the harness emits and the form the tests use, because it is
+ * the only form in which the arithmetic is auditable by eye.
+ */
+export function precisionFromRows(
+  rows: Iterable<{ cls: string; tp: number; fp: number; tool?: string }>,
+  provenance: string,
+): Map<string, DetectorPrecision> {
+  const acc = new Map<string, { tp: number; fp: number; n: number; tools: Set<string> }>();
+  for (const r of rows) {
+    const cls = String(r.cls);
+    if (!cls) continue;
+    const tp = Number(r.tp);
+    const fp = Number(r.fp);
+    if (!Number.isFinite(tp) || !Number.isFinite(fp) || tp < 0 || fp < 0) continue;
+    const cur = acc.get(cls) ?? { tp: 0, fp: 0, n: 0, tools: new Set<string>() };
+    cur.tp += tp;
+    cur.fp += fp;
+    cur.n += tp + fp;
+    if (r.tool) cur.tools.add(r.tool);
+    acc.set(cls, cur);
+  }
+  return finish(acc, provenance);
+}
+
+export interface PrecisionBlendDetail extends BlendDetail {
+  /** Measured precision for this class, or null when nothing was measured. */
+  precision: number | null;
+  /** How many measurements back the precision. 0 when unmeasured. */
+  precisionN: number;
+  /** Where precision came from, or null. */
+  precisionProvenance: string | null;
+  /** The estimate before precision was applied (i.e. the payout-only blend). */
+  payoutOnly: number;
+  /**
+   * True when the precision path actually lowered the estimate. The only
+   * direction precision is ever allowed to move it.
+   */
+  reducedByPrecision: boolean;
+}
+
+/**
+ * Blend payout frequency with detector precision.
+ *
+ * THE RULE THIS FUNCTION EXISTS TO ENFORCE:
+ *
+ *   precision can only ever REDUCE confidence, never manufacture it.
+ *
+ *   blended = payoutOnly · (k·1 + n·precision) / (k + n)      k = precisionStrength
+ *
+ * Read the multiplier: it is a shrinkage average of 1.0 (the neutral value the
+ * payout-only estimate already assumes) and the measured precision, worth n
+ * observations. So:
+ *
+ *   · n = 0  (nothing measured)  → multiplier is exactly 1.0 → blended is
+ *                                  payoutOnly, bit for bit. A class nobody has
+ *                                  measured gains EXACTLY 0.0. This is the
+ *                                  anti-fabrication control: three previous
+ *                                  agents invented weights (e.g. 1.9) for
+ *                                  unmeasured classes and the file was reverted
+ *                                  each time. An invented number means
+ *                                  "measured" and is a lie; 0.0 means
+ *                                  "unmeasured" and is true.
+ *   · precision = 1.0            → multiplier is exactly 1.0 → no change. A
+ *                                  perfect detector earns no bonus, because
+ *                                  precision is evidence that leads are worth
+ *                                  reading, not evidence that the class pays
+ *                                  more. Payout is what ranks; precision only
+ *                                  discounts noise.
+ *   · precision = 0.5, n large   → multiplier → 0.5 → the class is halved.
+ *
+ * Monotonicity in n is the other property that matters: with precision < 1 the
+ * multiplier falls as n rises, so more evidence of noise hurts more. It can
+ * never rise above 1.0 for any precision ≤ 1, which is what makes "cannot
+ * manufacture confidence" a structural guarantee rather than a convention.
+ */
+export function blendWithPrecision(
+  cls: string,
+  digestWeight: number,
+  learnedStats: ClassStatLearned | null | undefined,
+  precision: DetectorPrecision | null | undefined,
+  opts?: BlendOptions & { precisionStrength?: number },
+): PrecisionBlendDetail {
+  const base = blendDetail(cls, digestWeight, learnedStats, opts);
+  const k = positiveStrength(opts?.precisionStrength, DEFAULT_PRECISION_STRENGTH, 'precisionStrength');
+
+  const p = precision ?? null;
+  const pValue = p?.precision ?? null;
+  const pN = Math.max(0, Math.trunc(p?.n ?? 0));
+
+  const payoutOnly = base.blended;
+
+  // No measurement, or a measurement with nothing behind it: change nothing.
+  // The returned double is the payout-only estimate itself, not a recomputation.
+  if (pValue === null || !Number.isFinite(pValue) || pN === 0) {
+    return {
+      ...base,
+      blended: payoutOnly,
+      precision: pValue === null || !Number.isFinite(pValue) ? null : pValue,
+      precisionN: 0,
+      precisionProvenance: p?.provenance ?? null,
+      payoutOnly,
+      reducedByPrecision: false,
+    };
+  }
+
+  const clamped = Math.min(1, Math.max(0, pValue));
+  const multiplier = (k * 1 + pN * clamped) / (k + pN);
+  // Guard the structural guarantee even against a caller passing precision > 1.
+  const applied = Math.min(1, multiplier);
+  const blended = payoutOnly * applied;
+
+  return {
+    ...base,
+    blended,
+    precision: clamped,
+    precisionN: pN,
+    precisionProvenance: p?.provenance ?? null,
+    payoutOnly,
+    reducedByPrecision: blended < payoutOnly,
+  };
+}
+
+function positiveStrength(v: unknown, dflt: number, field: string): number {
+  const n = v === undefined || v === null ? dflt : v;
+  if (typeof n !== 'number' || !Number.isFinite(n) || n <= 0) {
+    throw new RangeError(`${field} must be a finite number > 0`);
+  }
+  return n;
+}
+
 
 export interface DigestWeights {
   classes?: Record<string, { weight?: number } | undefined> | null;

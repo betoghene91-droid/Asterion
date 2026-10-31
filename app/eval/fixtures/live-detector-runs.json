@@ -1,0 +1,256 @@
+{
+  "captured_at": "2026-10-30T23:07:18+00:00",
+  "captured_by": "eval/capture_live.py",
+  "toolchain": {
+    "detect.py": {
+      "available": true,
+      "path": "/workspace/tasks/9e376083-d2a7-4d74-b1ed-5c40e20734af/w9/app/tools/detect.py"
+    },
+    "slither": {
+      "available": true,
+      "path": "/tmp/slithervenv/bin/slither",
+      "version": "0.11.6"
+    },
+    "aderyn": {
+      "available": true,
+      "path": "/tmp/aderyn-x86_64-unknown-linux-gnu/aderyn",
+      "version": "aderyn 0.6.8"
+    }
+  },
+  "note": "Produced by actually running each detector against each pinned commit. A tool with available=false DID NOT RUN on that project; its empty check list must never be read as 'found nothing'. Scores derived from this file must be labelled fixture:<this path>.",
+  "projects": [
+    {
+      "id": "surge-2023",
+      "repo": "Surge-fi/surge-protocol-v1",
+      "commit": "b7cb1dc2a2dcb4bf22c765a4222d7520843187c6",
+      "commit_date": "2023-02-19T14:31:16+02:00",
+      "checked_out_at": "/tmp/surge",
+      "ground_truth": {
+        "sol.rounding": 8,
+        "sol.inflation": 2,
+        "sol.delegatecall": 2
+      },
+      "runs": [
+        {
+          "tool": "detect.py",
+          "version": "repo tools/detect.py",
+          "available": true,
+          "error": "",
+          "duration_s": 0.0,
+          "checks": {
+            "sol.accesscontrol": 2
+          },
+          "hits": [
+            "sol.accesscontrol"
+          ],
+          "unmapped_hits": []
+        },
+        {
+          "tool": "slither",
+          "version": "0.11.6",
+          "available": true,
+          "error": "",
+          "duration_s": 0.0,
+          "checks": {
+            "assembly": 7,
+            "divide-before-multiply": 35,
+            "events-maths": 2,
+            "incorrect-equality": 26,
+            "low-level-calls": 4,
+            "missing-inheritance": 2,
+            "missing-zero-check": 6,
+            "naming-convention": 50,
+            "reentrancy-events": 4,
+            "solc-version": 3,
+            "timestamp": 52
+          },
+          "hits": [
+            "sol.reentrancy",
+            "sol.rounding"
+          ],
+          "unmapped_hits": []
+        },
+        {
+          "tool": "aderyn",
+          "version": "aderyn 0.6.8",
+          "available": true,
+          "error": "",
+          "duration_s": 0.0,
+          "checks": {
+            "abi-encode-packed-hash-collision": 2,
+            "division-before-multiplication": 1,
+            "empty-require-revert": 2,
+            "inconsistent-type-names": 71,
+            "internal-function-used-once": 6,
+            "literal-instead-of-constant": 55,
+            "missing-inheritance": 2,
+            "reentrancy-state-change": 12,
+            "state-change-without-event": 4,
+            "state-no-address-check": 3,
+            "state-variable-could-be-immutable": 2,
+            "unused-state-variable": 1
+          },
+          "hits": [
+            "sol.reentrancy"
+          ],
+          "unmapped_hits": [
+            "abi-encode-packed-hash-collision"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "exit10-2023",
+      "repo": "open-bakery/exit10-protocol",
+      "commit": "0b3c2782c5a93d2218234bc70fee31ec32f9e337",
+      "commit_date": "2023-04-17T11:31:11+02:00",
+      "checked_out_at": "/tmp/exit10",
+      "ground_truth": {
+        "sol.rounding": 5,
+        "sol.oracle": 7
+      },
+      "runs": [
+        {
+          "tool": "detect.py",
+          "version": "repo tools/detect.py",
+          "available": true,
+          "error": "",
+          "duration_s": 0.0,
+          "checks": {
+            "sol.accesscontrol": 7,
+            "sol.upgrade": 1
+          },
+          "hits": [
+            "sol.accesscontrol",
+            "sol.upgrade"
+          ],
+          "unmapped_hits": []
+        },
+        {
+          "tool": "slither",
+          "version": "0.11.6",
+          "available": true,
+          "error": "",
+          "duration_s": 0.0,
+          "checks": {
+            "arbitrary-send-erc20": 4,
+            "divide-before-multiply": 9,
+            "incorrect-equality": 2,
+            "missing-inheritance": 4,
+            "missing-zero-check": 18,
+            "naming-convention": 35,
+            "reentrancy-benign": 34,
+            "reentrancy-eth": 7,
+            "reentrancy-events": 31,
+            "reentrancy-no-eth": 16,
+            "solc-version": 11,
+            "timestamp": 27,
+            "unindexed-event-address": 1,
+            "uninitialized-local": 4,
+            "unused-return": 38,
+            "write-after-write": 6
+          },
+          "hits": [
+            "sol.accesscontrol",
+            "sol.reentrancy",
+            "sol.rounding"
+          ],
+          "unmapped_hits": [
+            "unindexed-event-address"
+          ]
+        },
+        {
+          "tool": "aderyn",
+          "version": "aderyn 0.6.8",
+          "available": true,
+          "error": "",
+          "duration_s": 0.0,
+          "checks": {
+            "centralization-risk": 12,
+            "costly-loop": 1,
+            "eth-send-unchecked-address": 11,
+            "inconsistent-type-names": 2,
+            "large-numeric-literal": 4,
+            "literal-instead-of-constant": 8,
+            "local-variable-shadowing": 5,
+            "modifier-used-only-once": 2,
+            "push-zero-opcode": 22,
+            "reentrancy-state-change": 16,
+            "state-change-without-event": 1,
+            "state-no-address-check": 1,
+            "unchecked-return": 15,
+            "unsafe-casting": 8,
+            "unsafe-erc20-operation": 9,
+            "unsafe-oz-erc721-mint": 1,
+            "unspecific-solidity-pragma": 22,
+            "unused-import": 1
+          },
+          "hits": [
+            "sol.reentrancy",
+            "sol.rounding"
+          ],
+          "unmapped_hits": []
+        }
+      ]
+    },
+    {
+      "id": "poodl-2023",
+      "repo": "poodlTech/tokenAudit",
+      "commit": "eebe267b3fdd75a82e09cc270b3c046b2c9f2c84",
+      "commit_date": "2023-02-24T21:33:45+01:00",
+      "checked_out_at": "/tmp/poodl",
+      "ground_truth": {
+        "sol.reentrancy": 2,
+        "sol.dos": 3,
+        "sol.upgrade": 1,
+        "sol.delegatecall": 1
+      },
+      "runs": [
+        {
+          "tool": "detect.py",
+          "version": "repo tools/detect.py",
+          "available": true,
+          "error": "",
+          "duration_s": 0.0,
+          "checks": {
+            "sol.accesscontrol": 4,
+            "sol.delegatecall": 1,
+            "sol.dos": 2,
+            "sol.flashloan": 1,
+            "sol.reentrancy": 2,
+            "sol.upgrade": 1
+          },
+          "hits": [
+            "sol.accesscontrol",
+            "sol.delegatecall",
+            "sol.dos",
+            "sol.flashloan",
+            "sol.reentrancy",
+            "sol.upgrade"
+          ],
+          "unmapped_hits": []
+        },
+        {
+          "tool": "slither",
+          "version": "0.11.6",
+          "available": false,
+          "error": "/tmp/poodl/artifacts/build-info is not a directory.",
+          "duration_s": 0.0,
+          "checks": {},
+          "hits": [],
+          "unmapped_hits": []
+        },
+        {
+          "tool": "aderyn",
+          "version": "aderyn 0.6.8",
+          "available": false,
+          "error": "Compilation Error: Error (5887): \"msg.value\" and \"callvalue()\" can only be used in payable public functions. Make the function \"payable\" or use an internal function to avoid this error.",
+          "duration_s": 0.0,
+          "checks": {},
+          "hits": [],
+          "unmapped_hits": []
+        }
+      ]
+    }
+  ]
+}
