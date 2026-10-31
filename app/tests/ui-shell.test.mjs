@@ -262,3 +262,39 @@ test('boot reads the launch fragment before stripping it', () => {
   assert.strictEqual(forgetAt, -1, 'boot() must not strip the fragment before reading it');
   assert.ok(resolveAt < (forgetAt === -1 ? Infinity : forgetAt), 'read must precede strip');
 });
+
+// --- every theme variable applyTheme writes must be one the CSS reads --------
+//
+// Regression, found by landing the restyle: the stylesheet renamed
+// `--card`/`--card-2`/`--danger` to `--panel`/`--panel-2`/`--bad`, and
+// `applyTheme`'s overlay map was left pointing at the old names. Every value it
+// wrote landed on a variable no rule consumed - and because the map is fed from
+// `themeParams`, which the mobile webview exposes ONLY through the SDK, that is
+// the single path by which a phone gets the user's real theme. A stale name
+// there silently pins the phone to the default palette while a desktop Telegram
+// client (which publishes `--tg-theme-*` on the document) looks correct.
+//
+// Both halves were already asserted separately - that applyTheme drives
+// themeParams, and that the palette is tokenised - which is exactly why neither
+// caught this. This pins the JOIN between them.
+
+test('applyTheme writes only custom properties the stylesheet actually defines', () => {
+  const at = JS.indexOf('const map = {');
+  assert.ok(at !== -1, 'applyTheme must still build an overlay map');
+  const mapBody = JS.slice(at, JS.indexOf('};', at));
+
+  const written = [...mapBody.matchAll(/'--([a-z0-9-]+)'/g)].map((m) => m[1]);
+  assert.ok(written.length >= 8, `expected the full theme map, saw ${written.length}`);
+
+  // Every custom property the stylesheet declares.
+  const defined = new Set([...CSS.matchAll(/^\s*--([a-z0-9-]+)\s*:/gm)].map((m) => m[1]));
+  assert.ok(defined.size > 20, 'the stylesheet should define its full token set');
+
+  const dead = written.filter((name) => !defined.has(name));
+  assert.deepEqual(
+    dead,
+    [],
+    `applyTheme writes ${dead.join(', ')}, which the stylesheet never defines - ` +
+      'the overlay would be dead and the host theme ignored',
+  );
+});

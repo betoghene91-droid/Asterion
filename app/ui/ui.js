@@ -463,6 +463,44 @@ async function copyText(text, label) {
 const num = (n) => (typeof n === 'number' && Number.isFinite(n) ? n.toLocaleString('en-US') : String(n));
 const money = (n) => (typeof n === 'number' && Number.isFinite(n) ? '$' + n.toLocaleString('en-US', { maximumFractionDigits: 2 }) : String(n));
 
+/**
+ * `used/cap`, because the cap is the reason the number matters.
+ *
+ * The desk payload's `subrequests` is `{ used, cap }`, not a number. `num()`
+ * stringified anything non-numeric, so the row rendered "subrequests
+ * [object Object]" on the operator's phone. Formatting both halves here keeps
+ * the pair meaningful: 12 of 4000 reads as 12/4,000, and the reader learns how
+ * close the sweep is to the ceiling instead of seeing a bare count.
+ *
+ * Anything that is not the documented pair renders the em dash rather than a
+ * guess - `String(obj)` is exactly the bug this replaces.
+ */
+function usedOverCap(v) {
+  if (typeof v === 'number' && Number.isFinite(v)) return num(v);
+  if (v && typeof v === 'object') {
+    const used = v.used;
+    const cap = v.cap;
+    if (typeof used === 'number' && Number.isFinite(used)) {
+      return typeof cap === 'number' && Number.isFinite(cap) && cap > 0
+        ? num(used) + '/' + num(cap)
+        : num(used);
+    }
+  }
+  return '\u2014';
+}
+
+/**
+ * A count that is honest about not being a count.
+ *
+ * `kills_today` is a server-side number. If the field ever arrives as an object,
+ * a bucket key or NaN, the em dash is the only defensible rendering: a confident
+ * wrong number in an ops panel is worse than a visible gap.
+ */
+function killsToday(v) {
+  if (typeof v === 'number' && Number.isFinite(v) && v >= 0) return num(v);
+  return '\u2014';
+}
+
 function ago(unixSeconds) {
   if (typeof unixSeconds !== 'number' || !unixSeconds) return 'never';
   const s = Math.max(0, Math.floor(Date.now() / 1000 - unixSeconds));
@@ -844,10 +882,19 @@ function applyTheme() {
   S.theme = params || null;
   doc.setAttribute('data-scheme', scheme);
 
+  // These names must be the tokens the STYLESHEET actually consumes, not the
+  // ones it used to have. The restyle renamed `--card`/`--card-2`/`--danger` to
+  // `--panel`/`--panel-2`/`--bad`, and this map was left behind: every overlay it
+  // wrote landed on a variable no rule reads. Where the host publishes
+  // `--tg-theme-*` on the document that was invisible, because the stylesheet
+  // reads those directly - but the mobile webview (the device the operator
+  // actually uses) exposes themeParams ONLY through the SDK, so this overlay is
+  // the single path by which that client gets the user's real theme. A stale
+  // name there silently pinned the phone to the default dark palette.
   const map = {
     bg_color: '--bg',
-    secondary_bg_color: '--card',
-    section_bg_color: '--card-2',
+    secondary_bg_color: '--panel',
+    section_bg_color: '--panel-2',
     section_separator_color: '--line',
     text_color: '--ink',
     subtitle_text_color: '--dim',
@@ -855,7 +902,7 @@ function applyTheme() {
     button_color: '--accent',
     button_text_color: '--accent-ink',
     link_color: '--link',
-    destructive_text_color: '--danger',
+    destructive_text_color: '--bad',
   };
   if (params) {
     for (const key of Object.keys(map)) {
@@ -2126,8 +2173,8 @@ const RENDERERS = {
       ['open', num(v.open_positions)],
       ['deployed', typeof v.deployed_pct === 'number' ? (v.deployed_pct * 100).toFixed(1) + '%' : '\u2014'],
       ['pnl today', money(v.pnl_today)],
-      ['kills today', num(v.kills_today)],
-      ['subrequests', num(v.subrequests)],
+      ['kills today', killsToday(v.kills_today)],
+      ['subrequests', usedOverCap(v.subrequests)],
     ]));
     if (v.breaker_halted) out.appendChild(h('div', { class: 'alert bad', text: 'Circuit breaker halted until ' + stamp(v.breaker_until) }));
     const gates = v.gates || [];
