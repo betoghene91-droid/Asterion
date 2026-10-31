@@ -1138,6 +1138,91 @@ them.
 
 ---
 
+## 14. Backups, and the 60-day question
+
+The database is the one thing here that cannot be rebuilt from the repo. The
+code can be re-cloned; the ledger, findings, evidence and intake rows cannot.
+
+### 14.1 What protects it, in two layers
+
+| Layer | Window | Cost | Where it lives |
+|---|---|---|---|
+| D1 Time Travel (already on) | **7 days** on the Free plan, 30 on Workers Paid | free | Cloudflare |
+| `d1-backup.yml` (this repo) | until you delete it | free (see 14.3) | git, i.e. GitHub |
+
+Time Travel needs no setup and no cron: Cloudflare keeps its own history. The
+limit worth knowing is that on the **Free plan it is 7 days, not 30** -- 30 days
+is the Workers Paid number, and it is easy to plan around the wrong one.
+
+That is the whole argument for the second layer. Seven days is not a backup,
+it is an undo buffer: a corruption you notice in week three is already gone.
+
+### 14.2 What `d1-backup.yml` does
+
+Daily at 05:43 UTC it exports D1, checks the dump, **restores it into a
+throwaway local database**, verifies the ledger hash chain, and only then
+commits `backups/asterion.sql` to `main`.
+
+The restore is the part that matters. A dump is a file; a backup is a dump that
+has been loaded back and verified. This is not theoretical here: the first real
+run exported a perfectly valid 6,987,101-byte dump that **could not be
+restored** (`statement too long: SQLITE_TOOBIG`, caused by the ~300 KB
+`corpus_digest` row). The export step was green and the file looked fine.
+
+`corpus_digest` is therefore schema-only in the dump. Its *contents* never
+travel because they are already in git as `app/src/corpus-digest.json`, which
+the deploy step loads. Every other table is exported with data.
+
+**To restore.** Take the newest dump and load it:
+
+```sh
+git show $(git log -1 --format=%H -- backups/asterion.sql):backups/asterion.sql > /tmp/asterion.sql
+npx wrangler d1 execute asterion --remote --file=/tmp/asterion.sql --yes
+```
+
+Then rebuild the corpus digest by re-running the deploy (the "apply schema" and
+digest steps) so `corpus_digest` is repopulated from the repo.
+
+### 14.3 The 60-day rule, answered
+
+You asked what you have to do before 60 days so nothing gets deleted. Three
+separate limits get confused here, so all three:
+
+**1. GitHub disables scheduled workflows after 60 days of inactivity -- but
+only on a PUBLIC repo.**
+
+GitHub's own wording: *"In a public repository, scheduled workflows are
+automatically disabled when no repository activity has occurred in 60 days."*
+
+This repository is **private**, so **this rule does not apply to you today.**
+Nothing is deleted at 60 days, and no action is required.
+
+**2. If you ever make the repo public, the daily backup commit is what keeps
+it alive.** Every run writes a commit, so the repo is never idle for 60 days.
+The only gap: the commit is skipped when the database has not changed. So the
+workflow carries a guard that **fails the job after 9 days without a backup
+commit** -- long before GitHub's 60-day threshold, while the job can still tell
+you. If that guard ever fires, the schedule is what you fix, not the guard.
+
+**3. The 90-day retention on Actions artifacts is separate and is not your
+backup.** `eval.yml` uploads to an artifact that GitHub deletes after 90 days.
+Nothing depends on it: the backup is a commit on `main`, which has no expiry.
+
+**So: nothing to do before 60 days.** The one habit worth having is noticing
+whether the daily backup commit is still appearing, because a silently dead
+schedule looks exactly like a working one. The 9-day guard exists to make that
+difference loud.
+
+### 14.4 Why not R2
+
+R2 is the obvious home for a dump, and it is not used here for one reason: R2
+has to be enabled on the account, and enabling it requires a payment method.
+D1's own free tier does not, which is why the backup lives in git instead. If
+you later enable R2, the same workflow can write there -- but do not let a
+missing card block having a backup at all, which is what a git commit solves.
+
+---
+
 ## What is UNVERIFIED in this file, and why
 
 Setup happens on your Cloudflare account, so commands that need a live account
