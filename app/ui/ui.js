@@ -1434,7 +1434,7 @@ async function say(text, answers) {
   const thinking = pushThinking();
   setLink('busy');
   try {
-    const r = await api('/api/ui/engage', { method: 'POST', body: { text: t, answers: answers || undefined } });
+    const r = await api('/api/ui/engage', { method: 'POST', body: { text: t, answers: answers || undefined, agent: true } });
     S.chatTurns++;
     thinking.remove();
     setLink('live');
@@ -1465,6 +1465,13 @@ function handleEngage(r, originalText) {
     pushTurn('bot', bubble(questionNodes(r.questions, r, originalText, rec)));
     toast('Saved to Ask', 'ok');
     return rec;
+  }
+  if (r.kind === 'agent') {
+    // Plain-language answer from the same agent the Telegram chat uses. Rendered
+    // as a bot bubble with the text node-preserved: the agent writes plain text
+    // (it strips its own markup), so it is shown as text and never as markup.
+    pushTurn('bot', bubble([h('div', { class: 'clamp-body', text: stripTags(r.answer || '') })]));
+    return null;
   }
   if (r.kind === 'brief') {
     lastBrief = r;
@@ -1654,6 +1661,7 @@ function handleEngageInline(r, originalText) {
       h('div', { class: 'card-sub', text: 'program: ' + (r.programId || 'unknown') }),
     ]);
   }
+  if (r.kind === 'agent') return h('div', { class: 'bubble' }, [h('div', { class: 'clamp-body', text: stripTags(r.answer || '') })]);
   if (r.kind === 'questions') return h('div', {}, questionNodes(r.questions, r, originalText, rememberQuestions(r, originalText)));
   if (r.kind === 'brief') return briefCard(r, {});
   return jsonBlock(r);

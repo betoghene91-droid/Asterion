@@ -58,6 +58,7 @@ import { UI_ASSETS } from './embed.js';
 import { describeFailure, validateInitData, type InitDataFail, type InitDataUser } from './initdata.js';
 import type { UiEnv } from './env.js';
 import { historyView, targetsView } from './ops.js';
+import { runAgent } from '../agent.js';
 import { compileEngagement, decideWork, listWork } from './work.js';
 
 /** Header the shell presents the Telegram session in. */
@@ -132,6 +133,17 @@ export const UI_OPS: UiOpsView[] = [
   { id: 'positions', label: 'Positions', glyph: '\u25A4', route: '/api/desk/positions', auth: false, group: 'Desk' },
   { id: 'kills', label: 'Kills', glyph: '\u2715', route: '/api/desk/kills', auth: false, group: 'Desk' },
   { id: 'calibration', label: 'Calibration', glyph: '\u25CE', route: '/api/desk/calib', auth: false, group: 'Desk' },
+  // The four autonomous bots. They were reachable only as raw endpoints and as
+  // Telegram commands, so a bot that was deployed, cronned and reporting had no
+  // surface anywhere the operator looks. Each one is a REAL existing route, so
+  // the generic Ops detail view renders it with no per-bot code: a bot that is
+  // broken shows its own error here instead of showing nothing at all.
+  // `auth: false` keeps them observable signed out, which is the state the
+  // console is in whenever it is opened outside Telegram.
+  { id: 'sweep', label: 'Sweep', glyph: '\u25C9', route: '/api/desk/sweep', auth: false, group: 'Bots' },
+  { id: 'dust', label: 'Dust', glyph: '\u25CC', route: '/api/desk/dust', auth: false, group: 'Bots' },
+  { id: 'hunter', label: 'Hunter', glyph: '\u25C6', route: '/api/desk/hunter', auth: false, group: 'Bots' },
+  { id: 'token2022', label: 'Token-2022', glyph: '\u2756', route: '/api/desk/token2022', auth: false, group: 'Bots' },
   { id: 'status', label: 'Status', glyph: '\u2699', route: '/api/status', auth: false, group: 'System' },
   { id: 'eval', label: 'Eval', glyph: '\u25F1', route: '/api/eval', auth: false, group: 'System' },
 ];
@@ -354,6 +366,26 @@ export async function uiRoute(env: UiEnv, req: Request, url: URL): Promise<Respo
         { ok: false, error: 'too_long', message: `Keep it under ${MAX_TEXT_CHARS} characters.` },
         413,
       );
+    }
+
+    // The agent runs FIRST, exactly as it does for the Telegram webhook's
+    // free-text fallback: the console is the same operator asking the same
+    // questions, so it gets the same precedence. The compiler still runs when
+    // the agent could not answer from real readings, because the compiler is the
+    // only thing that can create a real engagement. The check is `reply.ok` and
+    // not whether text came back - every degraded agent path returns non-empty
+    // text with ok:false, so relying on the text would swallow the engagement.
+    //
+    // Gated on an explicit `agent: true` from the client so that a request that
+    // did not ask for the agent (an older console, or a test) keeps the precise
+    // behaviour it had before, with no model call in the path.
+    if (body.value['agent'] === true) {
+      try {
+        const reply = await runAgent(env, text);
+        if (reply.ok) return json({ ok: true, kind: 'agent', text, answer: reply.text });
+      } catch (e) {
+        console.error('ui engage agent failed, falling back to the compiler', e);
+      }
     }
 
     try {
