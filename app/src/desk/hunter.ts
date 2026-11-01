@@ -38,7 +38,9 @@
  */
 
 import { SYSTEM_PROGRAM, isSolanaPubkey, encodeBase58, decodeBase58 } from '../solana.js';
+import { append as ledgerAppend } from '../ledger.js';
 import { db, kvGet, kvSet, newId, spendSubrequest } from './db.js';
+import { consult, CONSULT_MIN_CONFIDENCE, HUNT_ATTEMPT_LIMIT } from './consultant.js';
 import type { DeskEnv } from './types.js';
 
 // ─────────────────────────────────────────────────────────────── constants
@@ -556,6 +558,37 @@ export async function runHunterBot(env: DeskEnv, now = Date.now()): Promise<Hunt
     return rank[a.severity] - rank[b.severity] || b.ts - a.ts;
   });
   await kvSet(env, KV_STATS, JSON.stringify({ stats, findings: merged.slice(0, 200) }));
+
+  // Hand the survivors to the hunt machine. Only findings at or above
+  // CONSULT_MIN_CONFIDENCE start a hunt; the rest stay in the report, which is
+  // exactly where an observation that is not yet worth compute belongs.
+  //
+  // `seenCounts` is derived from the PREVIOUS tick's snapshot (already loaded
+  // as `prev`), so a finding that has persisted across ticks earns its
+  // confidence points honestly — it is never counted against itself here.
+  const seenCounts = new Map<string, number>();
+  for (const prior of prev.findings ?? []) {
+    const k = `${prior.subject}|${prior.risk}`;
+    seenCounts.set(k, (seenCounts.get(k) ?? 1) + 1);
+  }
+  const singleKey = new Set(
+    merged.filter((f) => f.risk === 'upgrade_authority_plain_key').map((f) => f.subject),
+  );
+  const consulted = await consult(env, merged, seenCounts, singleKey);
+  if (consulted.forwarded > 0 || consulted.skipped > 0) {
+    try {
+      await ledgerAppend(env as never, 'desk.consult', {
+        forwarded: consulted.forwarded,
+        skipped: consulted.skipped,
+        threshold: CONSULT_MIN_CONFIDENCE,
+        attempt_limit: HUNT_ATTEMPT_LIMIT,
+      });
+    } catch {
+      // Ledger is an audit trail, not a gate: a write failure must not lose the
+      // queue rows that were already committed above.
+    }
+  }
+
   return stats;
 }
 

@@ -752,3 +752,37 @@ CREATE TABLE IF NOT EXISTS dust_scan (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_dust_acct ON dust_scan(token_account);
 CREATE INDEX IF NOT EXISTS idx_dust_closable ON dust_scan(closable, owner);
+
+-- ────────────────────────────────────────────────────────── consultant ──
+-- The join between the protocol hunter and the hunt orchestrator.
+--
+-- The hunter produces observations ("this upgrade authority is a plain
+-- wallet"). The orchestrator consumes subjects it is worth spending compute
+-- on. Before this table the two never met: findings went to KV and hunts only
+-- started from a human-queued programme.
+--
+-- `confidence` is a SUM OF NAMED FACTS recomputed from the account bytes, not
+-- a model's estimate — `facts` holds each component so a reviewer can subtract
+-- them back out and disagree with the total. Rows below 80 are never inserted;
+-- they stay in the hunter's report where unproven observations belong.
+--
+-- `hunt_id` stays NULL until the orchestrator accepts the subject. `attempts`
+-- is compared against HUNT_ATTEMPT_LIMIT, and `stopped_because` records why a
+-- hunt gave up — the same discipline as `hunts`, so a null result is never
+-- mistaken for a clean one.
+CREATE TABLE IF NOT EXISTS consult_queue (
+  id              TEXT PRIMARY KEY,
+  ts              INTEGER NOT NULL,
+  subject         TEXT NOT NULL,
+  risk            TEXT NOT NULL,
+  confidence      INTEGER NOT NULL,
+  facts           TEXT NOT NULL DEFAULT '[]',
+  hunt_id         TEXT,
+  stage           TEXT NOT NULL DEFAULT 'queued'
+                  CHECK (stage IN ('queued','dispatched','proving','proven','stopped','failed')),
+  attempts        INTEGER NOT NULL DEFAULT 0,
+  stopped_because TEXT,
+  updated_at      INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_consult_subject ON consult_queue(subject, risk);
+CREATE INDEX IF NOT EXISTS idx_consult_stage ON consult_queue(stage, confidence DESC);
