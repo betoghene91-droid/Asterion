@@ -197,7 +197,18 @@ export async function ask(env: Env, msgs: Msg[], opts: AskOpts = {}): Promise<As
   const promptSha = await sha(msgs.map((m) => m.content).join('\u0000'));
   const errors: string[] = [];
 
-  if (!(await budgetLeft(env))) {
+  // The budget check is a courtesy, not a gate. It reads D1, and D1's free tier
+  // has a DAILY ROW READ LIMIT that a busy desk can exceed - when it does, this
+  // read throws, and before this guard existed that throw took the whole model
+  // path down with it. A deployment that cannot read its own spending counter
+  // must still be able to answer: the counter bounds cost, not correctness.
+  let withinBudget = true;
+  try {
+    withinBudget = await budgetLeft(env);
+  } catch (e) {
+    errors.push(`budget check unavailable: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  if (!withinBudget) {
     throw new LlmUnavailable('daily LLM budget exhausted; deterministic path only');
   }
 
@@ -266,13 +277,15 @@ export async function ask(env: Env, msgs: Msg[], opts: AskOpts = {}): Promise<As
     try {
       const r = await attempt();
       if (!r.text.trim()) throw new Error('empty completion');
-      await log(env, r.provider, r.model, promptSha, r, true);
-      await spendTokens(env, r.tokensIn + r.tokensOut);
+      // Bookkeeping is best-effort for the same reason: a spend write that
+      // fails must not discard an answer that already arrived.
+      await log(env, r.provider, r.model, promptSha, r, true).catch(() => {});
+      await spendTokens(env, r.tokensIn + r.tokensOut).catch(() => {});
       return r;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       errors.push(`${msg}`);
-      await log(env, 'unknown', 'unknown', promptSha, {}, false, msg);
+      await log(env, 'unknown', 'unknown', promptSha, {}, false, msg).catch(() => {});
     }
   }
 
@@ -309,13 +322,13 @@ export async function ask(env: Env, msgs: Msg[], opts: AskOpts = {}): Promise<As
           tokensOut: approxTokens(text),
           latencyMs: Date.now() - t0,
         };
-        await log(env, r.provider, r.model, promptSha, r, true);
-        await spendTokens(env, r.tokensIn + r.tokensOut);
+        await log(env, r.provider, r.model, promptSha, r, true).catch(() => {});
+        await spendTokens(env, r.tokensIn + r.tokensOut).catch(() => {});
         return r;
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         errors.push(`workers-ai ${model}: ${msg}`);
-        await log(env, 'workers-ai', model, promptSha, {}, false, msg);
+        await log(env, 'workers-ai', model, promptSha, {}, false, msg).catch(() => {});
       }
     }
   }
