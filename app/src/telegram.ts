@@ -187,53 +187,81 @@ export async function authorizeChat(env: Env, chatId: number): Promise<boolean> 
 }
 
 export async function guard(env: Env, chatId: number): Promise<boolean> {
-  if (env.TELEGRAM_CHAT_ID && String(chatId) !== String(env.TELEGRAM_CHAT_ID)) return false;
+  // An explicitly configured chat IS the authority, so it does not need the
+  // database to confirm what the environment already states. This is not just a
+  // saved round-trip: `guard()` is the first read on every update, so consulting
+  // `kv` here meant that a D1 budget failure made the bot unreachable to its OWN
+  // operator even for `/start`, which touches no database at all. The `kv`
+  // fallback still exists for deployments that never set TELEGRAM_CHAT_ID.
+  if (env.TELEGRAM_CHAT_ID) return String(chatId) === String(env.TELEGRAM_CHAT_ID);
   return authorizeChat(env, chatId);
 }
 
 /**
  * `guard()`, but a database outage produces a MESSAGE instead of silence.
  *
- * WHY THIS EXISTS. `guard()` reads the `kv` table on every single update, and
- * `handleUpdate` calls it before doing anything else. When D1 refuses that read
- * the exception propagates out of `handleUpdate`, is swallowed by the webhook's
- * `.catch(e => console.error(...))`, and the Worker still answers Telegram HTTP
- * 200. Telegram therefore reports perfect delivery while the operator receives
- * nothing at all - for every message, including `/start`. Observed live on
- * 2026-11-01 with D1's daily read budget spent: `/health` returned 200 while every
- * D1-backed endpoint returned `1101`, and the bot went completely deaf. A bot
- * that answers nothing is indistinguishable from a bot that died, which is the
- * exact failure mode this codebase refuses to accept elsewhere (see `deadman.ts`
- * and `agent.ts`'s "a failed tool is not a zero").
+ * WHY THIS EXISTS. `handleUpdate` calls the gate before doing anything else. When
+ * D1 refused that read the exception propagated out of `handleUpdate`, was
+ * swallowed by the webhook's `.catch(e => console.error(...))`, and the Worker
+ * still answered Telegram HTTP 200. Telegram therefore reported perfect delivery
+ * while the operator received nothing - for every message, including `/start`.
+ * Confirmed live on 2026-11-01: `getWebhookInfo` showed `pending_update_count: 0`
+ * and no `last_error_message`, while the daily read budget was spent (6.6M rows
+ * against a 5M ceiling, `code: 7500`). A bot that answers nothing is
+ * indistinguishable from a bot that died.
  *
  * WHAT IT IS NOT. This is not a fail-open. It never authorizes anything: on a
  * read error it returns `false`, so no command runs, no hunt is created and no
- * data is read. The only thing it does that the bare `guard()` did not is TELL
- * the operator what is wrong.
+ * state is read.
  *
- * WHO IT TELLS. Only a chat that can be identified WITHOUT the database. With
- * `TELEGRAM_CHAT_ID` configured, that is the configured chat and nothing else, so
- * a stranger who finds the bot during an outage still gets silence. With no
- * `TELEGRAM_CHAT_ID` set, `kv.operator_chat` is the only identity source and it
- * is unreadable - so this stays silent rather than guessing, because replying to
- * an unauthenticated sender is the one thing worse than being quiet.
+ * WHO IT TELLS.
+ *   · `TELEGRAM_CHAT_ID` set  -> the configured chat, and only that chat. Note
+ *     `guard()` no longer reaches the database at all in this mode, so this
+ *     branch is for a failure elsewhere in the update, not the identity check.
+ *   · `TELEGRAM_CHAT_ID` unset -> identity cannot be established, because `kv` is
+ *     the only source and it is the thing that is broken. Rather than guess, it
+ *     replies with the sender's OWN chat id and nothing else, so the operator can
+ *     pin `TELEGRAM_CHAT_ID` and never be locked out again. No desk state is read
+ *     or disclosed, which is why this is safe to send before authentication.
  */
-export async function guardOrExplain(env: Env, chatId: number): Promise<boolean> {
+export async function guardOrExplain(
+  env: Env,
+  chatId: number,
+  chatType?: string,
+): Promise<boolean> {
   try {
     return await guard(env, chatId);
   } catch (e) {
     console.error('guard failed (database unreachable?)', e);
-    const known = Boolean(env.TELEGRAM_CHAT_ID) && String(chatId) === String(env.TELEGRAM_CHAT_ID);
-    if (known) {
+
+    const notice = [
+      '\u26A0 <b>DATABASE UNREACHABLE</b>',
+      rule(),
+      'I could not read my own state, so I did nothing.',
+      '',
+      'This is usually the D1 daily row-read budget: it resets at 00:00 UTC.',
+      'Nothing was lost and nothing was changed.',
+    ];
+
+    const configured = Boolean(env.TELEGRAM_CHAT_ID);
+    if (configured) {
+      if (String(chatId) === String(env.TELEGRAM_CHAT_ID)) {
+        await send(env, notice.join('\n'), undefined, chatId).catch(() => undefined);
+      }
+      return false;
+    }
+
+    // No configured chat, so there is no way to tell the operator from a stranger.
+    // Say only who the sender is; never what the system holds.
+    if (chatType === undefined || chatType === 'private') {
       await send(
         env,
         [
-          '\u26A0 <b>DATABASE UNREACHABLE</b>',
-          rule(),
-          'I could not read my own state, so I did nothing.',
+          ...notice,
           '',
-          'This is usually the D1 daily read budget: it resets at',
-          '00:00 UTC. Nothing was lost and nothing was changed.',
+          `your chat id is <code>${chatId}</code>`,
+          'set the repository secret <b>TELEGRAM_CHAT_ID</b> to that number and I',
+          'will remember you even when the database is down.',
         ].join('\n'),
         undefined,
         chatId,

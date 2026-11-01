@@ -915,31 +915,35 @@ test('the address refusal names the ONE next action and never says unscoped', ()
 // ─────────────────────────────────────────────────────────────────────────────
 // the database outage must not be silence
 //
-// THE INCIDENT. On 2026-11-01 D1's daily read budget ran out. `/health` still
-// answered 200 (it touches no D1), and every D1-backed endpoint answered `1101`.
-// The bot went completely deaf: `handleUpdate` calls `guard()` before anything
-// else, `guard()` reads `kv`, that read threw, the exception escaped to the
-// webhook's `.catch(e => console.error(...))`, and the Worker STILL returned 200
-// to Telegram. Perfect delivery reported, zero messages delivered — for every
-// input including `/start`. From the operator's side that is indistinguishable
-// from a bot that was never deployed, which is exactly the wrong conclusion:
-// there is nothing to fix in the code and nothing to re-deploy.
+// THE INCIDENT. On 2026-11-01 the account spent 6.6M D1 rows read against a 5M
+// free-tier ceiling (`code: 7500`). Every row-touching query failed while
+// `SELECT 1` still succeeded, `/health` still answered 200, and EVERY `/api/`
+// route answered `1101`.
 //
-// These two tests are the guard on that. The first asserts the OPERATOR IS TOLD.
-// The second asserts the fix did not become a fail-open.
+// The operator then sent `/start` twice and received nothing. Telegram was
+// innocent: `getWebhookInfo` reported `pending_update_count: 0` and no
+// `last_error_message`, so every update really was delivered and really was
+// answered 200. The silence was made inside this Worker, by two independent
+// faults that this file now pins:
+//
+//   FAULT 1 (identity). `guard()` read `kv` on EVERY update, before anything
+//   else, so the spent budget killed the gate. `/start` renders `homeScreen()`
+//   from environment variables and needs no database whatsoever - it was
+//   unreachable purely because the gate in front of it was not.
+//
+//   FAULT 2 (silence). The exception escaped into the webhook's
+//   `.catch(e => console.error(...))`, which only logs. HTTP 200 out, nothing to
+//   the operator. A bot that answers nothing is indistinguishable from a bot
+//   that was never deployed, which is the wrong thing to conclude.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** An env whose database throws on the first read, exactly like a spent D1 budget. */
+/** An env whose database throws on the first row it touches, like a spent budget. */
 function brokenDbEnv(extra = {}) {
   const boom = () => {
-    throw new Error('D1_ERROR: Exceeded maximum daily read budget');
+    throw new Error('D1_ERROR: Exceeded maximum daily row read limit [code: 7500]');
   };
   return {
-    DB: {
-      prepare: boom,
-      exec: boom,
-      batch: boom,
-    },
+    DB: { prepare: boom, exec: boom, batch: boom },
     OPERATOR_NAME: 'jen',
     TELEGRAM_BOT_TOKEN: TOKEN,
     TELEGRAM_CHAT_ID: String(CHAT),
@@ -947,43 +951,50 @@ function brokenDbEnv(extra = {}) {
   };
 }
 
-test('a dead database produces a MESSAGE, not silence', async () => {
-  // The real webhook, a real router, a database that cannot answer.
+test('FAULT 1: /start works during a total database outage when the chat is configured', async () => {
+  // This is the operator's actual bug. `/start` needs no D1: the identity is
+  // stated by the environment, so the gate must not consult the database at all.
+  const { calls } = await tgText(brokenDbEnv(), '/start');
+
+  const text = lastBody(calls);
+  assert.ok(!/DATABASE UNREACHABLE/.test(text), 'a configured chat must not hit the database');
+  assert.match(text, /ASTERION/, 'the operator gets the real home screen');
+  assert.match(text, /jen/, 'and it is addressed to the configured operator');
+});
+
+test('FAULT 2: a dead database answers a database-backed command instead of going silent', async () => {
+  // `/status` genuinely needs state, so it cannot succeed. It must still SAY so.
+  // Before the fix there was no message at all and no error surfaced to the
+  // operator - only a line in a log nobody was reading.
   const { calls, errors } = await tgText(brokenDbEnv(), '/status');
 
-  // The whole bug: before the fix `sent` was empty and the only trace was a log
-  // line. The operator now gets told.
   const text = lastBody(calls);
-  assert.match(text, /DATABASE UNREACHABLE/);
-  assert.match(text, /I could not read my own state, so I did nothing\./);
-  assert.match(text, /00:00 UTC/, 'and when it comes back');
+  // Either banner is honest; what matters is that SOMETHING arrives. `/status`
+  // fails inside `buildStatus`, i.e. after the gate, so it gets the update-level
+  // banner rather than the gate's.
+  assert.match(text, /COMMAND FAILED|DATABASE UNREACHABLE/);
+  assert.match(text, /nothing was changed/, 'and says nothing was mutated');
+  assert.match(text, /daily row-read budget|00:00 UTC/, 'and names the quota diagnosis');
+  assert.match(text, /\/start/, 'and names a command that still works');
 
-  // The failure is still logged — the fix changes the operator's experience, not
-  // the evidence trail.
   assert.ok(
-    errors.some((e) => /guard failed \(database unreachable\?\)/.test(e)),
+    errors.some((e) => /update failed/.test(e)),
     `the cause must still be logged, got: ${JSON.stringify(errors)}`,
   );
 });
 
-test('a dead database is NOT a fail-open: nothing is authorized by it', async () => {
-  // A stranger's chat. `TELEGRAM_CHAT_ID` is configured and does not match, so
-  // even during an outage the bot stays silent: replying to an unauthenticated
-  // sender would be worse than being quiet.
-  const { calls } = await tgText(brokenDbEnv(), '/status', {});
-  const stranger = calls.filter(
-    (c) => c.url.includes('/sendMessage') && String(c.body?.chat_id) !== String(CHAT),
+test('the outage gate is still NOT a fail-open', async () => {
+  // A stranger. TELEGRAM_CHAT_ID is configured and does not match, so they get
+  // nothing - before the database is even consulted, which is the point.
+  const { calls } = await tgText(brokenDbEnv(), '/status');
+  assert.ok(
+    calls.every((c) => !c.url.includes('/sendMessage') || String(c.body?.chat_id) === String(CHAT)),
+    'a configured bot must never answer an unconfigured chat',
   );
-  void stranger;
 
-  // Same chat id, but the body must carry no card: the only message allowed during
-  // an outage is the outage notice, never a screen that implies state was read.
-  const text = lastBody(calls);
-  assert.doesNotMatch(text, /DESK|ASTERION|OPERATOR|findings/i);
-  assert.match(text, /DATABASE UNREACHABLE/);
-
-  // And with no configured chat there is no identity source at all, so it must be
-  // silent rather than guessing who to trust.
+  // Unset TELEGRAM_CHAT_ID: the only identity source is `kv`, which is the thing
+  // that is broken. It must NOT guess authorization - no command may run - but it
+  // does tell the sender their own chat id so the operator can pin it.
   const anon = brokenDbEnv({ TELEGRAM_CHAT_ID: undefined });
   const { impl, calls: anonCalls } = stubFetch({});
   const realFetch = globalThis.fetch;
@@ -994,7 +1005,9 @@ test('a dead database is NOT a fail-open: nothing is authorized by it', async ()
       new Request(`${ORIGIN}/tg`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ message: { chat: { id: 424242 }, text: '/status' } }),
+        body: JSON.stringify({
+          message: { chat: { id: CHAT, type: 'private' }, text: '/start' },
+        }),
       }),
       anon,
       { waitUntil: (p) => pending.push(p), passThroughOnException: () => {} },
@@ -1004,9 +1017,36 @@ test('a dead database is NOT a fail-open: nothing is authorized by it', async ()
   } finally {
     globalThis.fetch = realFetch;
   }
+
+  const sent = anonCalls.filter((c) => c.url.includes('/sendMessage'));
+  assert.equal(sent.length, 1, 'exactly one message: the outage notice, not a home screen');
+  const text = String(sent[0].body?.text ?? '');
+  assert.match(text, /DATABASE UNREACHABLE/);
+  assert.match(text, new RegExp(`your chat id is <code>${CHAT}</code>`), 'names the sender own id');
+  assert.ok(!/ASTERION/.test(text), 'and MUST NOT render the home screen for an unverified sender');
+
+  // A group chat must stay silent: there the other members would see it.
+  const group = brokenDbEnv({ TELEGRAM_CHAT_ID: undefined });
+  const g = stubFetch({});
+  globalThis.fetch = g.impl;
+  try {
+    const pending = [];
+    await index.fetch(
+      new Request(`${ORIGIN}/tg`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ message: { chat: { id: -100123, type: 'group' }, text: '/start' } }),
+      }),
+      group,
+      { waitUntil: (p) => pending.push(p), passThroughOnException: () => {} },
+    );
+    await Promise.allSettled(pending);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
   assert.equal(
-    anonCalls.filter((c) => c.url.includes('/sendMessage')).length,
+    g.calls.filter((c) => c.url.includes('/sendMessage')).length,
     0,
-    'with no chat id there is no way to authenticate a sender, so it must stay silent',
+    'during an outage an unidentified GROUP must get silence, not the operator chat id',
   );
 });

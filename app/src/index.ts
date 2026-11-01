@@ -162,7 +162,7 @@ export default {
         if (got !== env.TELEGRAM_WEBHOOK_SECRET) return new Response('forbidden', { status: 403 });
       }
       const update = (await req.json()) as TgUpdate;
-      ctx.waitUntil(handleUpdate(env, update).catch((e) => console.error('update failed', e)));
+      ctx.waitUntil(handleUpdate(env, update).catch((e) => updateFailed(env, update, e)));
       return new Response('ok');
     }
 
@@ -322,12 +322,68 @@ export default {
 // ─────────────────────────────── telegram ───────────────────────────────
 
 interface TgUpdate {
-  message?: { chat: { id: number }; text?: string };
+  message?: { chat: { id: number; type?: string }; text?: string };
   callback_query?: {
     id: string;
     data?: string;
     message?: { chat: { id: number }; message_id: number };
   };
+}
+
+/**
+ * The last-resort net under `handleUpdate`.
+ *
+ * `handleUpdate` can fail in more ways than the identity gate: any command that
+ * reads state (`/status`, `/desk`, a hunt lookup) does its own D1 reads, and when
+ * one of those throws the exception used to go straight to
+ * `console.error('update failed', e)` - a line in a log the operator never reads.
+ * The Worker still answered Telegram 200, so Telegram reported perfect delivery
+ * of a reply that never existed.
+ *
+ * An unanswered message is the worst outcome available, because it is the one
+ * state the operator cannot distinguish from a dead deployment. So every failure
+ * now produces either a message or a documented reason there is none.
+ *
+ * It never swallows: the error is still logged with its stack, which is what the
+ * log was for in the first place.
+ */
+async function updateFailed(env: Env, u: TgUpdate, e: unknown): Promise<void> {
+  console.error('update failed', e);
+
+  const chatId = u.message?.chat.id ?? u.callback_query?.message?.chat.id;
+  const chatType = u.message?.chat.type;
+  if (chatId === undefined) return;
+
+  // Same rule as the gate: only ever speak to a chat we can trust without the
+  // database. A configured bot answers its operator and nobody else; an
+  // unconfigured bot cannot identify anyone, so it stays quiet here (the gate has
+  // already told that sender who they are, so they are not left guessing).
+  const configured = Boolean(env.TELEGRAM_CHAT_ID);
+  const trusted =
+    configured
+      ? String(chatId) === String(env.TELEGRAM_CHAT_ID)
+      : chatType === undefined || chatType === 'private';
+  if (!trusted) return;
+
+  const detail = e instanceof Error ? e.message : String(e);
+  const quota = /7500|row read limit|exceeded/i.test(detail);
+
+  await send(
+    env,
+    [
+      '\u26A0 <b>COMMAND FAILED</b>',
+      rule(),
+      'I could not finish that, and nothing was changed.',
+      '',
+      quota
+        ? 'The database has hit its daily row-read budget. It resets at 00:00 UTC.'
+        : `<code>${esc(detail.slice(0, 300))}</code>`,
+      '',
+      'Try /start - it reads nothing and always works.',
+    ].join('\n'),
+    undefined,
+    chatId,
+  ).catch((err) => console.error('could not even report the failure', err));
 }
 
 async function handleUpdate(env: Env, u: TgUpdate): Promise<void> {
@@ -345,7 +401,10 @@ async function handleUpdate(env: Env, u: TgUpdate): Promise<void> {
   const msg = u.message;
   if (!msg?.text) return;
   const chatId = msg.chat.id;
-  if (!(await guardOrExplain(env, chatId))) return;
+  // `chat.type` is passed so `guardOrExplain` can tell a private chat from a group
+  // when TELEGRAM_CHAT_ID is unset and the database cannot say who the operator
+  // is. In a group it stays quiet rather than guess.
+  if (!(await guardOrExplain(env, chatId, msg.chat.type))) return;
 
   const text = msg.text.trim();
 
