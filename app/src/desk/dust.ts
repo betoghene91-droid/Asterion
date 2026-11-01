@@ -446,34 +446,38 @@ export interface DustStats {
   reclaimed_lamports: number;
   /** True when no operator key is set, so nothing can be closed. Says so. */
   detect_only?: boolean;
+  /** True when D1 could not be read. These zeroes are not a clean scan. */
+  unreadable?: boolean;
   ticks: number;
 }
 
 async function readStats(env: DeskEnv): Promise<DustStats> {
-  const raw = await kvGet(env, KV_STATS);
-  if (!raw) {
-    return {
-      wallets_scanned: 0,
-      accounts_seen: 0,
-      closable: 0,
-      clamped_tokens: 0,
-      reclaimable_lamports: 0,
-      reclaimed_lamports: 0,
-      ticks: 0,
-    };
-  }
+  // Best-effort: `kvGet` reads D1, whose free tier fails the whole query once the
+  // daily row-read limit is hit. Unguarded, that made /api/desk/dust return
+  // `error code: 1101` and hid the bot's real state. `unreadable` distinguishes
+  // "could not read" from "read cleanly and found nothing".
+  let raw: string | null = null;
+  let unreadable = false;
   try {
-    return JSON.parse(raw) as DustStats;
+    raw = await kvGet(env, KV_STATS);
   } catch {
-    return {
-      wallets_scanned: 0,
-      accounts_seen: 0,
-      closable: 0,
-      clamped_tokens: 0,
-      reclaimable_lamports: 0,
-      reclaimed_lamports: 0,
-      ticks: 0,
-    };
+    unreadable = true;
+  }
+  const zero: DustStats = {
+    wallets_scanned: 0,
+    accounts_seen: 0,
+    closable: 0,
+    clamped_tokens: 0,
+    reclaimable_lamports: 0,
+    reclaimed_lamports: 0,
+    ticks: 0,
+    unreadable,
+  };
+  if (!raw) return zero;
+  try {
+    return { ...zero, ...(JSON.parse(raw) as DustStats), unreadable };
+  } catch {
+    return zero;
   }
 }
 

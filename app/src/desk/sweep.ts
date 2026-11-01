@@ -383,6 +383,8 @@ export interface SweepStats {
   swept_lamports: number;
   ticks: number;
   last_tick_ms: number;
+  /** True when D1 could not be read. These zeroes are not a clean run. */
+  unreadable?: boolean;
 }
 
 async function readStats(env: DeskEnv): Promise<SweepStats> {
@@ -398,9 +400,26 @@ async function readStats(env: DeskEnv): Promise<SweepStats> {
 }
 
 export async function sweepStatus(env: DeskEnv): Promise<SweepStats & { offset: number; space: number }> {
-  const stats = await readStats(env);
-  const off = Number((await kvGet(env, KV_OFFSET)) ?? '0');
-  return { ...stats, offset: off, space: candidateSpace() };
+  // Best-effort on purpose. `kvGet` reads D1, and D1's free tier fails the WHOLE
+  // query once the daily row-read limit is hit. An unguarded read therefore turns
+  // this status endpoint into `error code: 1101` and makes the sweep look dead
+  // when it is only unreadable. The zeroes below mean "could not read", and
+  // `unreadable` says so rather than letting a zero pass as a real count.
+  let unreadable = false;
+  let stats: SweepStats;
+  try {
+    stats = await readStats(env);
+  } catch {
+    unreadable = true;
+    stats = { checked: 0, hits: 0, swept_lamports: 0, ticks: 0, last_tick_ms: 0 };
+  }
+  let off = 0;
+  try {
+    off = Number((await kvGet(env, KV_OFFSET)) ?? '0');
+  } catch {
+    unreadable = true;
+  }
+  return { ...stats, offset: off, space: candidateSpace(), unreadable };
 }
 
 export { runSweepBot as runSweepBotTick };
