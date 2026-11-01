@@ -194,9 +194,31 @@ export default {
         if (denied) return withCors(env, req, denied);
         return withCors(env, req, await dashboardApi(env, url.pathname));
       }
+      // Two POST triggers, and only these. They exist so the bots can be walked
+      // on demand instead of waiting up to an hour for the cron, which is the
+      // difference between "deployed" and "verified working". They are
+      // authenticated like every other /api route and they do not spend on the
+      // desk's position ledger.
+      if (req.method === 'POST' && url.pathname === '/api/desk/sweep/run') {
+        const denied = requireDashboardAuth(env, req);
+        if (denied) return withCors(env, req, denied);
+        const before = await sweepStatus(env);
+        const report = await runSweepBot(env);
+        return withCors(
+          env,
+          req,
+          json({ report, stats: await sweepStatus(env), was_checked: before.checked }),
+        );
+      }
+      if (req.method === 'POST' && url.pathname === '/api/desk/dust/run') {
+        const denied = requireDashboardAuth(env, req);
+        if (denied) return withCors(env, req, denied);
+        const stats = await runDustBot(env);
+        return withCors(env, req, json({ stats, text: renderDust(stats) }));
+      }
       return new Response('method not allowed', {
         status: 405,
-        headers: { allow: 'GET, OPTIONS' },
+        headers: { allow: 'GET, POST, OPTIONS' },
       });
     }
 

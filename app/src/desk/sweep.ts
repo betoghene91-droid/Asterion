@@ -403,6 +403,8 @@ export async function sweepStatus(env: DeskEnv): Promise<SweepStats & { offset: 
   return { ...stats, offset: off, space: candidateSpace() };
 }
 
+export { runSweepBot as runSweepBotTick };
+
 // ─────────────────────────────────────────────────────────── the tick
 
 export interface SweepReport {
