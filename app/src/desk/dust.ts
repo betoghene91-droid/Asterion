@@ -327,14 +327,22 @@ export async function runDustBot(env: DeskEnv, now = Date.now()): Promise<DustSt
   const stats = await readStats(env);
 
   // The watchlist is the free input: addresses the crawler already cares about.
-  const raw = await kvGet(env, 'watchlist');
-  let wallets: string[] = [];
-  try {
-    wallets = raw ? (JSON.parse(raw) as string[]) : [];
-  } catch {
-    wallets = [];
-  }
-  wallets = wallets.filter(isSolanaPubkey).slice(0, 10);
+  // It is a TABLE, not a kv key. Reading a kv key that nothing ever writes was a
+  // real bug here: the bot reported "0 wallets scanned" forever and looked
+  // healthy while doing nothing at all.
+  const rows = await (async () => {
+    try {
+      return await db(env).all<{ address: string }>(
+        `SELECT address FROM watchlist WHERE enabled = 1 AND address IS NOT NULL`,
+      );
+    } catch {
+      return [] as { address: string }[];
+    }
+  })();
+  const wallets = rows
+    .map((r) => r.address)
+    .filter(isSolanaPubkey)
+    .slice(0, 10);
 
   for (const w of wallets) {
     if (!(await spendSubrequest(env, 2))) break;
