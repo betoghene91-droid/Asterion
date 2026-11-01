@@ -1,0 +1,41 @@
+name: diag5
+on:
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci --no-audit --no-fund
+      - name: exact D1 error, no swallow
+        run: |
+          echo "--- SELECT 1 ---"
+          npx wrangler d1 execute asterion --remote --env production \
+            --command "SELECT 1 AS ok" 2>&1 | tail -25
+          echo "--- COUNT ledger ---"
+          npx wrangler d1 execute asterion --remote --env production \
+            --command "SELECT COUNT(*) AS n FROM ledger" 2>&1 | tail -25
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: today rows_read series (GraphQL)
+        run: |
+          node -e '
+          const acct=process.env.CLOUDFLARE_ACCOUNT_ID;
+          const q=`query{viewer{accounts(filter:{accountTag:"${acct}"}){d1AnalyticsAdaptiveGroups(limit:48,filter:{date_geq:"2026-10-31",date_leq:"2026-11-02"},orderBy:[datetimeHour_ASC]){sum{readQueries rowsRead} dimensions{datetimeHour databaseId}}}}}`;
+          fetch("https://api.cloudflare.com/client/v4/graphql",{method:"POST",headers:{"content-type":"application/json",authorization:"Bearer "+process.env.CLOUDFLARE_API_TOKEN},body:JSON.stringify({query:q})}).then(r=>r.json()).then(j=>{
+            const g=j?.data?.viewer?.accounts?.[0]?.d1AnalyticsAdaptiveGroups;
+            if(!g){console.log(JSON.stringify(j).slice(0,900));return;}
+            let tot=0;
+            for(const x of g){const rr=x.sum.rowsRead;tot+=rr;console.log(x.dimensions.datetimeHour, "rowsRead="+rr, "queries="+x.sum.readQueries);}
+            console.log("TOTAL rowsRead in window:", tot);
+          }).catch(e=>console.log("ERR",e.message));'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
