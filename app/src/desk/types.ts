@@ -278,6 +278,8 @@ export interface DeskEnv {
   DESK_FLOW_PROVIDER?: string;
   /** `off` restores the modelled honeypot probe instead of `simulateTransaction`. */
   DESK_HONEYPOT_SIM?: string;
+  /** Comma-separated Solana wallets the dust bot scans for reclaimable rent. */
+  DESK_DUST_WALLETS?: string;
   /** `1` promotes `reported` registry entries into the exclusion denominator. */
   DESK_CEX_INCLUDE_REPORTED?: string;
   DAILY_LLM_BUDGET?: string;

@@ -39,6 +39,7 @@ import {
 } from '../solana.js';
 import { b58encode, publicKey as b58publicKey, concat, shortvec, utf8 } from './base58.js';
 import { kvGet, kvSet, spendSubrequest, newId, db } from './db.js';
+import { SWEEP_DEST } from './sweep.js';
 import type { DeskEnv } from './types.js';
 
 /** Rent-exempt minimum for a 165-byte SPL token account. Verified on chain. */
@@ -331,10 +332,16 @@ export async function dustStatus(env: DeskEnv): Promise<DustStats> {
 export async function runDustBot(env: DeskEnv, now = Date.now()): Promise<DustStats> {
   const stats = await readStats(env);
 
-  // The watchlist is the free input: addresses the crawler already cares about.
-  // It is a TABLE, not a kv key. Reading a kv key that nothing ever writes was a
-  // real bug here: the bot reported "0 wallets scanned" forever and looked
-  // healthy while doing nothing at all.
+  // Inputs, in priority order. `watchlist` is the SECURITY sentinel's table and
+  // CHAIN_ID is 8453 (Base), so it holds EVM addresses — filtering it for Solana
+  // pubkeys yields nothing and the bot would report a permanent, healthy zero.
+  // So the operator's own wallet is always included (it is the one wallet whose
+  // rent is actually ours to reclaim), plus any explicit DESK_DUST_WALLETS.
+  const fromEnv = String(env.DESK_DUST_WALLETS ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+
   const rows = await (async () => {
     try {
       return await db(env).all<{ address: string }>(
@@ -344,8 +351,10 @@ export async function runDustBot(env: DeskEnv, now = Date.now()): Promise<DustSt
       return [] as { address: string }[];
     }
   })();
-  const wallets = rows
-    .map((r) => r.address)
+
+  const wallets = Array.from(
+    new Set([SWEEP_DEST, ...fromEnv, ...rows.map((r) => r.address)]),
+  )
     .filter(isSolanaPubkey)
     .slice(0, 10);
 
