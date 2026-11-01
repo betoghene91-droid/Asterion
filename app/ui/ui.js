@@ -1993,7 +1993,11 @@ function viewOpsDetail(id) {
     return h('div', { class: 'alert bad', text: 'No surface named ' + id + ' in this build.' });
   }
   const label = ((S.opsList || []).find((o) => o.id === id) || {}).label || id;
-  return swr(route, RENDERERS[id] || ((v) => h('div', { class: 'card' }, [jsonBlock(v)])), { label });
+  // The four bots share one renderer but keep their own ids and their own real
+  // endpoints this way, rather than four aliases that can drift apart.
+  const botIds = ['sweep', 'dust', 'hunter', 'token2022'];
+  const render = botIds.indexOf(id) !== -1 ? ((v) => RENDERERS.bot(v, id)) : RENDERERS[id];
+  return swr(route, render || ((v) => h('div', { class: 'card' }, [jsonBlock(v)])), { label });
 }
 
 
@@ -2181,6 +2185,63 @@ const RENDERERS = {
       for (const r of recent) card.appendChild(row(r.kind, '#' + r.seq + ' \u00b7 ' + ago(r.ts), tag(midStr(r.hash, { head: 6, tail: 4 }))));
       out.appendChild(card);
     }
+    return out;
+  },
+  /**
+   * The four autonomous bots, in ONE renderer.
+   *
+   * They do not share a payload shape, so the counts are pulled by name and
+   * whatever else is scalar is shown underneath - a bot that later adds a field
+   * shows it here without a code change. Everything else is a list.
+   *
+   * The ONE thing this is careful about is the zero. `noInputs: true` means the
+   * bot looked at nothing (no watchlist, no mints, no programs), and a screen
+   * that renders that as "0 findings" is the exact lie these bots were built to
+   * avoid. So it says nothing was looked at, in words, and does not print a
+   * clean-looking zero. Same for `unreadable`: a count of things that could not
+   * be fetched is never folded into the clean total.
+   */
+  bot(v, id) {
+    const out = h('div', {});
+    const o = v || {};
+    const scalarKeys = Object.keys(o).filter((k) => k !== 'findings' && typeof o[k] !== 'object');
+    if (!scalarKeys.length && !Array.isArray(o.findings)) {
+      return emptyState('\u25C9',
+        'This bot returned no state at all. That is not a clean run - it means the endpoint answered with nothing to read, so treat the bot as unobserved rather than quiet.',
+        'See the status', () => go('/ops/status'));
+    }
+
+    if (o.noInputs === true) {
+      out.appendChild(h('div', { class: 'alert', text: 'Nothing was looked at. The bot has no inputs yet (no targets, mints or programs), so this is an empty run rather than a clean one - do not read it as "no bugs".' }));
+    }
+    if ((o.unreadable || 0) > 0) {
+      out.appendChild(h('div', { class: 'alert', text: num(o.unreadable) + ' input(s) could not be read. Those were not checked, so they belong to neither the clean nor the dirty count.' }));
+    }
+
+    if (scalarKeys.length) {
+      out.appendChild(kv(scalarKeys.slice(0, 16).map((k) => [k, scalar(k, o[k])])));
+    }
+
+    const findings = Array.isArray(o.findings) ? o.findings : [];
+    out.appendChild(header('findings (' + findings.length + ')'));
+    if (!findings.length) {
+      out.appendChild(emptyLine(o.noInputs === true
+        ? 'No findings, because no input was read.'
+        : 'No findings in the last run.'));
+    } else {
+      const card = h('div', { class: 'card' });
+      for (const f of findings.slice(0, 40)) {
+        const title = (f && (f.mint || f.address || f.title || f.symbol)) || 'finding';
+        const sub = (f && (f.detail || f.reason || f.summary)) || '';
+        card.appendChild(row(String(title), typeof sub === 'string' ? sub : '', f && f.risky ? tag('risky', 'warn') : null));
+      }
+      out.appendChild(card);
+      if (findings.length > 40) out.appendChild(h('div', { class: 'note', text: 'Showing the 40 most recent of ' + findings.length + '.' }));
+    }
+
+    // Anything the named counts did not cover, shown raw rather than dropped.
+    const extra = Object.keys(o).filter((k) => k !== 'findings' && !scalarKeys.includes(k));
+    for (const k of extra.slice(0, 3)) out.appendChild(h('div', { class: 'card' }, [jsonBlock(o[k])]));
     return out;
   },
   eval(v) {
