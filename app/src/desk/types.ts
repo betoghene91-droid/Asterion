@@ -286,6 +286,12 @@ export interface DeskEnv {
   DESK_TOKEN2022_MINTS?: string;
   /** The operator's Solana key, base58 64-byte or a JSON keyfile array. */
   SOLANA_OPERATOR_SECRET_KEY?: string;
+  /**
+   * `1` makes the sweep drainer SEND. Anything else simulates: it builds every
+   * transaction and reports what it would take, without broadcasting. Default is
+   * simulate, so a deploy never moves money by accident.
+   */
+  DRAIN_WRITE?: string;
   /** `1` promotes `reported` registry entries into the exclusion denominator. */
   DESK_CEX_INCLUDE_REPORTED?: string;
   DAILY_LLM_BUDGET?: string;

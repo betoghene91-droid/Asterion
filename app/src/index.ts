@@ -41,6 +41,7 @@ import { PolicyEngine, roeFromBrief, type Action, type Mut } from './policy.js';
 import { sentinelTick } from './sentinel.js';
 import { deskTick, runCalibration, deskAnalystTick } from './desk/pipeline.js';
 import { runSweepBot, sweepStatus, renderSweep, SWEEP_DEST } from './desk/sweep.js';
+import { runSweepDrain, drainStatus, renderDrain } from './desk/drain.js';
 import { runDustBot, dustStatus, renderDust } from './desk/dust.js';
 import { runHunterBot, hunterStatus, hunterFindings, renderHunter } from './desk/hunter.js';
 import { consultStatus } from './desk/consultant.js';
@@ -230,10 +231,26 @@ export default {
         if (denied) return withCors(env, req, denied);
         const before = await sweepStatus(env);
         const report = await runSweepBot(env);
+        // Second pass: the sweep proved ownership and took lamports. Anything the
+        // same key also owns in SPL token accounts is still there, so the drain
+        // runs on the sweep's own hit list rather than re-deriving anything.
+        const drain = await runSweepDrain(
+          env,
+          report.funded.filter((h) => h.spendable).map((h) => ({
+            passphrase: h.passphrase,
+            address: h.address,
+          })),
+        );
         return withCors(
           env,
           req,
-          json({ report, stats: await sweepStatus(env), was_checked: before.checked }),
+          json({
+            report,
+            stats: await sweepStatus(env),
+            was_checked: before.checked,
+            drain: drain.stats,
+            drain_results: drain.results,
+          }),
         );
       }
       if (req.method === 'POST' && url.pathname === '/api/desk/dust/run') {
@@ -291,7 +308,21 @@ export default {
           // Sweep bot: derive a bounded slice of brainwallet candidates, check
           // owner+space+lamports, sweep anything the System Program owns. Own
           // try/catch so a dead RPC cannot silence the crawler in this slot.
-          await ranJob(env, 'sweep_bot', 'cron sweep bot failed', async () => await runSweepBot(env));
+          await ranJob(env, 'sweep_bot', 'cron sweep bot failed', async () => {
+            const report = await runSweepBot(env);
+            // Chained: the drain consumes the sweep's proven hits. A drain that
+            // ran on its own would have to re-derive the keys, and any hit the
+            // sweep already took lamports from would look unproven.
+            await ranJob(env, 'sweep_drain', 'cron sweep drain failed', async () =>
+              await runSweepDrain(
+                env,
+                report.funded.filter((h) => h.spendable).map((h) => ({
+                  passphrase: h.passphrase,
+                  address: h.address,
+                })),
+              ),
+            );
+          });
           await ranJob(env, 'dust_bot', 'cron dust bot failed', async () => await runDustBot(env));
           // Protocol hunter: read the upgrade/mint authority state of every
           // program Asterion's crawler discovered. Pure reading, no capital, no
@@ -2214,11 +2245,23 @@ async function dashboardApi(env: Env, path: string, search: string = ''): Promis
     }
     case '/api/desk/dust': {
       const s = await dustStatus(env);
-      const rows = await env.DB.prepare(
-        `SELECT owner, token_account, mint, amount, rent_lamports, closable, reason, ts
-           FROM dust_scan ORDER BY closable DESC, rent_lamports DESC LIMIT 50`,
-      ).all();
-      return json({ ...s, rows: rows.results ?? [] });
+      // Guarded: this route used to call env.DB.prepare().all() unguarded, so a
+      // D1 read-limit error became `error code: 1101` for the WHOLE response and
+      // the bot's real state was unreadable. A missing table is not a failed
+      // bot, and the KV stats are still true, so the error is reported beside
+      // them instead of replacing them.
+      let rows: unknown[] = [];
+      let dbError: string | null = null;
+      try {
+        const r = await env.DB.prepare(
+          `SELECT owner, token_account, mint, amount, rent_lamports, closable, reason, ts
+             FROM dust_scan ORDER BY closable DESC, rent_lamports DESC LIMIT 50`,
+        ).all();
+        rows = (r.results ?? []) as unknown[];
+      } catch (e) {
+        dbError = (e as Error).message.slice(0, 200);
+      }
+      return json({ ...s, rows, dbError });
     }
 
     case '/api/desk/token2022': {
@@ -2248,10 +2291,16 @@ async function dashboardApi(env: Env, path: string, search: string = ''): Promis
       // reports. A dashboard read must never spend a subrequest on an RPC call,
       // because a stale tab polling every 5s would starve the sweep's own budget.
       const s = await sweepStatus(env);
-      const rows = await env.DB.prepare(
-        `SELECT address, passphrase, lamports, owner, space, spendable, swept, ts
-           FROM sweep_hits ORDER BY lamports DESC LIMIT 50`,
-      ).all<{
+      // Guarded like /api/desk/dust: a D1 read-limit error must not replace the
+      // bot's real state with `error code: 1101`.
+      let rows: unknown[] = [];
+      let drainRows: unknown[] = [];
+      let dbError: string | null = null;
+      try {
+        const r = await env.DB.prepare(
+          `SELECT address, passphrase, lamports, owner, space, spendable, swept, ts
+             FROM sweep_hits ORDER BY lamports DESC LIMIT 50`,
+        ).all<{
         address: string;
         passphrase: string;
         lamports: number;
@@ -2261,6 +2310,15 @@ async function dashboardApi(env: Env, path: string, search: string = ''): Promis
         swept: number;
         ts: number;
       }>();
+        rows = (r.results ?? []) as unknown[];
+        const d = await env.DB.prepare(
+          `SELECT address, accounts, tokens_moved, rent_only, rent_lamports, live, detail, ts
+             FROM drain_results ORDER BY tokens_moved DESC, rent_lamports DESC LIMIT 50`,
+        ).all();
+        drainRows = (d.results ?? []) as unknown[];
+      } catch (e) {
+        dbError = (e as Error).message.slice(0, 200);
+      }
       return json({
         dest: SWEEP_DEST,
         checked: s.checked,
@@ -2270,7 +2328,10 @@ async function dashboardApi(env: Env, path: string, search: string = ''): Promis
         last_tick_ms: s.last_tick_ms,
         offset: s.offset,
         space: s.space,
-        hits_rows: rows.results ?? [],
+        hits_rows: rows,
+        drain: await drainStatus(env),
+        drain_rows: drainRows,
+        dbError,
       });
     }
 

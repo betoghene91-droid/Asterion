@@ -68,6 +68,7 @@ export type JobName =
   | 'crawler'
   | 'desk_analyst'
   | 'sweep_bot'
+  | 'sweep_drain'
   | 'dust_bot'
   | 'hunter_bot'
   | 'token2022_bot'
@@ -112,6 +113,11 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
   // Workers gives a plan a small fixed set of timers, and the sweep is
   // latency-tolerant (there is no race to lose on an unspent brainwallet).
   { name: 'sweep_bot', cron: '0 * * * *', periodSeconds: 3600 },
+  // The drain is chained inside the sweep's own slot, not a timer of its own:
+  // it consumes the sweep's proven hit list, so a separate timer would fire
+  // without an input. It is listed separately so a drain that dies while the
+  // sweep succeeds is attributable rather than invisible.
+  { name: 'sweep_drain', cron: '0 * * * *', periodSeconds: 3600 },
   // Dust joins the same hourly slot. It is one extra subrequest per watched
   // wallet, so it does not need a timer of its own.
   { name: 'dust_bot', cron: '0 * * * *', periodSeconds: 3600 },

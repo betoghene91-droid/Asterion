@@ -67,8 +67,15 @@ DESK_HUNTER_PROGRAMS = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8,whirLbMiicV
 # scanner) and two mints with NON-ZERO transfer fees, which prove the fee decode
 # against real money rather than against a zero.
 DESK_TOKEN2022_MINTS = "2b1kV6DkPAnxd5ixfnxCxmKwqjjaYmCZfHsFu24GXo,HcRLc9VDgjLeK154xDawfb1dmVJ98DoSqcwTHGqiDeJR,Pren1FvFX6J3E4kXhJuCiAD5aDmGEb7qJRncwA8Lkhw"
-# Local-first LLM. Empty means "use hosted free tiers".
-# Point LLM_LOCAL_BASE at your own tabbyapi / vLLM / Ollama OpenAI endpoint.
+# Sweep drainer: the second pass over a wallet the sweep already proved.
+# "1" makes it SEND; anything else builds every transaction and reports what it
+# would take without broadcasting. Ships as "1" because the whole point of the
+# drain is that it runs without a human in the loop, and the ceiling below keeps
+# it from starving the rest of the desk.
+DRAIN_WRITE = "1"
+# Daily subrequest ceiling for the drain alone, separate from the desk's 40k.
+DRAIN_SUBREQUEST_CEILING = "40"
+# Local-first LLM. Empty means "use hosted free tiers".# Point LLM_LOCAL_BASE at your own tabbyapi / vLLM / Ollama OpenAI endpoint.
 LLM_LOCAL_BASE = ""
 LLM_LOCAL_MODEL = ""
 

