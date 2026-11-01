@@ -1,0 +1,63 @@
+name: diag
+
+# One-off diagnostics: read D1 usage, table sizes and the query plan behind the
+# daily row-read exhaustion. Temporary; remove once the fix is verified.
+on:
+  workflow_dispatch:
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: D1 usage (today, by account)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          ACC="$CLOUDFLARE_ACCOUNT_ID"
+          DB="4f98cf48-ee71-4f18-8d61-2feceb4af16c"
+          echo "=== rows read today (d1AnalyticsAdaptiveGroups)"
+          curl -sS -X POST "https://api.cloudflare.com/client/v4/graphql" \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H "content-type: application/json" \
+            --data-binary @- <<JSON | head -c 4000
+          {"query":"query{viewer{accounts(filter:{accountTag:\"$ACC\"}){d1AnalyticsAdaptiveGroups(limit:50,filter:{date_geq:\"$(date -u +%Y-%m-%d)\"},orderBy:[rowsRead_DESC]){sum{rowsRead rowsWritten}dimensions{databaseId}}}}}"}
+JSON
+          echo
+          echo "=== per-hour read breakdown (last 24h)"
+          curl -sS -X POST "https://api.cloudflare.com/client/v4/graphql" \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H "content-type: application/json" \
+            --data-binary @- <<JSON | head -c 6000
+          {"query":"query{viewer{accounts(filter:{accountTag:\"$ACC\"}){d1AnalyticsAdaptiveGroups(limit:100,filter:{date_geq:\"$(date -u -d '1 day ago' +%Y-%m-%d)\"},orderBy:[datetimeHour_ASC]){sum{rowsRead rowsWritten}dimensions{datetimeHour databaseId}}}}}"}
+JSON
+
+      - name: table row counts
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          cd app
+          SQL="SELECT 'programs' t, COUNT(*) n FROM programs
+          UNION ALL SELECT 'candidates', COUNT(*) FROM candidates
+          UNION ALL SELECT 'assets', COUNT(*) FROM assets
+          UNION ALL SELECT 'findings', COUNT(*) FROM findings
+          UNION ALL SELECT 'evidence', COUNT(*) FROM evidence
+          UNION ALL SELECT 'probes', COUNT(*) FROM probes
+          UNION ALL SELECT 'ledger', COUNT(*) FROM ledger
+          UNION ALL SELECT 'corpus', COUNT(*) FROM corpus
+          UNION ALL SELECT 'corpus_digest', COUNT(*) FROM corpus_digest
+          UNION ALL SELECT 'approvals', COUNT(*) FROM approvals
+          UNION ALL SELECT 'hunts', COUNT(*) FROM hunts
+          UNION ALL SELECT 'kv', COUNT(*) FROM kv
+          UNION ALL SELECT 'sweep_hits', COUNT(*) FROM sweep_hits
+          UNION ALL SELECT 'dust_scan', COUNT(*) FROM dust_scan
+          UNION ALL SELECT 'desk_universe', COUNT(*) FROM desk_universe
+          UNION ALL SELECT 'llm_log', COUNT(*) FROM llm_log
+          ORDER BY n DESC;"
+          npx --yes wrangler@4 d1 execute asterion --remote --env production --command "$SQL" 2>&1 | tail -40
