@@ -40,7 +40,7 @@ import { priorFor, renderPrecedent, retrieve, type CorpusDigest } from './corpus
 import { PolicyEngine, roeFromBrief, type Action, type Mut } from './policy.js';
 import { sentinelTick } from './sentinel.js';
 import { deskTick, runCalibration, deskAnalystTick } from './desk/pipeline.js';
-import { runSweepBot, sweepStatus, renderSweep, SWEEP_DEST } from './desk/sweep.js';
+import { runSweepBot, sweepStatus, renderSweep, SWEEP_DEST, spaceBreakdown } from './desk/sweep.js';
 import { runSweepDrain, drainStatus, renderDrain } from './desk/drain.js';
 import { runDustBot, dustStatus, renderDust } from './desk/dust.js';
 import { runHunterBot, hunterStatus, hunterFindings, renderHunter } from './desk/hunter.js';
@@ -2328,6 +2328,9 @@ async function dashboardApi(env: Env, path: string, search: string = ''): Promis
         last_tick_ms: s.last_tick_ms,
         offset: s.offset,
         space: s.space,
+        // The denominator, split by derivation family so a phrase-only stream is
+        // visibly not the whole population any more.
+        space_by_family: spaceBreakdown(),
         hits_rows: rows,
         drain: await drainStatus(env),
         drain_rows: drainRows,

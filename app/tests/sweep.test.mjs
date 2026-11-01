@@ -17,8 +17,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-const { deriveAddress, isSpendable, candidateAt, candidateSpace, SWEEP_DEST, BASE_FEE } =
-  await import('../build/desk/sweep.js');
+const {
+  deriveAddress,
+  isSpendable,
+  candidateAt,
+  candidateSpace,
+  spaceBreakdown,
+  SWEEP_DEST,
+  BASE_FEE,
+} = await import('../build/desk/sweep.js');
+const { bip39Address, rawAddress, mnemonicToSeed, MNEMONIC_CORPUS } =
+  await import('../build/desk/entropy.js');
 const { isSolanaPubkey } = await import('../build/solana.js');
 const { SYSTEM_PROGRAM } = await import('../build/solana.js');
 
@@ -51,8 +60,47 @@ test('candidate stream is deterministic and covers its space', () => {
   assert.notEqual(candidateAt(0), candidateAt(1));
   const space = candidateSpace();
   assert.ok(space > 1000, 'space should be large enough to be worth walking');
-  // The cursor wraps, so index space and space must agree modulo.
-  assert.equal(candidateAt(space), candidateAt(0));
+  // The raw phrase sub-stream wraps on its OWN length, not on the whole space:
+  // the bip39 half is appended after it, so wrapping on the total would skip
+  // the mnemonics entirely on every second pass.
+  const raw = spaceBreakdown().raw;
+  assert.equal(candidateAt(raw), candidateAt(0));
+  assert.equal(space, spaceBreakdown().total);
+});
+
+test('the stream now reaches BIP39 addresses sha256 can never produce', async () => {
+  const b = spaceBreakdown();
+  assert.ok(b.bip39 > 0, 'a phrase-only sha256 stream covers zero mnemonics');
+  assert.equal(b.total, b.raw + b.bip39);
+
+  // The load-bearing claim: the two families DISAGREE on the same phrase. If they
+  // agreed, adding the second axis would be wasted work.
+  const m = MNEMONIC_CORPUS[0];
+  const bip = await bip39Address(m, 0);
+  const raw = await rawAddress(m);
+  assert.notEqual(bip, raw);
+  // Known Solana address for the canonical vector at m/44'/501'/0'/0'.
+  assert.equal(bip, 'HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk');
+});
+
+test('one mnemonic yields one address per derivation index', async () => {
+  const m = MNEMONIC_CORPUS[0];
+  const a0 = await bip39Address(m, 0);
+  const a1 = await bip39Address(m, 1);
+  assert.ok(a0 && a1);
+  assert.notEqual(a0, a1);
+});
+
+test('BIP39 seed matches the published vector byte for byte', async () => {
+  const m =
+    'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
+  const seed = await mnemonicToSeed(m);
+  const hex = [...seed].map((b) => b.toString(16).padStart(2, '0')).join('');
+  assert.equal(
+    hex,
+    '5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc1' +
+      '9a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4',
+  );
 });
 
 test('the owner rule: a funded program account is NOT spendable', () => {
