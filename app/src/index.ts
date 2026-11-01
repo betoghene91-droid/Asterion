@@ -29,6 +29,7 @@ import { crawlTick, seed } from './discovery.js';
 import { approveAndDispatch, type DispatchDb } from './dispatch.js';
 import { renderBrief, type Brief, type Question } from './intake.js';
 import { append as ledgerAppend, verify as ledgerVerify } from './ledger.js';
+import { cached, counter } from './readcache.js';
 import { LlmUnavailable, parseJson } from './llm.js';
 import { compileWithEnrichment, describeEnrichment } from './intake-enrich.js';
 import { byId, PLAYBOOKS, type Cls } from './playbooks.js';
@@ -1876,20 +1877,34 @@ async function dashboardApi(env: Env, path: string): Promise<Response> {
 
   switch (path) {
     case '/api/status': {
-      const cron = await one<{ ts: number }>("SELECT ts FROM kv WHERE key='cron_last'");
-      const programs = await one<{ n: number }>('SELECT COUNT(*) AS n FROM programs');
-      const parsed = await one<{ n: number }>("SELECT COUNT(*) AS n FROM programs WHERE status='parsed'");
-      const huntable = await one<{ n: number }>("SELECT COUNT(*) AS n FROM programs WHERE automation='allowed'");
-      const queue = await one<{ n: number }>("SELECT COUNT(*) AS n FROM findings WHERE proof_state='proven'");
-      const pending = await one<{ n: number }>("SELECT COUNT(*) AS n FROM approvals WHERE status='pending'");
+      // Polled by the console and by anyone watching the deployment, so every one
+      // of these counts is a full table scan repeated on a timer. Cached together
+      // for a minute: five scans become one, and the surface still updates fast
+      // enough to watch.
+      const s = await cached(env, 'status.core', 60, async () => {
+        const cron = await one<{ ts: number }>("SELECT ts FROM kv WHERE key='cron_last'");
+        const programs = await one<{ n: number }>('SELECT COUNT(*) AS n FROM programs');
+        const parsed = await one<{ n: number }>("SELECT COUNT(*) AS n FROM programs WHERE status='parsed'");
+        const huntable = await one<{ n: number }>("SELECT COUNT(*) AS n FROM programs WHERE automation='allowed'");
+        const queue = await one<{ n: number }>("SELECT COUNT(*) AS n FROM findings WHERE proof_state='proven'");
+        const pending = await one<{ n: number }>("SELECT COUNT(*) AS n FROM approvals WHERE status='pending'");
+        return {
+          cron_last: cron.ts ?? null,
+          programs: programs.n ?? 0,
+          parsed: parsed.n ?? 0,
+          huntable: huntable.n ?? 0,
+          queue: queue.n ?? 0,
+          pending: pending.n ?? 0,
+        };
+      });
       return json({
-        worker: cron.ts && Date.now() / 1000 - cron.ts < 7200 ? 'ok' : 'stale',
-        cron_last: cron.ts ?? null,
-        programs: programs.n ?? 0,
-        parsed: parsed.n ?? 0,
-        huntable: huntable.n ?? 0,
-        queue: queue.n ?? 0,
-        pending: pending.n ?? 0,
+        worker: s.cron_last && Date.now() / 1000 - s.cron_last < 7200 ? 'ok' : 'stale',
+        cron_last: s.cron_last,
+        programs: s.programs,
+        parsed: s.parsed,
+        huntable: s.huntable,
+        queue: s.queue,
+        pending: s.pending,
       });
     }
 
@@ -1944,12 +1959,25 @@ async function dashboardApi(env: Env, path: string): Promise<Response> {
     }
 
     case '/api/ledger': {
-      const { ok, detail } = await ledgerVerify(env);
-      const count = await one<{ n: number }>('SELECT COUNT(*) AS n FROM ledger');
+      // This route used to run a FULL chain verification on every request: it
+      // read the whole ledger, payloads included, and re-hashed every entry. That
+      // is the single most expensive read in the Worker, and it was reachable by a
+      // GET. Verification is a property of the chain, not of the caller, so it is
+      // cached for five minutes: the first request in each window pays for it and
+      // the rest cost one `kv` row. `recent` stays live because it is bounded.
+      const verdict = await cached(env, 'ledger.verify', 300, () => ledgerVerify(env));
+      const count = await counter(
+        env,
+        'ledger.count',
+        async () => {
+          const c = await one<{ n: number }>('SELECT COUNT(*) AS n FROM ledger');
+          return c.n ?? 0;
+        },
+      );
       const recent = await env.DB.prepare(
         'SELECT seq, kind, hash, ts FROM ledger ORDER BY seq DESC LIMIT 25',
       ).all();
-      return json({ ok, detail, count: count.n ?? 0, recent: recent.results ?? [] });
+      return json({ ok: verdict.ok, detail: verdict.detail, count, recent: recent.results ?? [] });
     }
 
     // ── desk: read-only, desk_* tables only, GET only ──────────────────

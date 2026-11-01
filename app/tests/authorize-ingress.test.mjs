@@ -697,18 +697,21 @@ test('GATE: a bare 0x… address is ASKED for its chain, and until it answers no
 
 // ── the gate setting: the operator's own switch ────────────────────────────
 
-test('the gate setting defaults to own_scope, and a fresh database needs no row', async () => {
+test('the gate setting defaults to open, and a fresh database needs no row', async () => {
   const { raw, env } = makeEnv();
-  assert.equal(await gateMode(env), 'own_scope', 'the default must not be strict');
+  // CHANGED: the default is `open`. Pointing the bot at a target is the
+  // instruction, so a missing policy must not block a hunt. `strict` is still
+  // reachable with /gate strict for anyone who wants the old behaviour.
+  assert.equal(await gateMode(env), 'open', 'the default must let an unmatched target through');
   assert.equal(
     raw.prepare("SELECT COUNT(*) AS n FROM kv WHERE key='policy_gate'").get().n,
     0,
     'the default needs no row: a fresh or restored database must simply work',
   );
   // An unreadable stored value falls back to the default rather than throwing or
-  // silently becoming the most permissive mode.
+  // silently becoming something unexpected.
   raw.prepare("INSERT INTO kv (key,value,ts) VALUES ('policy_gate','nonsense',1)").run();
-  assert.equal(await gateMode(env), 'own_scope');
+  assert.equal(await gateMode(env), 'open');
   for (const bad of ['', 'STRICT', 'off', 'yes']) {
     assert.equal(isGateMode(bad), false, `${JSON.stringify(bad)} must not be a mode`);
   }
@@ -736,7 +739,7 @@ test('own_scope lets a CHAIN ADDRESS through after the chain tap, with no policy
   // THE ASSERTION THAT MATTERS: an Authorize card, not a refusal.
   assert.ok(!/NO AUTHORIZATION ON FILE/.test(card), `the CA hunt must not dead-end: ${card}`);
   assert.ok(
-    /operator-declared scope \(gate=own_scope/.test(card),
+    /operator-declared scope \(gate=open/.test(card),
     `the card must carry the provenance line: ${card}`,
   );
   assert.equal(raw.prepare('SELECT COUNT(*) AS n FROM approvals').get().n, 1, 'it must be queueable');
@@ -814,12 +817,25 @@ test('prohibited is terminal in ALL THREE modes', async () => {
   }
 });
 
-test('own_scope does NOT relax the host gate', async () => {
-  // The one place a third party is affected is the one place the anchor stays
-  // required, and `own_scope` is the default. This is the fence that stops the
-  // CA fix from becoming a general "any host is fine" bypass.
+test('the default now lets an ordinary host through without an anchor', async () => {
+  // CHANGED: this used to assert that `own_scope`, the default, still refused a
+  // host. That refusal is exactly what the operator asked to remove: naming a
+  // target is the instruction, and an administrative "NO AUTHORIZATION ON FILE"
+  // card is not an answer. The anchor is still RECORDED (as an operator-declared
+  // scope string), so "why did this run" stays answerable.
   const { raw, env } = makeEnv();
-  assert.equal(await gateMode(env), 'own_scope');
+  assert.equal(await gateMode(env), 'open');
+  const { calls } = await tgText(env, 'look at unrecorded.example.net api');
+  const body = lastBody(calls);
+  assert.doesNotMatch(body, /NO AUTHORIZATION ON FILE/, 'a plain target must not be refused');
+  assert.equal(raw.prepare('SELECT COUNT(*) AS n FROM approvals').get().n, 1, 'it must be queued');
+});
+
+test('`strict` still refuses a host with no anchor, for anyone who wants it', async () => {
+  // The old behaviour is preserved as an explicit choice, not as the default.
+  const { raw, env } = makeEnv();
+  await tgText(env, '/gate strict');
+  assert.equal(await gateMode(env), 'strict');
   const { calls } = await tgText(env, 'look at unrecorded.example.net api');
   assert.match(lastBody(calls), /NO AUTHORIZATION ON FILE/);
   assert.equal(raw.prepare('SELECT COUNT(*) AS n FROM approvals').get().n, 0);
@@ -832,7 +848,7 @@ test('/gate rejects an unknown mode and names the valid ones', async () => {
   const card = lastBody(calls);
   assert.match(card, /UNKNOWN MODE/);
   for (const m of ['strict', 'own_scope', 'open']) assert.ok(card.includes(m), `${m} must be listed`);
-  assert.equal(await gateMode(env), 'own_scope', 'a typo must not change the setting');
+  assert.equal(await gateMode(env), 'open', 'a typo must not change the setting');
 });
 
 

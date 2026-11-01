@@ -373,17 +373,25 @@ test('POST /api/ui/engage rejects a body that is not an object', async () => {
 });
 
 test('POST /api/ui/engage refuses an oversized prompt with 413', async () => {
+  // The cap moved from 4,000 to 32,000 so a real conversational brief fits. The
+  // guard still has to exist and still has to fire, because this is a public
+  // endpoint that feeds a model - so the test asserts the boundary, not just that
+  // "a big number" is rejected.
   const { env } = makeEnv();
   const res = await call('/api/ui/engage', {
     method: 'POST',
-    body: { text: 'a'.repeat(4001) },
+    body: { text: 'a'.repeat(32_001) },
     headers: withSession(freshInitData()),
     env,
   });
   assert.equal(res.status, 413);
 });
 
-test('a target with no recorded policy is refused by the existing authorisation gate', async () => {
+test('a target with no recorded policy now compiles, and is queued', async () => {
+  // CHANGED: this used to assert `kind: 'unauthorized'` and nothing queued. The
+  // operator asked for that wall to go: naming a target IS the instruction, and a
+  // missing policy must not stop the hunt. The anchor is still recorded (as an
+  // operator-declared scope line) so provenance is not lost.
   const { env } = makeEnv();
   const res = await call('/api/ui/engage', {
     method: 'POST',
@@ -393,10 +401,9 @@ test('a target with no recorded policy is refused by the existing authorisation 
   });
   assert.equal(res.status, 200);
   const j = await res.json();
-  assert.equal(j.kind, 'unauthorized');
+  assert.notEqual(j.kind, 'unauthorized', 'a plain target must not be refused');
   assert.equal(j.programId, 'app.example.com');
-  assert.match(j.message, /NO AUTHORIZATION ON FILE/);
-  assert.equal(j.approvalId, undefined, 'nothing may be queued without an authorisation anchor');
+  assert.ok(j.approvalId, 'it must be queued for the operator to approve');
 });
 
 test('a target with an allowed policy produces a brief, an approval row and a ledger line', async () => {

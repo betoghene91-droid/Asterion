@@ -48,6 +48,20 @@ export async function append(env: Env, kind: string, payload: unknown): Promise<
     .bind(seq, ts, kind, stableStringify(payload), prev, hash)
     .run();
 
+  // Keep the cached ledger count in step with the append, so `/api/ledger` never
+  // has to run COUNT(*) again. Best-effort: a failure here must not lose an
+  // append, because the entry is already durable above.
+  try {
+    await env.DB.prepare(
+      `INSERT INTO kv (key,value) VALUES ('rc:n:ledger.count', ?)
+       ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)`,
+    )
+      .bind(String(seq))
+      .run();
+  } catch {
+    // The count is a convenience; the chain itself is the source of truth.
+  }
+
   return { seq, ts, kind, payload, prev_hash: prev, hash };
 }
 

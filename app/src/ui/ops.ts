@@ -12,6 +12,7 @@
  */
 
 import { listWork, type WorkItem } from './work.js';
+import { cached } from '../readcache.js';
 import type { UiEnv } from './env.js';
 
 /** One collected target. `programs.id` IS the host, by the repo's own convention. */
@@ -144,29 +145,42 @@ export async function historyView(env: UiEnv, limit = MAX_HUNTS): Promise<Histor
 
   const one = async <T>(sql: string) => (await env.DB.prepare(sql).first<T>()) ?? ({} as T);
 
-  const ledgerCount = await one<{ n: number }>('SELECT COUNT(*) AS n FROM ledger');
-  const kinds = await env.DB.prepare(
-    'SELECT kind, COUNT(*) AS n FROM ledger GROUP BY kind ORDER BY n DESC LIMIT 24',
-  ).all<{ kind: string; n: number }>();
-  const huntsTotal = await one<{ n: number }>('SELECT COUNT(*) AS n FROM hunts');
-  const proven = await one<{ n: number }>(
-    "SELECT COUNT(*) AS n FROM findings WHERE proof_state='proven'",
-  );
-  const blocked = await one<{ n: number }>(
-    "SELECT COUNT(*) AS n FROM ledger WHERE kind='dispatch.blocked'",
-  );
+  // All five of these are full-table aggregates and the History view is rendered
+  // on tab focus, so they used to be re-scanned on every visit. They are one
+  // cache entry now: the numbers move slowly and a minute-stale ledger total is
+  // not misleading, whereas a 500 on the whole view absolutely is.
+  const totals = await cached(env, 'ops.history.totals', 120, async () => {
+    const ledgerCount = await one<{ n: number }>('SELECT COUNT(*) AS n FROM ledger');
+    const kinds = await env.DB.prepare(
+      'SELECT kind, COUNT(*) AS n FROM ledger GROUP BY kind ORDER BY n DESC LIMIT 24',
+    ).all<{ kind: string; n: number }>();
+    const huntsTotal = await one<{ n: number }>('SELECT COUNT(*) AS n FROM hunts');
+    const proven = await one<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM findings WHERE proof_state='proven'",
+    );
+    const blocked = await one<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM ledger WHERE kind='dispatch.blocked'",
+    );
+    return {
+      ledgerCount: ledgerCount.n ?? 0,
+      kinds: kinds.results ?? [],
+      huntsTotal: huntsTotal.n ?? 0,
+      proven: proven.n ?? 0,
+      blocked: blocked.n ?? 0,
+    };
+  });
 
   return {
     decisions: work.decided,
     hunts: hunts.results ?? [],
-    ledger: { ok: true, count: ledgerCount.n ?? 0, kinds: kinds.results ?? [] },
+    ledger: { ok: true, count: totals.ledgerCount, kinds: totals.kinds },
     totals: {
       decisions: work.decided.length,
       approved: work.counts.approved,
       denied: work.counts.denied,
-      hunts: huntsTotal.n ?? 0,
-      proven: proven.n ?? 0,
-      blocked: blocked.n ?? 0,
+      hunts: totals.huntsTotal,
+      proven: totals.proven,
+      blocked: totals.blocked,
     },
   };
 }

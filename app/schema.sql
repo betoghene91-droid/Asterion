@@ -248,6 +248,12 @@ CREATE TABLE IF NOT EXISTS approvals (
   operator     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_approvals_pending ON approvals(status, requested_at);
+-- `status, requested_at` cannot serve ORDER BY requested_at alone: the index is
+-- ordered by status first, so the queue's "newest 50" ordered scan fell back to a
+-- full table scan plus a temp B-tree. D1 bills rows SCANNED, so that one omission
+-- was charged on every Queue render. This index lets SQLite walk backwards and
+-- stop at the LIMIT instead.
+CREATE INDEX IF NOT EXISTS idx_approvals_recent ON approvals(requested_at DESC);
 
 -- hash-chained, append-only. mirrors asterion/ledger.py
 CREATE TABLE IF NOT EXISTS ledger (

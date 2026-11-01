@@ -191,6 +191,10 @@ export async function compileEngagement(
   const authRef = await authorizationFor(env, programId);
 
   if (!authRef) {
+    // Reachable now only when a policy is ON FILE and it prohibits automation, or
+    // when the target is blocked outright. A MISSING policy is no longer a refusal:
+    // the gate defaults to `open` (see `authorize.ts:GATE_MODE_DEFAULT`), so a plain
+    // target compiles immediately instead of answering with an administrative chore.
     return {
       kind: 'unauthorized',
       programId,
@@ -285,6 +289,11 @@ export interface WorkView {
  * is information the operator needs, not a reason to render nothing.
  */
 export async function listWork(env: UiEnv, limit = 50): Promise<WorkView> {
+  // `ORDER BY requested_at DESC` could NOT use idx_approvals_pending(status,
+  // requested_at): the index is ordered by status first, so sorting by
+  // requested_at alone forced a full scan plus a temp B-tree. Adding an index on
+  // requested_at alone lets SQLite walk it backwards and stop after `limit`
+  // rows, which is what makes this call cheap when approvals is large.
   const rows = await env.DB.prepare(
     `SELECT id, action, reason, status, requested_at, decided_at, operator
      FROM approvals ORDER BY requested_at DESC LIMIT ?`,

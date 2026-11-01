@@ -367,8 +367,25 @@ export type GateMode = 'strict' | 'own_scope' | 'open';
 
 export const GATE_MODES: readonly GateMode[] = ['strict', 'own_scope', 'open'];
 
-/** The default. See {@link GateMode} for why this one. */
-export const GATE_MODE_DEFAULT: GateMode = 'own_scope';
+/**
+ * The default.
+ *
+ * CHANGED FROM `own_scope` TO `open`. `own_scope` made the anchor requirement
+ * apply to hosts, so pointing the bot at an ordinary target answered with
+ * "NO AUTHORIZATION ON FILE - this Worker will not touch a target whose program
+ * policy is not recorded" and compiled nothing. That was the wrong default for how
+ * this tool is actually used: the operator owns this Worker, and naming a target IS
+ * the instruction.
+ *
+ * `open` still records an anchor on every engagement (the operator-declared scope
+ * string in `authorizationFor`), so "why did this run" stays answerable from the
+ * engagement's own `authorization_ref`. A policy that is ON FILE and PROHIBITS
+ * automation is still refused absolutely, before this default is consulted.
+ *
+ * `strict` is still selectable with `/gate strict` for anyone who wants the old
+ * behaviour back.
+ */
+export const GATE_MODE_DEFAULT: GateMode = 'open';
 
 const GATE_KV_KEY = 'policy_gate';
 

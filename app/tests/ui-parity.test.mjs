@@ -302,22 +302,29 @@ test('answers make the deterministic compile authoritative, as intake-enrich doc
   assert.match(String(ui.enrichment.skipped), /operator answers present/);
 });
 
-test('the UI refuses a target with no policy anchor, in the same words as the chat', async () => {
+test('the UI and the chat agree on an unrecorded target — both now queue it', async () => {
+  // CHANGED: both used to refuse with "NO AUTHORIZATION ON FILE". The operator
+  // asked for that wall to go, so both must now COMPILE and queue instead. The
+  // parity claim is unchanged and is still the point of this test: whatever the
+  // chat does, the Mini App must do the same thing in the same situation.
   const { raw, env } = makeEnv(chatEnv());
   const text = 'have a look at unrecorded.example.net';
 
   const { sent } = await postTelegram(env, { message: { chat: { id: CHAT }, text } });
-  const refusal = sent.find((s) => s.url.includes('/sendMessage'));
-  assert.ok(refusal, 'the webhook must have answered a target with no policy row');
-  assert.match(refusal.body.text, /NO AUTHORIZATION ON FILE/);
+  const reply = sent.find((s) => s.url.includes('/sendMessage'));
+  assert.ok(reply, 'the webhook must have answered a target with no policy row');
+  assert.ok(
+    !/NO AUTHORIZATION ON FILE/.test(reply.body.text),
+    'the chat must not refuse a plain target any more',
+  );
 
   const ui = await (await postUi(env, '/api/ui/engage', { text })).json();
-  assert.equal(ui.kind, 'unauthorized');
-  assert.match(ui.message, /NO AUTHORIZATION ON FILE/);
+  assert.notEqual(ui.kind, 'unauthorized');
+  assert.ok(ui.approvalId, 'the UI must queue it too');
   assert.equal(
     raw.prepare('SELECT COUNT(*) AS n FROM approvals').get().n,
-    0,
-    'nothing may be queued without an authorisation anchor',
+    2,
+    'each surface queued one engagement: they agree, they do not share a row',
   );
 });
 

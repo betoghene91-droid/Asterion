@@ -102,12 +102,12 @@ test('two chains on the same bytes are two different programs', async () => {
   assert.match(b.programId, /^chain:1:/);
 });
 
-// NEGATIVE CONTROL: a host is a third party's live service and still needs an
-// anchor. Hoisting the chain question above the gate must not have loosened it.
-test('a host still has no anchor-free path, and gets no chain question', async () => {
+// CHANGED: a host used to have no anchor-free path and was refused. Now a plain
+// host compiles. The point this test still guards is that the chain question is
+// for ADDRESSES only — a hostname never gets asked which chain it is on.
+test('a host compiles without an anchor, and is never asked a chain question', async () => {
   const { env } = makeEnv();
   const body = await (await engage(env, { text: 'example.com' })).json();
   assert.notEqual(body.kind, 'questions');
-  assert.equal(body.kind, 'unauthorized');
-  assert.match(body.message, /NO AUTHORIZATION ON FILE/);
+  assert.notEqual(body.kind, 'unauthorized');
 });

@@ -1378,11 +1378,11 @@ function viewHunt() {
 function greet() {
   const kids = [
     h('div', { class: 'who', text: 'asterion' }),
-    h('div', { text: 'Give it a target. It compiles the hunt and queues it for your decision.' }),
+    h('div', { text: 'Give it a target and say what you want. Talk to it like a person - it reads the whole message.' }),
     h('ol', { class: 'steps' }, [
-      h('li', { text: 'Type anything - a URL, a domain, a 0x address.' }),
-      h('li', { text: 'Answer at most three questions if it needs them (they land in Ask).' }),
-      h('li', { text: 'Authorize in Queue. Nothing runs before that.' }),
+      h('li', { text: 'Type anything - a URL, a domain, a 0x address, or just what you are after.' }),
+      h('li', { text: 'It answers in Ask if it genuinely needs one thing from you. Usually it does not.' }),
+      h('li', { text: 'It compiles the hunt and queues it. Approve in Queue when you are ready to run it.' }),
     ]),
   ];
   const ex = h('button', { class: 'btn quiet', type: 'button', text: 'Use an example', onclick: () => {

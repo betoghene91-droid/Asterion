@@ -68,7 +68,21 @@ export const UI_CSS_PATH = '/ui/ui.css';
 export const UI_JS_PATH = '/ui/ui.js';
 
 /** Hard cap on a chat submission. intake.ts truncates notes at 2000 anyway. */
-const MAX_TEXT_CHARS = 4_000;
+/**
+ * The longest free-text brief the console will accept.
+ *
+ * RAISED FROM 4,000. The operator's ask was to be able to TALK to it the way they
+ * talk in chat, and 4,000 characters is roughly one short paragraph - long enough
+ * for a URL and a sentence, far too short for the kind of context that actually
+ * makes an engagement good (what was already looked at, what the last attempt
+ * missed, which area to concentrate on). A model-readable brief is cheap; a
+ * rejected one costs the operator the whole message.
+ *
+ * The cap still exists because the intake path feeds a model and this is a public
+ * endpoint, so "unbounded" would be a DoS and a token-burn. 32k is generous for a
+ * person typing on a phone while still being a real bound.
+ */
+const MAX_TEXT_CHARS = 32_000;
 
 /** A bottom-bar destination. */
 export interface UiTab {

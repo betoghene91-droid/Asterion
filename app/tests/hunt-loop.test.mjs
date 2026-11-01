@@ -99,10 +99,18 @@ function makeEnv(extra = {}) {
 function seedTwoPrograms(raw) {
   const ins = raw.prepare(
     `INSERT INTO programs (id,name,platform,policy_url,policy_text,automation,status,discovered_at)
-     VALUES (?,?, 'self', ?, ?, 'allowed', 'parsed', 1)`,
+     VALUES (?,?, 'self', ?, ?, ?, 'parsed', 1)`,
   );
-  ins.run(ALPHA, ALPHA, ALPHA_POLICY, 'Automated testing is permitted.');
-  ins.run(BETA, BETA, null, null);
+  // ALPHA is explicitly permitted; BETA explicitly PROHIBITS automation.
+  //
+  // BETA used to be "allowed but with NO policy on file", and the gate's default
+  // (`own_scope`) then refused it. That is no longer a refusal: the default is now
+  // `open`, because naming a target is the instruction. The pair still proves the
+  // thing this test is actually about — that the anchor is looked up BY PROGRAM ID
+  // and two different rows reach two different answers — because `prohibited` is
+  // still an ABSOLUTE refusal that no default can override.
+  ins.run(ALPHA, ALPHA, ALPHA_POLICY, 'Automated testing is permitted.', 'allowed');
+  ins.run(BETA, BETA, null, null, 'prohibited');
 }
 
 function sign(pairs, token = TOKEN) {
@@ -256,8 +264,8 @@ test('B1: the anchor is looked up BY PROGRAM ID - two programs reach opposite ou
   const alphaCard = textOf(calls(withAnchor.outbound).find((c) => c.method === 'sendMessage') ?? {});
   const betaCard = textOf(calls(withoutAnchor.outbound).find((c) => c.method === 'sendMessage') ?? {});
 
-  // ALPHA: authorised, so a brief. BETA: same class, same automation, no anchor,
-  // so refused. The two texts must not be the same outcome.
+  // ALPHA: authorised, so a brief. BETA: same class, but its policy PROHIBITS
+  // automation, so refused. The two texts must not be the same outcome.
   assert.match(alphaCard, /ENGAGEMENT/);
   assert.ok(!/NO AUTHORIZATION ON FILE/.test(alphaCard));
   assert.match(betaCard, /NO AUTHORIZATION ON FILE/);
@@ -453,11 +461,13 @@ test('B2: tapping the answer button resumes the hunt and reaches the Authorize c
   assert.equal(raw.prepare('SELECT COUNT(*) AS n FROM intake_sessions').get().n, 0, 'the draft is finished');
 });
 
-test('B3 NEGATIVE: a target-less brief still cannot dispatch after it is answered', async () => {
-  // The negative the design rule has to prove. Answering the question supplies a
-  // TARGET but not an ANCHOR: `unrecorded.example.net` has no program policy, so
-  // the compiler produces a brief and the anchor refusal still fires. Neither an
-  // approvals row nor a hunt row may exist afterwards.
+test('B3 NEGATIVE: answering the target question now queues the brief', async () => {
+  // CHANGED: this used to prove that answering the TARGET question supplied a
+  // target but not an ANCHOR, so the refusal still fired and nothing was queued.
+  // With the gate default now `open`, that answer is enough: the brief is produced
+  // and an approvals row exists. What the test still proves — and what mattered —
+  // is that a target-less DRAFT could not dispatch on its own, and that answering
+  // consumes the draft so there is nothing left to tap twice.
   const { raw, env } = makeEnv();
   seedTwoPrograms(raw);
 
@@ -466,21 +476,16 @@ test('B3 NEGATIVE: a target-less brief still cannot dispatch after it is answere
 
   const card = calls(outbound).find((c) => c.method === 'editMessageText');
   assert.ok(card);
-  assert.match(textOf(card), /NO AUTHORIZATION ON FILE/, 'the anchor refusal must remain reachable');
-  assert.ok(!/ENGAGEMENT/.test(textOf(card)), 'no engagement card may be produced without an anchor');
-  assert.equal(
-    buttonsOf(card).filter((b) => /^(ok|no):/.test(String(b.callback_data))).length,
-    0,
-    'no Authorize button may exist without an anchor',
-  );
+  assert.ok(!/NO AUTHORIZATION ON FILE/.test(textOf(card)), 'a plain target must not be refused');
+  assert.match(textOf(card), /ENGAGEMENT/, 'an engagement card must be produced');
 
-  assert.equal(raw.prepare('SELECT COUNT(*) AS n FROM approvals').get().n, 0);
-  assert.equal(raw.prepare('SELECT COUNT(*) AS n FROM hunts').get().n, 0);
+  assert.equal(raw.prepare('SELECT COUNT(*) AS n FROM approvals').get().n, 1);
 
   // And there is nothing left to tap twice: the draft is consumed.
   const again = await tgButton(env, 'ans:target:unrecorded.example.net', 8);
   assert.match(textOf(calls(again.outbound).find((c) => c.method === 'editMessageText')), /EXPIRED/);
-  assert.equal(raw.prepare('SELECT COUNT(*) AS n FROM approvals').get().n, 0);
+  // Still exactly ONE approval: the second tap must not add a second engagement.
+  assert.equal(raw.prepare('SELECT COUNT(*) AS n FROM approvals').get().n, 1);
 });
 
 test('B2: an answer with no live draft says so instead of resuming a stale hunt', async () => {
