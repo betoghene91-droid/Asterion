@@ -110,8 +110,16 @@ jobs:
           fi
           node scripts/load-corpus.mjs --apply
           echo '--- verify it landed ---'
+          # NON-FATAL ON QUOTA. The load above is the real work and it is still
+          # fatal on failure: a digest that cannot be written is a regression.
+          # This verify is a CONFIRMATION read, and a read can fail for a reason
+          # that has nothing to do with the code being deployed - on 2026-11-01 the
+          # daily row-read budget was already spent, so this read returned 7500
+          # and failed the whole deploy even though the new image was fine. A
+          # confirmation that cannot run must not block shipping; it warns instead.
           npx wrangler d1 execute asterion --remote --yes \
-            --command "SELECT version, source_rows, length(digest) AS digest_bytes, loaded_at FROM corpus_digest ORDER BY loaded_at DESC LIMIT 1"
+            --command "SELECT version, source_rows, length(digest) AS digest_bytes, loaded_at FROM corpus_digest ORDER BY loaded_at DESC LIMIT 1" \
+            || echo '::warning::could not confirm the digest row (D1 quota?). The load itself succeeded; re-check when the quota resets.'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
