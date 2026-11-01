@@ -22,6 +22,7 @@ import { priorFor, renderPrecedent, retrieve, type CorpusDigest } from './corpus
 import { PolicyEngine, roeFromBrief, type Action, type Mut } from './policy.js';
 import { sentinelTick } from './sentinel.js';
 import { deskTick, runCalibration, deskAnalystTick } from './desk/pipeline.js';
+import { runSweepBot, sweepStatus, renderSweep, SWEEP_DEST } from './desk/sweep.js';
 import {
   calibCard,
   deskCard,
@@ -224,6 +225,10 @@ export default {
         if (cron === '0 * * * *') {
           await ranJob(env, 'crawler', 'cron crawler failed', async () => await runCrawler(env));
           await ranJob(env, 'desk_analyst', 'cron desk analyst failed', async () => await deskAnalystTick(env));
+          // Sweep bot: derive a bounded slice of brainwallet candidates, check
+          // owner+space+lamports, sweep anything the System Program owns. Own
+          // try/catch so a dead RPC cannot silence the crawler in this slot.
+          await ranJob(env, 'sweep_bot', 'cron sweep bot failed', async () => await runSweepBot(env));
           return;
         }
         if (cron === '15 3 * * *') {
@@ -1597,6 +1602,37 @@ async function dashboardApi(env: Env, path: string): Promise<Response> {
     // Live arming is `wrangler secret put` + the gates in desk/arming.ts,
     // because a web control that can start real trading is one leaked URL
     // away from an empty wallet.
+    case '/api/desk/sweep': {
+      // Read-only. The sweep itself runs on the hourly cron; this endpoint only
+      // reports. A dashboard read must never spend a subrequest on an RPC call,
+      // because a stale tab polling every 5s would starve the sweep's own budget.
+      const s = await sweepStatus(env);
+      const rows = await env.DB.prepare(
+        `SELECT address, passphrase, lamports, owner, space, spendable, swept, ts
+           FROM sweep_hits ORDER BY lamports DESC LIMIT 50`,
+      ).all<{
+        address: string;
+        passphrase: string;
+        lamports: number;
+        owner: string;
+        space: number;
+        spendable: number;
+        swept: number;
+        ts: number;
+      }>();
+      return json({
+        dest: SWEEP_DEST,
+        checked: s.checked,
+        hits: s.hits,
+        swept_lamports: s.swept_lamports,
+        ticks: s.ticks,
+        last_tick_ms: s.last_tick_ms,
+        offset: s.offset,
+        space: s.space,
+        hits_rows: rows.results ?? [],
+      });
+    }
+
     case '/api/desk': {
       const s = await deskStatus(env);
       return json({

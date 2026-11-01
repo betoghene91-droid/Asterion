@@ -170,13 +170,15 @@ test('the five cron expressions in wrangler.toml are covered, and so is each job
   const covered = new Set(SCHEDULED_JOBS.map((j) => j.cron));
   for (const c of declared) assert.ok(covered.has(c), `no watched job runs on ${c}`);
 
-  // Two jobs share the 5-minute slot and two share the hourly one. Each half gets
-  // its OWN row, because one half failing must be attributable on its own — that
-  // is the whole point of per-job heartbeats.
+  // Each job sharing a slot gets its OWN row, because one half failing must be
+  // attributable on its own — that is the whole point of per-job heartbeats.
   const perCron = {};
   for (const j of SCHEDULED_JOBS) perCron[j.cron] = (perCron[j.cron] ?? 0) + 1;
   assert.equal(perCron['*/5 * * * *'], 2, 'sentinel and the desk tick are separate jobs');
-  assert.equal(perCron['0 * * * *'], 2, 'crawler and the desk analyst are separate jobs');
+  // Three now share the hourly slot: the sweep bot was composed in rather than
+  // given a cron of its own, because Workers gives a plan a small fixed set of
+  // timers and an unspent brainwallet is latency-tolerant (no race to lose).
+  assert.equal(perCron['0 * * * *'], 3, 'crawler, desk analyst and sweep bot are separate jobs');
   assert.equal(perCron['15 3 * * *'], 2, 'maintenance and desk calibration are separate jobs');
 });
 

