@@ -67,6 +67,8 @@ export type JobName =
   | 'desk_tick'
   | 'crawler'
   | 'desk_analyst'
+  | 'sweep_bot'
+  | 'dust_bot'
   | 'maintenance'
   | 'desk_calibration'
   | 'briefing'
@@ -104,6 +106,13 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
   { name: 'desk_tick', cron: '*/5 * * * *', periodSeconds: 300 },
   { name: 'crawler', cron: '0 * * * *', periodSeconds: 3600 },
   { name: 'desk_analyst', cron: '0 * * * *', periodSeconds: 3600 },
+  // Sweep bot shares the hourly slot rather than taking a cron of its own:
+  // Workers gives a plan a small fixed set of timers, and the sweep is
+  // latency-tolerant (there is no race to lose on an unspent brainwallet).
+  { name: 'sweep_bot', cron: '0 * * * *', periodSeconds: 3600 },
+  // Dust joins the same hourly slot. It is one extra subrequest per watched
+  // wallet, so it does not need a timer of its own.
+  { name: 'dust_bot', cron: '0 * * * *', periodSeconds: 3600 },
   { name: 'maintenance', cron: '15 3 * * *', periodSeconds: 86400 },
   { name: 'desk_calibration', cron: '15 3 * * *', periodSeconds: 86400 },
   { name: 'briefing', cron: '30 6 * * *', periodSeconds: 86400 },

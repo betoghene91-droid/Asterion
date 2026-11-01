@@ -129,6 +129,10 @@ jobs:
           if [ -n "$GROQ_API_KEY" ]; then echo "$GROQ_API_KEY" | npx wrangler secret put GROQ_API_KEY; fi
           if [ -n "$OPENROUTER_API_KEY" ]; then echo "$OPENROUTER_API_KEY" | npx wrangler secret put OPENROUTER_API_KEY; fi
           if [ -n "$RPC_URL" ]; then echo "$RPC_URL" | npx wrangler secret put RPC_URL; fi
+          # The operator's Solana key. The sweep bot needs it to spend what lands,
+          # NOT to detect hits: detection reads public RPC and works without it.
+          # Unset therefore degrades to detect-only, which is the safe default.
+          if [ -n "$SOLANA_OPERATOR_SECRET_KEY" ]; then echo "$SOLANA_OPERATOR_SECRET_KEY" | npx wrangler secret put SOLANA_OPERATOR_SECRET_KEY; fi
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -140,6 +144,7 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           RPC_URL: ${{ secrets.RPC_URL }}
+          SOLANA_OPERATOR_SECRET_KEY: ${{ secrets.SOLANA_OPERATOR_SECRET_KEY }}
 
       - name: deploy worker
         run: npx wrangler deploy
