@@ -31,6 +31,7 @@ import { renderBrief, type Brief, type Question } from './intake.js';
 import { append as ledgerAppend, verify as ledgerVerify } from './ledger.js';
 import { cached, counter } from './readcache.js';
 import { ask, LlmUnavailable, parseJson } from './llm.js';
+import { runAgent } from './agent.js';
 import { compileWithEnrichment, describeEnrichment } from './intake-enrich.js';
 import { byId, PLAYBOOKS, type Cls } from './playbooks.js';
 import { parseChainToken } from './chains.js';
@@ -54,7 +55,6 @@ import {
 import { latestCalibration } from './desk/logger.js';
 import { deskStatus } from './desk/pipeline.js';
 import { armState } from './desk/arming.js';
-import { runAgent } from './agent.js';
 import { realizedEquity } from './desk/db.js';
 import {
   answerCb,
@@ -2109,6 +2109,27 @@ async function dashboardApi(env: Env, path: string, search: string = ''): Promis
         return json({ ok: true, provider: r.provider, model: r.model, latencyMs: r.latencyMs, text: r.text.slice(0, 80) });
       } catch (e) {
         return json({ ok: false, error: (e as Error).message });
+      }
+    }
+    case '/api/agent/probe': {
+      // GET /api/agent/probe?q=... - the REAL agent end to end, tools included.
+      // The llm probe only proves a model answers; this proves the loop works:
+      // tool selection, tool execution, grounding, and the degraded paths.
+      // Read-only, no session, one question, fixed default.
+      const q = new URLSearchParams(search).get('q') || 'what does the hunter see right now?';
+      try {
+        const r = await runAgent(env, q, {});
+        return json({
+          ok: r.ok,
+          provider: r.provider,
+          model: r.model,
+          iterations: r.iterations,
+          degraded: r.degraded,
+          toolCalls: (r.toolCalls || []).map((t: { name?: string }) => t.name ?? t),
+          answer: (r.text || '').slice(0, 700),
+        });
+      } catch (e) {
+        return json({ ok: false, error: (e as Error).message.slice(0, 300) });
       }
     }
     case '/api/llm/try': {
