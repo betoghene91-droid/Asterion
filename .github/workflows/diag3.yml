@@ -1,0 +1,55 @@
+name: diag3
+
+on:
+  workflow_dispatch:
+
+jobs:
+  counts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        working-directory: app
+        run: |
+          q () {
+            printf "%-24s " "$1"
+            npx --yes wrangler@4 d1 execute asterion --remote --env production --json \
+              --command "$2" 2>/dev/null \
+              | python3 -c "import json,sys;d=json.load(sys.stdin);r=d[0]['results'][0];print(list(r.values())[0])" 2>/dev/null || echo "ERR"
+          }
+          q ledger          "SELECT COUNT(*) AS n FROM ledger"
+          q approvals       "SELECT COUNT(*) AS n FROM approvals"
+          q kv              "SELECT COUNT(*) AS n FROM kv"
+          q corpus_digest   "SELECT COUNT(*) AS n FROM corpus_digest"
+          q desk_universe   "SELECT COUNT(*) AS n FROM desk_universe"
+          q alerts          "SELECT COUNT(*) AS n FROM alerts"
+          q heartbeats      "SELECT COUNT(*) AS n FROM heartbeats"
+          q quota           "SELECT COUNT(*) AS n FROM quota"
+          q engagements     "SELECT COUNT(*) AS n FROM engagements"
+          q fund_queue      "SELECT COUNT(*) AS n FROM fund_queue"
+          q learning_outcomes "SELECT COUNT(*) AS n FROM learning_outcomes"
+          q ledger_max_seq  "SELECT MAX(seq) AS n FROM ledger"
+          q ledger_ts_range "SELECT MIN(ts) AS lo, MAX(ts) AS hi FROM ledger"
+
+      - name: today's per-hour reads
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          TODAY=$(date -u +%Y-%m-%d)
+          Q="{\"query\":\"query{viewer{accounts(filter:{accountTag:\\\"$CF_ACCOUNT\\\"}){d1AnalyticsAdaptiveGroups(limit:100,filter:{date_geq:\\\"$TODAY\\\"},orderBy:[datetimeHour_ASC]){sum{rowsRead rowsWritten}dimensions{datetimeHour}}}}}\"}"
+          curl -sS -X POST "https://api.cloudflare.com/client/v4/graphql" \
+            -H "Authorization: Bearer $CF_TOKEN" -H "content-type: application/json" \
+            --data "$Q" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+rows=d.get('data',{}).get('viewer',{}).get('accounts',[{}])[0].get('d1AnalyticsAdaptiveGroups',[])
+print(f\"{'hour':22}{'rowsRead':>12}{'written':>10}\")
+tot=0
+for r in rows:
+    rr=r['sum']['rowsRead']; tot+=rr
+    print(f\"{r['dimensions']['datetimeHour']:22}{rr:>12,}{r['sum']['rowsWritten']:>10,}\")
+print('TOTAL', f'{tot:,}')
+"
