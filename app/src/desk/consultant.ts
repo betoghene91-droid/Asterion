@@ -249,3 +249,64 @@ export function renderConsult(r: ConsultResult): string {
   for (const d of r.detail.slice(0, 8)) lines.push(`  · ${d}`);
   return lines.join('\n');
 }
+
+export interface ConsultRow {
+  id: string;
+  subject: string;
+  risk: string;
+  confidence: number;
+  stage: string;
+  attempts: number;
+  stopped_because: string | null;
+  ts: number;
+}
+
+export interface ConsultStatus {
+  queued: number;
+  dispatched: number;
+  proven: number;
+  stopped: number;
+  rows: ConsultRow[];
+  unreadable: boolean;
+  note: string;
+}
+
+/**
+ * Read the queue. Costs ONE D1 read and no RPC subrequest, so a dashboard tab
+ * polling this cannot starve the hourly hunter tick.
+ *
+ * `unreadable: true` is the honest-Zero contract again: when D1 cannot be
+ * read we say so and return zero rows, rather than letting an empty array
+ * look like "the queue is empty".
+ */
+export async function consultStatus(env: DeskEnv): Promise<ConsultStatus> {
+  try {
+    const rows = await db(env).all<ConsultRow>(
+      `SELECT id, subject, risk, confidence, stage, attempts, stopped_because, ts
+         FROM consult_queue ORDER BY confidence DESC, ts DESC LIMIT 40`,
+    );
+    const count = (s: string) => rows.filter((r) => r.stage === s).length;
+    return {
+      queued: count('queued'),
+      dispatched: count('dispatched'),
+      proven: count('proven'),
+      stopped: count('stopped') + count('failed'),
+      rows,
+      unreadable: false,
+      note:
+        rows.length === 0
+          ? `nothing forwarded yet — the hunter has not produced a finding at >= ${CONSULT_MIN_CONFIDENCE}% confidence`
+          : `${rows.length} subject(s); hunts stop after ${HUNT_ATTEMPT_LIMIT} failed attempts`,
+    };
+  } catch (e) {
+    return {
+      queued: 0,
+      dispatched: 0,
+      proven: 0,
+      stopped: 0,
+      rows: [],
+      unreadable: true,
+      note: `consult_queue unreadable (${(e as Error).message}) — this is NOT an empty queue`,
+    };
+  }
+}

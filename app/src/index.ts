@@ -43,6 +43,7 @@ import { deskTick, runCalibration, deskAnalystTick } from './desk/pipeline.js';
 import { runSweepBot, sweepStatus, renderSweep, SWEEP_DEST } from './desk/sweep.js';
 import { runDustBot, dustStatus, renderDust } from './desk/dust.js';
 import { runHunterBot, hunterStatus, hunterFindings, renderHunter } from './desk/hunter.js';
+import { consultStatus } from './desk/consultant.js';
 import { runToken2022Bot, token2022Status, token2022Findings, renderToken2022 } from './desk/token2022.js';
 import {
   calibCard,
@@ -2232,6 +2233,14 @@ async function dashboardApi(env: Env, path: string, search: string = ''): Promis
       // because a dashboard tab polling it would starve the hourly hunter tick.
       const s = await hunterStatus(env);
       return json({ ...s, findings: await hunterFindings(env) });
+    }
+
+    case '/api/desk/consult': {
+      // Read-only: what the hunter judged worth hunt compute, and how far each
+      // subject got. One D1 read and no subrequest, so polling is free.
+      // `unreadable: true` means D1 could not be read — that is NOT an empty
+      // queue, and the payload says so rather than returning a clean zero.
+      return json(await consultStatus(env));
     }
 
     case '/api/desk/sweep': {
