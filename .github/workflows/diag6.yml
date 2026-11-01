@@ -1,0 +1,20 @@
+name: diag6
+on:
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: telegram webhook health + operator identity
+        run: |
+          echo "--- getWebhookInfo ---"
+          curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo" \
+            | python3 -c 'import json,sys;d=json.load(sys.stdin)["result"];print(json.dumps({k:v for k,v in d.items() if k not in ("url",)},indent=2));print("url:",d.get("url"))'
+          echo "--- getMe ---"
+          curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe" \
+            | python3 -c 'import json,sys;d=json.load(sys.stdin)["result"];print("bot:",d.get("username"),"id:",d.get("id"))'
+          echo "--- is TELEGRAM_CHAT_ID set in github? ---"
+          if [ -n "${TELEGRAM_CHAT_ID}" ]; then echo "SET (len ${#TELEGRAM_CHAT_ID})"; else echo "EMPTY"; fi
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
