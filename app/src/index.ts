@@ -54,6 +54,7 @@ import {
 import { latestCalibration } from './desk/logger.js';
 import { deskStatus } from './desk/pipeline.js';
 import { armState } from './desk/arming.js';
+import { runAgent } from './agent.js';
 import { realizedEquity } from './desk/db.js';
 import {
   answerCb,
@@ -499,7 +500,34 @@ async function handleUpdate(env: Env, u: TgUpdate): Promise<void> {
     return;
   }
 
-  // Anything else is a sloppy hunt request. Compile it.
+  // Anything else is plain language, so hand it to the agent rather than assuming
+  // it is a hunt request.
+  //
+  // ORDER MATTERS, and it is the opposite of what it looks like: the agent goes
+  // FIRST, and the compiler is the fallback. A sloppy hunt request ("check the
+  // drift protocol for a reentrancy bug") is still a perfectly good question, and
+  // the agent's `hunt_status`/`desk_*` tools can answer most status-shaped
+  // questions that used to die in the compiler's THREE QUESTIONS card. But the
+  // compiler is the only thing that can create a real hunt, so it must still run
+  // whenever the agent could not answer from readings — hence the check on
+  // `reply.ok`, not on whether a reply exists at all. Every degraded path in
+  // agent.ts returns non-empty text with `ok: false`, so relying on the text
+  // alone would swallow the hunt forever.
+  try {
+    const reply = await runAgent(env, text);
+    if (reply.ok) {
+      await send(env, reply.text, KEYBOARDS.back(), chatId);
+      return;
+    }
+    // Degraded: the model was unavailable, or nothing real was read. If the
+    // operator was asking for a hunt, running the compiler is strictly better
+    // than showing them an LLM error; if they were asking for status, the
+    // compiler's questions are still a usable answer. Either way, do not send
+    // two messages.
+  } catch (e) {
+    console.error('agent failed, falling back to the hunt compiler', e);
+  }
+
   await startHunt(env, chatId, text);
 }
 
