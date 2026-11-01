@@ -103,7 +103,10 @@ test('OPTIONS from an unlisted origin is refused, not 204', async () => {
 test('a non-GET, non-OPTIONS /api request is 405 and never reaches the queries', async () => {
   const res = await call('/api/status', { method: 'POST' });
   assert.equal(res.status, 405);
-  assert.equal(res.headers.get('allow'), 'GET, OPTIONS');
+  // POST is advertised now because the two bot trigger routes take it. /api/status
+  // is not one of them, so this still 405s — the assertion that matters is that a
+  // POST to a read endpoint does not fall through into the dashboard queries.
+  assert.equal(res.headers.get('allow'), 'GET, POST, OPTIONS');
 });
 
 // ── defect 2: the auth story ───────────────────────────────────────────────
