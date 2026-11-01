@@ -2111,6 +2111,28 @@ async function dashboardApi(env: Env, path: string): Promise<Response> {
         return json({ ok: false, error: (e as Error).message });
       }
     }
+    case '/api/llm/try': {
+      // GET /api/llm/try?model=a,b,c - tests arbitrary model ids against the
+      // binding so a free-plan model can be found by measurement rather than by
+      // reading a pricing page. Read-only, one fixed 4-token question each.
+      const q = new URL(req.url).searchParams.get('model') || '';
+      if (!env.AI) return json({ ok: false, error: 'no AI binding' });
+      const rows = [];
+      for (const model of q.split(',').map((m: string) => m.trim()).filter(Boolean).slice(0, 12)) {
+        const t0 = Date.now();
+        try {
+          const out = (await env.AI.run(model, {
+            messages: [{ role: 'user', content: 'Reply with one word: ready' }],
+            max_tokens: 12,
+          })) as { response?: string };
+          const text = out.response ?? '';
+          rows.push({ model, ok: Boolean(text.trim()), ms: Date.now() - t0, text: text.slice(0, 30) });
+        } catch (e) {
+          rows.push({ model, ok: false, ms: Date.now() - t0, error: (e as Error).message.slice(0, 90) });
+        }
+      }
+      return json({ rows });
+    }
     case '/api/llm/chain': {
       // Which models the no-key binding will actually serve, one row each. The
       // probe stops at the first success, so it cannot tell you that GLM was
