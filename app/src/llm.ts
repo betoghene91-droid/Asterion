@@ -22,8 +22,17 @@ export interface Env {
   /** Override the Venice model. Default `venice-uncensored-1-2`. */
   VENICE_MODEL?: string;
   GEMINI_API_KEY?: string;
+  GEMINI_MODEL?: string;
   GROQ_API_KEY?: string;
+  GROQ_MODEL?: string;
   OPENROUTER_API_KEY?: string;
+  OPENROUTER_MODEL?: string;
+  /**
+   * Workers AI model. Comma-separated for a fallback chain, cheapest first.
+   * Default is GLM 5.3 Flash - it is the strongest free model on the binding and
+   * needs no API key at all.
+   */
+  AI_MODEL?: string;
   LLM_LOCAL_BASE?: string;
   LLM_LOCAL_MODEL?: string;
   DAILY_LLM_BUDGET?: string;
@@ -55,6 +64,19 @@ export interface AskResult {
 export class LlmUnavailable extends Error {}
 
 const PROVIDERS = ['local', 'venice', 'gemini', 'groq', 'openrouter', 'workers-ai'] as const;
+
+/**
+ * The no-key fallback chain, strongest first. Both of the models the operator
+ * asked for by name are on the binding: GLM 5.3 Flash and DeepSeek V4.1 Flash.
+ * Order is quality-first because a weaker model that answers badly is worse here
+ * than a slower one that reads the tools correctly.
+ */
+const DEFAULT_AI_MODELS = [
+  '@cf/zai-org/glm-5.3-flash',
+  '@cf/deepseek-ai/deepseek-v4-flash-0731',
+  '@cf/qwen/qwen3.8-27b',
+  '@cf/meta/llama-3.1-8b-instruct-fast',
+].join(',');
 
 export async function sha(text: string): Promise<string> {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
@@ -207,7 +229,7 @@ export async function ask(env: Env, msgs: Msg[], opts: AskOpts = {}): Promise<As
       callOpenAICompatible(
         'https://generativelanguage.googleapis.com/v1beta/openai',
         env.GEMINI_API_KEY,
-        'gemini-flash-latest',
+        env.GEMINI_MODEL || 'gemini-3.5-flash',
         msgs,
         opts,
       ),
@@ -215,7 +237,15 @@ export async function ask(env: Env, msgs: Msg[], opts: AskOpts = {}): Promise<As
   }
   if (env.GROQ_API_KEY) {
     attempts.push(() =>
-      callOpenAICompatible('https://api.groq.com/openai/v1', env.GROQ_API_KEY, 'llama-3.3-70b-versatile', msgs, opts),
+      callOpenAICompatible(
+        'https://api.groq.com/openai/v1',
+        env.GROQ_API_KEY,
+        // Groq stopped serving llama-3.3-70b-versatile to free/dev tier on
+        // 2026-08-16; gpt-oss-120b is their documented free replacement.
+        env.GROQ_MODEL || 'openai/gpt-oss-120b',
+        msgs,
+        opts,
+      ),
     );
   }
   if (env.OPENROUTER_API_KEY) {
@@ -223,7 +253,9 @@ export async function ask(env: Env, msgs: Msg[], opts: AskOpts = {}): Promise<As
       callOpenAICompatible(
         'https://openrouter.ai/api/v1',
         env.OPENROUTER_API_KEY,
-        'meta-llama/llama-3.3-70b-instruct:free',
+        // The :free llama slug was withdrawn; openrouter/free routes to a
+        // model that is free RIGHT NOW instead of one that was free last year.
+        env.OPENROUTER_MODEL || 'openrouter/free',
         msgs,
         opts,
       ),
@@ -244,29 +276,47 @@ export async function ask(env: Env, msgs: Msg[], opts: AskOpts = {}): Promise<As
     }
   }
 
+  // Workers AI LAST but *chained*: it is the only provider that needs no API
+  // key, so it is the backstop that decides whether this deployment can think
+  // at all. It used to be ONE hardcoded model - `@cf/meta/llama-3.1-8b-instruct`
+  // - which Cloudflare deprecated on 2026-05-30, and that single stale id is
+  // what made a fully-configured deployment answer "no model available". Each
+  // model is tried in turn now, so one retired id costs a round trip instead of
+  // the whole feature.
+  //
+  // GLM 5.3 Flash leads: free on the binding, 41.8 AA index, 1M context.
+  const aiModels = (env.AI_MODEL || DEFAULT_AI_MODELS)
+    .split(',')
+    .map((m) => m.trim())
+    .filter(Boolean);
+
   if (env.AI) {
-    try {
-      const t0 = Date.now();
-      const out = (await env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
-        messages: msgs,
-        max_tokens: opts.maxTokens ?? 900,
-      })) as { response?: string };
-      const text = out.response ?? '';
-      if (!text.trim()) throw new Error('empty completion');
-      const tokensIn = msgs.reduce((n, m) => n + approxTokens(m.content), 0);
-      const r: AskResult = {
-        text,
-        provider: 'workers-ai',
-        model: '@cf/meta/llama-3.1-8b-instruct',
-        tokensIn,
-        tokensOut: approxTokens(text),
-        latencyMs: Date.now() - t0,
-      };
-      await log(env, r.provider, r.model, promptSha, r, true);
-      await spendTokens(env, r.tokensIn + r.tokensOut);
-      return r;
-    } catch (e) {
-      errors.push(e instanceof Error ? e.message : String(e));
+    for (const model of aiModels) {
+      try {
+        const t0 = Date.now();
+        const out = (await env.AI.run(model, {
+          messages: msgs,
+          max_tokens: opts.maxTokens ?? 900,
+        })) as { response?: string };
+        const text = out.response ?? '';
+        if (!text.trim()) throw new Error('empty completion');
+        const tokensIn = msgs.reduce((n, m) => n + approxTokens(m.content), 0);
+        const r: AskResult = {
+          text,
+          provider: 'workers-ai',
+          model,
+          tokensIn,
+          tokensOut: approxTokens(text),
+          latencyMs: Date.now() - t0,
+        };
+        await log(env, r.provider, r.model, promptSha, r, true);
+        await spendTokens(env, r.tokensIn + r.tokensOut);
+        return r;
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        errors.push(`workers-ai ${model}: ${msg}`);
+        await log(env, 'workers-ai', model, promptSha, {}, false, msg);
+      }
     }
   }
 
