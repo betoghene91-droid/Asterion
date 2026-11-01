@@ -246,6 +246,13 @@ export default {
         const findings = await hunterFindings(env);
         return withCors(env, req, json({ stats, findings, text: renderHunter(stats, findings) }));
       }
+      if (req.method === 'POST' && url.pathname === '/api/desk/token2022/run') {
+        const denied = requireDashboardAuth(env, req);
+        if (denied) return withCors(env, req, denied);
+        const stats = await runToken2022Bot(env);
+        const findings = await token2022Findings(env);
+        return withCors(env, req, json({ stats, findings, text: renderToken2022(stats, findings) }));
+      }
       return new Response('method not allowed', {
         status: 405,
         headers: { allow: 'GET, POST, OPTIONS' },
