@@ -87,6 +87,8 @@ export interface Env {
   OPERATOR_NAME?: string;
   LLM_LOCAL_BASE?: string;
   LLM_LOCAL_MODEL?: string;
+  VENICE_API_KEY?: string;
+  VENICE_MODEL?: string;
   GEMINI_API_KEY?: string;
   GROQ_API_KEY?: string;
   OPENROUTER_API_KEY?: string;

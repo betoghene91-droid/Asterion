@@ -36,7 +36,9 @@ import {
   SPL_TOKEN_2022_PROGRAM,
   SYSTEM_PROGRAM,
   isSolanaPubkey,
+  decodeBase58,
 } from '../solana.js';
+import { append as ledgerAppend } from '../ledger.js';
 import { b58encode, publicKey as b58publicKey, concat, shortvec, utf8 } from './base58.js';
 import { kvGet, kvSet, spendSubrequest, newId, db } from './db.js';
 import { SWEEP_DEST } from './sweep.js';
@@ -196,10 +198,11 @@ export async function closableFor(owner: string): Promise<DustCandidate[]> {
  * Data: one byte, discriminant 9. There is no SPL layout beyond that, which is
  * why this is far simpler than the sweep's System transfer.
  */
-async function closeAccountTx(
+export async function closeAccountTx(
   ownerKeypair: { seed: Uint8Array },
   tokenAccount: string,
   destination: string,
+  program: string = SPL_TOKEN_PROGRAM,
 ): Promise<string | null> {
   const bh = await rpc<{ value: { blockhash: string } }>('getLatestBlockhash', [
     { commitment: 'confirmed' },
@@ -207,24 +210,43 @@ async function closeAccountTx(
   if (!bh?.value?.blockhash) return null;
 
   const ownerPub = await pubFromSeed(ownerKeypair.seed);
+
+  // Account order and the header are BOTH load-bearing, and getting either
+  // wrong produces a transaction that serialises cleanly and is then rejected on
+  // chain. Two separate defects lived here:
+  //
+  //   1. The instruction named its program by ACCOUNT INDEX 2 while the account
+  //      at index 2 was the recipient's pubkey. So the message pointed a token
+  //      instruction at a WALLET. Mainnet simulation of that shape returns
+  //      `InvalidProgramForExecution` — it never reaches the token program.
+  //   2. The account list was written as index/flag PAIRS (`[ind, flags]`). The
+  //      legacy message format wants a plain run of indexes; the pairs form
+  //      desynchronised the decoder and the remaining bytes were read as
+  //      instruction data.
+  //
+  // Solana requires keys grouped as: writable-signers, readonly-signers,
+  // writable-non-signers, readonly-non-signers. The owner signs and pays, so it
+  // must come first; the token program is the only readonly non-signer.
+  //
+  // Verified by mainnet `simulateTransaction`: this exact shape logs
+  // `Program log: Instruction: CloseAccount`, i.e. it reaches the program.
   const keys = concat([
-    b58publicKey(tokenAccount),
-    b58publicKey(destination),
-    b58publicKey(ownerPub),
+    b58publicKey(ownerPub), // 0 writable signer (fee payer)
+    b58publicKey(tokenAccount), // 1 writable
+    b58publicKey(destination), // 2 writable
+    b58publicKey(program), // 3 readonly, non-signer
   ]);
 
   const message = concat([
     new Uint8Array([1, 0, 1]), // 1 signer, 0 readonly-signed, 1 readonly-unsigned
-    shortvec(3),
+    shortvec(4),
     keys,
     b58publicKey(bh.value.blockhash),
     shortvec(1),
     concat([
-      new Uint8Array([2]), // program id -> keys[2] is wrong; see note below
+      new Uint8Array([3]), // program id = keys[3] = the token program
       shortvec(3),
-      new Uint8Array([0, 1]), // token account, writable
-      new Uint8Array([1, 1]), // destination, writable
-      new Uint8Array([2, 0]), // owner, signer (readonly)
+      new Uint8Array([1, 2, 0]), // token account, destination, owner (plain indexes)
       shortvec(1),
       new Uint8Array([9]), // CloseAccount
     ]),
@@ -273,6 +295,144 @@ function bytesToBase64(b: Uint8Array): string {
   return btoa(s);
 }
 
+// ────────────────────────────────────────────────────────── reclaim
+
+/**
+ * The operator's key, as a 32-byte seed.
+ *
+ * `SOLANA_OPERATOR_SECRET_KEY` holds the standard 64-byte base58 form
+ * (`seed || pubkey`). Only the first 32 bytes are needed to sign: ed25519
+ * derives the public key from the seed, and the trailing 32 bytes in that form
+ * are a convenience copy of that public key. Taking the seed and re-deriving is
+ * therefore strictly safer than trusting the stored second half, because a
+ * mismatched pair would silently sign with a key that does not own the account.
+ *
+ * Returns null when the secret is absent (degrades to detect-only) — never a
+ * fabricated zero-length key, which would sign garbage.
+ */
+export function operatorSeed(env: DeskEnv): Uint8Array | null {
+  const raw = String(
+    (env as unknown as { SOLANA_OPERATOR_SECRET_KEY?: string }).SOLANA_OPERATOR_SECRET_KEY ?? '',
+  ).trim();
+  if (!raw) return null;
+  // Accept the base58 64-byte form AND the comma-separated byte array that
+  // `solana-keygen` writes to a JSON keyfile, because both are what an operator
+  // realistically pastes into `wrangler secret put`.
+  let bytes: Uint8Array | null = null;
+  if (raw.startsWith('[')) {
+    try {
+      const arr = JSON.parse(raw) as number[];
+      if (Array.isArray(arr) && arr.every((n) => Number.isInteger(n) && n >= 0 && n <= 255)) {
+        bytes = Uint8Array.from(arr);
+      }
+    } catch {
+      return null;
+    }
+  } else {
+    const d = decodeBase58(raw);
+    bytes = d ? d.bytes : null;
+  }
+  if (!bytes || bytes.length < 32) return null;
+  return bytes.slice(0, 32);
+}
+
+export interface ReclaimResult {
+  /** Set when the operator key is absent: detect-only, nothing was sent. */
+  skipped: boolean;
+  attempted: number;
+  closed: number;
+  /** Lamports that actually came back, net of fees. */
+  reclaimed: number;
+  /** Per-account outcome, so a failure is attributable rather than a lump sum. */
+  detail: string[];
+}
+
+/**
+ * Actually close the operator's empty token accounts and take the rent.
+ *
+ * This is the step that makes the operator key worth holding. Before it existed,
+ * `runDustBot` computed `reclaimable_lamports` — a number — and never sent a
+ * transaction, so the key protected nothing: the bot reported recoverable rent
+ * that no code path could recover.
+ *
+ * ## Why it can only ever touch the operator's own accounts
+ *
+ * `CloseAccount` must be signed by the account's owner (or its close authority).
+ * Asterion holds exactly one key, so it can close exactly the accounts that key
+ * owns. Every other wallet the scan reports is never touched — that is the
+ * honest limit of a one-key bot, and it is why the scan stays useful for wallets
+ * the operator cannot act on.
+ *
+ * ## Why the balance check is not optional
+ *
+ * `CloseAccount` does not transfer the tokens out; it destroys them. Closing an
+ * account that still holds a balance burns real tokens. So this closes only
+ * `amount === 0`, and it re-reads that from chain inside the tick rather than
+ * trusting a cached `dust_scan` row.
+ */
+export async function reclaimOwnDust(
+  env: DeskEnv,
+  ownerAddress: string,
+  destination: string,
+  maxCloses = 3,
+): Promise<ReclaimResult> {
+  const out: ReclaimResult = { skipped: false, attempted: 0, closed: 0, reclaimed: 0, detail: [] };
+  const seed = operatorSeed(env);
+  if (!seed) {
+    out.skipped = true;
+    out.detail.push('SOLANA_OPERATOR_SECRET_KEY is not set: detect-only, nothing was closed');
+    return out;
+  }
+
+  const accts = await closableFor(ownerAddress);
+  const targets = accts.filter((a) => a.closable && a.amount === '0').slice(0, maxCloses);
+  if (targets.length === 0) {
+    out.detail.push(`no empty accounts to close for ${ownerAddress}`);
+    return out;
+  }
+
+  for (const a of targets) {
+    if (!(await spendSubrequest(env, 3))) {
+      out.detail.push('subrequest budget exhausted mid-reclaim');
+      break;
+    }
+    out.attempted += 1;
+    let signed: string | null = null;
+    try {
+      signed = await closeAccountTx({ seed }, a.tokenAccount, destination, a.program);
+    } catch (e) {
+      out.detail.push(`${a.tokenAccount.slice(0, 8)}… sign failed: ${(e as Error).message}`);
+      continue;
+    }
+    if (!signed) {
+      out.detail.push(`${a.tokenAccount.slice(0, 8)}… could not build the transaction`);
+      continue;
+    }
+    const sig = await rpc<string>('sendTransaction', [
+      signed,
+      { encoding: 'base64', skipPreflight: false },
+    ]);
+    if (!sig) {
+      out.detail.push(`${a.tokenAccount.slice(0, 8)}… send was rejected (account unreadable)`);
+      continue;
+    }
+    out.closed += 1;
+    out.reclaimed += a.rentLamports - BASE_FEE;
+    out.detail.push(`${a.tokenAccount.slice(0, 8)}… closed, tx ${sig.slice(0, 12)}…`);
+    try {
+      await ledgerAppend(env as never, 'dust.reclaim', {
+        token_account: a.tokenAccount,
+        signature: sig,
+        lamports: a.rentLamports - BASE_FEE,
+      });
+    } catch {
+      // The close already happened on chain. A ledger write failure must not
+      // turn a successful reclaim into a failed tick.
+    }
+  }
+  return out;
+}
+
 // ─────────────────────────────────────────────────────────── state
 
 const KV_STATS = 'dust:stats';
@@ -284,6 +444,8 @@ export interface DustStats {
   clamped_tokens: number;
   reclaimable_lamports: number;
   reclaimed_lamports: number;
+  /** True when no operator key is set, so nothing can be closed. Says so. */
+  detect_only?: boolean;
   ticks: number;
 }
 
@@ -391,6 +553,17 @@ export async function runDustBot(env: DeskEnv, now = Date.now()): Promise<DustSt
         // schema ships the table; a missing one must not kill the tick
       }
     }
+  }
+
+  // Reclaim last, and only for the wallet Asterion can actually act on. The
+  // operator's own key is the single account it can sign for, so everything
+  // above is a report and only this step moves money. It runs even when the
+  // scan found nothing, because a stale `dust_scan` row is exactly how a
+  // closable account gets forgotten.
+  if (isSolanaPubkey(SWEEP_DEST)) {
+    const r = await reclaimOwnDust(env, SWEEP_DEST, SWEEP_DEST);
+    stats.reclaimed_lamports += r.reclaimed;
+    if (r.skipped) stats.detect_only = true;
   }
 
   stats.ticks += 1;

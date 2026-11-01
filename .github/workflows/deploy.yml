@@ -133,6 +133,10 @@ jobs:
           # /hook/proof FAILS CLOSED without this: an unset secret refuses every
           # proof callback, so the Worker and the GitHub secret must agree.
           if [ -n "$PROOF_HOOK_SECRET" ]; then echo "$PROOF_HOOK_SECRET" | npx wrangler secret put PROOF_HOOK_SECRET; fi
+          # Venice first: the uncensored provider the operator asked for. An
+          # unset key simply falls through to the next provider, so this is
+          # additive and cannot break an existing deployment.
+          if [ -n "$VENICE_API_KEY" ]; then echo "$VENICE_API_KEY" | npx wrangler secret put VENICE_API_KEY; fi
           if [ -n "$GEMINI_API_KEY" ]; then echo "$GEMINI_API_KEY" | npx wrangler secret put GEMINI_API_KEY; fi
           if [ -n "$GROQ_API_KEY" ]; then echo "$GROQ_API_KEY" | npx wrangler secret put GROQ_API_KEY; fi
           if [ -n "$OPENROUTER_API_KEY" ]; then echo "$OPENROUTER_API_KEY" | npx wrangler secret put OPENROUTER_API_KEY; fi
@@ -148,6 +152,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TELEGRAM_WEBHOOK_SECRET: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
           PROOF_HOOK_SECRET: ${{ secrets.PROOF_HOOK_SECRET }}
+          VENICE_API_KEY: ${{ secrets.VENICE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}

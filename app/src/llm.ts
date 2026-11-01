@@ -3,8 +3,9 @@
  *
  * Order matters and is deliberate:
  *   1. local (your own GPU via the Sybil registry: tabbyapi / vLLM / Ollama)
- *   2. hosted free tiers (Gemini -> Groq -> OpenRouter -> Workers AI)
- *   3. give up loudly (never silently invent a finding)
+ *   2. Venice (uncensored; the operator's own voice, not a filtered one)
+ *   3. hosted free tiers (Gemini -> Groq -> OpenRouter -> Workers AI)
+ *   4. give up loudly (never silently invent a finding)
  *
  * Every call is logged with prompt hash, tokens and latency so the eval loop
  * and the quota budgeter have real numbers to work with.
@@ -13,6 +14,13 @@
 export interface Env {
   DB: D1Database;
   AI?: { run: (model: string, input: unknown) => Promise<unknown> };
+  /**
+   * Venice AI. OpenAI-compatible, and the only provider here that offers
+   * genuinely uncensored models, so it is tried FIRST when present.
+   */
+  VENICE_API_KEY?: string;
+  /** Override the Venice model. Default `venice-uncensored-1-2`. */
+  VENICE_MODEL?: string;
   GEMINI_API_KEY?: string;
   GROQ_API_KEY?: string;
   OPENROUTER_API_KEY?: string;
@@ -46,7 +54,7 @@ export interface AskResult {
 
 export class LlmUnavailable extends Error {}
 
-const PROVIDERS = ['local', 'gemini', 'groq', 'openrouter', 'workers-ai'] as const;
+const PROVIDERS = ['local', 'venice', 'gemini', 'groq', 'openrouter', 'workers-ai'] as const;
 
 export async function sha(text: string): Promise<string> {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
@@ -145,7 +153,13 @@ async function callOpenAICompatible(
   };
   return {
     text: j.choices?.[0]?.message?.content ?? '',
-    provider: base.includes('googleapis') ? 'gemini' : base.includes('groq') ? 'groq' : 'openrouter',
+    provider: base.includes('googleapis')
+      ? 'gemini'
+      : base.includes('groq')
+        ? 'groq'
+        : base.includes('venice')
+          ? 'venice'
+          : 'openrouter',
     model,
     tokensIn: j.usage?.prompt_tokens ?? 0,
     tokensOut: j.usage?.completion_tokens ?? 0,
@@ -172,6 +186,21 @@ export async function ask(env: Env, msgs: Msg[], opts: AskOpts = {}): Promise<As
       const r = await callOpenAICompatible(env.LLM_LOCAL_BASE!, undefined, env.LLM_LOCAL_MODEL!, msgs, opts);
       return { ...r, provider: 'local' };
     });
+  }
+  // Venice first: it is the one provider that serves uncensored models, so it
+  // gets the operator's prompt before anything else can answer it. The model is
+  // overridable because "uncensored" and "smartest available" are different
+  // trade-offs and the operator should be able to pick without a code change.
+  if (env.VENICE_API_KEY) {
+    attempts.push(() =>
+      callOpenAICompatible(
+        'https://api.venice.ai/api/v1',
+        env.VENICE_API_KEY,
+        env.VENICE_MODEL || 'venice-uncensored-1-2',
+        msgs,
+        opts,
+      ),
+    );
   }
   if (env.GEMINI_API_KEY) {
     attempts.push(() =>
