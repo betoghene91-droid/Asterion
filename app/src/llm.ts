@@ -71,7 +71,7 @@ const PROVIDERS = ['local', 'venice', 'gemini', 'groq', 'openrouter', 'workers-a
  * Order is quality-first because a weaker model that answers badly is worse here
  * than a slower one that reads the tools correctly.
  */
-const DEFAULT_AI_MODELS = [
+export const DEFAULT_AI_MODELS = [
   '@cf/zai-org/glm-5.3-flash',
   '@cf/deepseek-ai/deepseek-v4-flash-0731',
   '@cf/qwen/qwen3.8-27b',

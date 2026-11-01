@@ -2111,6 +2111,32 @@ async function dashboardApi(env: Env, path: string): Promise<Response> {
         return json({ ok: false, error: (e as Error).message });
       }
     }
+    case '/api/llm/chain': {
+      // Which models the no-key binding will actually serve, one row each. The
+      // probe stops at the first success, so it cannot tell you that GLM was
+      // skipped because of a bad id, a quota, or a capability the input needed.
+      // Read-only, no session, one tiny fixed question per model.
+      if (!env.AI) return json({ ok: false, error: 'no AI binding on this deployment' });
+      const models = ((env as { AI_MODEL?: string }).AI_MODEL || (await import('./llm.js')).DEFAULT_AI_MODELS || '')
+        .split(',')
+        .map((m: string) => m.trim())
+        .filter(Boolean);
+      const rows = [];
+      for (const model of models) {
+        const t0 = Date.now();
+        try {
+          const out = (await env.AI.run(model, {
+            messages: [{ role: 'user', content: 'Reply with the single word: ready' }],
+            max_tokens: 16,
+          })) as { response?: string };
+          const text = out.response ?? '';
+          rows.push({ model, ok: Boolean(text.trim()), ms: Date.now() - t0, text: text.slice(0, 40) });
+        } catch (e) {
+          rows.push({ model, ok: false, ms: Date.now() - t0, error: (e as Error).message.slice(0, 200) });
+        }
+      }
+      return json({ ok: true, aiModelOverride: (env as { AI_MODEL?: string }).AI_MODEL || null, rows });
+    }
     case '/api/desk/dust': {
       const s = await dustStatus(env);
       const rows = await env.DB.prepare(
