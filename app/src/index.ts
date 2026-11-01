@@ -30,7 +30,7 @@ import { approveAndDispatch, type DispatchDb } from './dispatch.js';
 import { renderBrief, type Brief, type Question } from './intake.js';
 import { append as ledgerAppend, verify as ledgerVerify } from './ledger.js';
 import { cached, counter } from './readcache.js';
-import { LlmUnavailable, parseJson } from './llm.js';
+import { ask, LlmUnavailable, parseJson } from './llm.js';
 import { compileWithEnrichment, describeEnrichment } from './intake-enrich.js';
 import { byId, PLAYBOOKS, type Cls } from './playbooks.js';
 import { parseChainToken } from './chains.js';
@@ -2095,6 +2095,22 @@ async function dashboardApi(env: Env, path: string): Promise<Response> {
     // Live arming is `wrangler secret put` + the gates in desk/arming.ts,
     // because a web control that can start real trading is one leaked URL
     // away from an empty wallet.
+    case '/api/llm/probe': {
+      // Read-only, no session: answers "can this deployment think, and with
+      // what". Every provider in ask() falls through in order, so a 200 here
+      // proves at least one of them answered - including the Workers AI
+      // binding, which needs no API key at all. It sends one fixed question and
+      // returns the provider, model and latency; nothing operator-specific.
+      try {
+        const r = await ask(env, [{ role: 'user', content: 'Reply with the single word: ready' }], {
+          maxTokens: 16,
+          temperature: 0,
+        });
+        return json({ ok: true, provider: r.provider, model: r.model, latencyMs: r.latencyMs, text: r.text.slice(0, 80) });
+      } catch (e) {
+        return json({ ok: false, error: (e as Error).message });
+      }
+    }
     case '/api/desk/dust': {
       const s = await dustStatus(env);
       const rows = await env.DB.prepare(
