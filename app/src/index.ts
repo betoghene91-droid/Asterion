@@ -217,7 +217,7 @@ export default {
       if (req.method === 'GET') {
         const denied = requireDashboardAuth(env, req);
         if (denied) return withCors(env, req, denied);
-        return withCors(env, req, await dashboardApi(env, url.pathname));
+        return withCors(env, req, await dashboardApi(env, url.pathname, url.search));
       }
       // Two POST triggers, and only these. They exist so the bots can be walked
       // on demand instead of waiting up to an hour for the cron, which is the
@@ -1981,7 +1981,7 @@ function requireDashboardAuth(env: Env, req: Request): Response | null {
   return null;
 }
 
-async function dashboardApi(env: Env, path: string): Promise<Response> {
+async function dashboardApi(env: Env, path: string, search: string = ''): Promise<Response> {
   const one = async <T>(sql: string, ...b: unknown[]) =>
     (await env.DB.prepare(sql).bind(...b).first<T>()) ?? ({} as T);
 
@@ -2115,7 +2115,7 @@ async function dashboardApi(env: Env, path: string): Promise<Response> {
       // GET /api/llm/try?model=a,b,c - tests arbitrary model ids against the
       // binding so a free-plan model can be found by measurement rather than by
       // reading a pricing page. Read-only, one fixed 4-token question each.
-      const q = new URL(req.url).searchParams.get('model') || '';
+      const q = new URLSearchParams(search).get('model') || '';
       if (!env.AI) return json({ ok: false, error: 'no AI binding' });
       const rows = [];
       for (const model of q.split(',').map((m: string) => m.trim()).filter(Boolean).slice(0, 12)) {
