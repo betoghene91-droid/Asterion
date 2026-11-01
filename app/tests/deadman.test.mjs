@@ -175,10 +175,16 @@ test('the five cron expressions in wrangler.toml are covered, and so is each job
   const perCron = {};
   for (const j of SCHEDULED_JOBS) perCron[j.cron] = (perCron[j.cron] ?? 0) + 1;
   assert.equal(perCron['*/5 * * * *'], 2, 'sentinel and the desk tick are separate jobs');
-  // Three now share the hourly slot: the sweep bot was composed in rather than
-  // given a cron of its own, because Workers gives a plan a small fixed set of
-  // timers and an unspent brainwallet is latency-tolerant (no race to lose).
-  assert.equal(perCron['0 * * * *'], 4, 'crawler, desk analyst, sweep and dust are separate jobs');
+  // Five now share the hourly slot: the sweep bot, then dust, then the hunter
+  // were composed in rather than given crons of their own, because Workers gives
+  // a plan a small fixed set of timers and none of the three is latency-bound.
+  // An unspent brainwallet has no race to lose, rent reclaim has no competitor,
+  // and reading an upgrade authority is not time-critical.
+  assert.equal(
+    perCron['0 * * * *'],
+    5,
+    'crawler, desk analyst, sweep, dust and hunter are separate jobs',
+  );
   assert.equal(perCron['15 3 * * *'], 2, 'maintenance and desk calibration are separate jobs');
 });
 

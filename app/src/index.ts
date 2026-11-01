@@ -40,6 +40,7 @@ import { sentinelTick } from './sentinel.js';
 import { deskTick, runCalibration, deskAnalystTick } from './desk/pipeline.js';
 import { runSweepBot, sweepStatus, renderSweep, SWEEP_DEST } from './desk/sweep.js';
 import { runDustBot, dustStatus, renderDust } from './desk/dust.js';
+import { runHunterBot, hunterStatus, hunterFindings, renderHunter } from './desk/hunter.js';
 import {
   calibCard,
   deskCard,
@@ -234,6 +235,13 @@ export default {
         const stats = await runDustBot(env);
         return withCors(env, req, json({ stats, text: renderDust(stats) }));
       }
+      if (req.method === 'POST' && url.pathname === '/api/desk/hunter/run') {
+        const denied = requireDashboardAuth(env, req);
+        if (denied) return withCors(env, req, denied);
+        const stats = await runHunterBot(env);
+        const findings = await hunterFindings(env);
+        return withCors(env, req, json({ stats, findings, text: renderHunter(stats, findings) }));
+      }
       return new Response('method not allowed', {
         status: 405,
         headers: { allow: 'GET, POST, OPTIONS' },
@@ -271,6 +279,10 @@ export default {
           // try/catch so a dead RPC cannot silence the crawler in this slot.
           await ranJob(env, 'sweep_bot', 'cron sweep bot failed', async () => await runSweepBot(env));
           await ranJob(env, 'dust_bot', 'cron dust bot failed', async () => await runDustBot(env));
+          // Protocol hunter: read the upgrade/mint authority state of every
+          // program Asterion's crawler discovered. Pure reading, no capital, no
+          // race — it cannot exploit anything, it makes a takeover visible.
+          await ranJob(env, 'hunter_bot', 'cron hunter bot failed', async () => await runHunterBot(env));
           return;
         }
         if (cron === '15 3 * * *') {
@@ -1952,6 +1964,13 @@ async function dashboardApi(env: Env, path: string): Promise<Response> {
            FROM dust_scan ORDER BY closable DESC, rent_lamports DESC LIMIT 50`,
       ).all();
       return json({ ...s, rows: rows.results ?? [] });
+    }
+
+    case '/api/desk/hunter': {
+      // Read-only, KV-backed: this endpoint must never spend an RPC subrequest,
+      // because a dashboard tab polling it would starve the hourly hunter tick.
+      const s = await hunterStatus(env);
+      return json({ ...s, findings: await hunterFindings(env) });
     }
 
     case '/api/desk/sweep': {

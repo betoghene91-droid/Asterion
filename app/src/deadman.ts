@@ -69,6 +69,7 @@ export type JobName =
   | 'desk_analyst'
   | 'sweep_bot'
   | 'dust_bot'
+  | 'hunter_bot'
   | 'maintenance'
   | 'desk_calibration'
   | 'briefing'
@@ -113,6 +114,9 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
   // Dust joins the same hourly slot. It is one extra subrequest per watched
   // wallet, so it does not need a timer of its own.
   { name: 'dust_bot', cron: '0 * * * *', periodSeconds: 3600 },
+  // The hunter reads a handful of accounts per tick — cheap enough to ride the
+  // same hourly slot rather than consume one of the five cron entries.
+  { name: 'hunter_bot', cron: '0 * * * *', periodSeconds: 3600 },
   { name: 'maintenance', cron: '15 3 * * *', periodSeconds: 86400 },
   { name: 'desk_calibration', cron: '15 3 * * *', periodSeconds: 86400 },
   { name: 'briefing', cron: '30 6 * * *', periodSeconds: 86400 },
