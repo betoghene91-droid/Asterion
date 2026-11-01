@@ -33,6 +33,14 @@ export interface Env {
    * needs no API key at all.
    */
   AI_MODEL?: string;
+  /**
+   * Any OpenAI-compatible endpoint serving an uncensored model, tried before the
+   * general providers. This is how the operator swaps in NanoGPT / Unlid /
+   * uncensoredllm.ai later WITHOUT touching code: set three values and redeploy.
+   */
+  UNCENSORED_BASE?: string;
+  UNCENSORED_API_KEY?: string;
+  UNCENSORED_MODEL?: string;
   LLM_LOCAL_BASE?: string;
   LLM_LOCAL_MODEL?: string;
   DAILY_LLM_BUDGET?: string;
@@ -253,6 +261,21 @@ export async function ask(env: Env, msgs: Msg[], opts: AskOpts = {}): Promise<As
       ),
     );
   }
+  // A dedicated uncensored slot: any OpenAI-compatible endpoint the operator
+  // points at, tried before the general hosted providers because an uncensored
+  // model is a deliberate choice about HOW the agent answers, not a fallback.
+  if (env.UNCENSORED_BASE && env.UNCENSORED_MODEL) {
+    attempts.push(async () => {
+      const r = await callOpenAICompatible(
+        env.UNCENSORED_BASE!,
+        env.UNCENSORED_API_KEY,
+        env.UNCENSORED_MODEL!,
+        msgs,
+        opts,
+      );
+      return { ...r, provider: 'uncensored' };
+    });
+  }
   if (env.GEMINI_API_KEY) {
     attempts.push(() =>
       callOpenAICompatible(
@@ -282,9 +305,12 @@ export async function ask(env: Env, msgs: Msg[], opts: AskOpts = {}): Promise<As
       callOpenAICompatible(
         'https://openrouter.ai/api/v1',
         env.OPENROUTER_API_KEY,
-        // The :free llama slug was withdrawn; openrouter/free routes to a
-        // model that is free RIGHT NOW instead of one that was free last year.
-        env.OPENROUTER_MODEL || 'openrouter/free',
+        // Dolphin (Venice edition) is an UNCENSORED 24B that was measured
+        // working on this deployment's key in 592ms - it is the closest free
+        // equivalent to the Venice model the operator wanted. `openrouter/free`
+        // was tried and returns an empty completion, so it is not a safe default.
+        // Override with OPENROUTER_MODEL to pick any other slug.
+        env.OPENROUTER_MODEL || 'cognitivecomputations/dolphin-mistral-24b-venice-edition',
         msgs,
         opts,
       ),
