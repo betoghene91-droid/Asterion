@@ -54,6 +54,12 @@ OPERATOR_NAME = "jennifer"
 # browser tab has no path back into Telegram. This is a PUBLIC handle, not a
 # secret: it is visible in every t.me link. The token stays a Worker secret.
 TELEGRAM_BOT_USERNAME = "Mayor_own_bot"
+# Seed programs for the protocol hunter. The crawler adds Solana programs it
+# discovers to candidates.programme_id, but it has not found any yet (it is
+# EVM-first), and a hunter with no input can only ever print "nothing looked at".
+# These are the three largest Solana DEX programs, so the hourly tick does real
+# work from day one and the crawler's own finds are unioned on top.
+DESK_HUNTER_PROGRAMS = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8,whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc,JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
 # Local-first LLM. Empty means "use hosted free tiers".
 # Point LLM_LOCAL_BASE at your own tabbyapi / vLLM / Ollama OpenAI endpoint.
 LLM_LOCAL_BASE = ""
