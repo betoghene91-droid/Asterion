@@ -519,6 +519,8 @@ export interface DrainStats {
   ceiling_hits: number;
   /** False when DRAIN_WRITE is not "1": the drain is simulating only. */
   live: boolean;
+  /** True when D1 could not be read. These zeroes are not a clean tick. */
+  unreadable?: boolean;
   ticks: number;
   last_tick_ms: number;
 }
@@ -537,12 +539,21 @@ const EMPTY: DrainStats = {
 };
 
 async function readStats(env: DeskEnv): Promise<DrainStats> {
-  const raw = await kvGet(env, KV_STATS);
-  if (!raw) return { ...EMPTY };
+  // Best-effort like every other desk reader: `kvGet` reads D1, and an exhausted
+  // free tier throws rather than returning empty. Unguarded, that would make the
+  // drain's status `error code: 1101` while the drain itself was fine.
+  let raw: string | null = null;
+  let unreadable = false;
   try {
-    return { ...EMPTY, ...(JSON.parse(raw) as DrainStats) };
+    raw = await kvGet(env, KV_STATS);
   } catch {
-    return { ...EMPTY };
+    unreadable = true;
+  }
+  if (!raw) return { ...EMPTY, unreadable };
+  try {
+    return { ...EMPTY, ...(JSON.parse(raw) as DrainStats), unreadable };
+  } catch {
+    return { ...EMPTY, unreadable };
   }
 }
 
