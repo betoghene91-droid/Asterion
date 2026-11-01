@@ -72,10 +72,28 @@ const PROVIDERS = ['local', 'venice', 'gemini', 'groq', 'openrouter', 'workers-a
  * than a slower one that reads the tools correctly.
  */
 export const DEFAULT_AI_MODELS = [
+  // MEASURED against this deployment's binding on the Workers FREE plan, not
+  // read off a pricing page. 70B first: it is the strongest model the free plan
+  // actually serves.
+  '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
+  '@cf/meta/llama-4-scout-17b-16e-instruct',
+  '@cf/meta/llama-3.1-8b-instruct-fast',
+].join(',');
+
+/**
+ * Models that need a PAID Workers plan (5035 "not available on the Workers Free
+ * plan"). Kept here so the reason is documented rather than rediscovered: raising
+ * the plan and setting AI_MODEL to these is the whole upgrade.
+ *
+ *   @cf/zai-org/glm-5.3-flash          GLM 5.3 Flash   41.8 AA, 1M ctx
+ *   @cf/zai-org/glm-5.3                GLM 5.3 full    44.8 AA
+ *   @cf/deepseek-ai/deepseek-v4-flash-0731   DeepSeek V4.1 Flash
+ *   @cf/moonshotai/kimi-k2.6           Kimi K2.6
+ */
+export const PAID_PLAN_AI_MODELS = [
   '@cf/zai-org/glm-5.3-flash',
   '@cf/deepseek-ai/deepseek-v4-flash-0731',
-  '@cf/qwen/qwen3.8-27b',
-  '@cf/meta/llama-3.1-8b-instruct-fast',
+  '@cf/moonshotai/kimi-k2.6',
 ].join(',');
 
 export async function sha(text: string): Promise<string> {
