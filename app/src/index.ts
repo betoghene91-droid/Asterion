@@ -2116,19 +2116,50 @@ async function dashboardApi(env: Env, path: string, search: string = ''): Promis
       // binding so a free-plan model can be found by measurement rather than by
       // reading a pricing page. Read-only, one fixed 4-token question each.
       const q = new URLSearchParams(search).get('model') || '';
-      if (!env.AI) return json({ ok: false, error: 'no AI binding' });
+      // `p:` selects a hosted provider for the entry, so the same route can
+      // check an OpenRouter or Groq slug with the key already in the deployment:
+      //   p:openrouter=<slug>  p:groq=<slug>  p:gemini=<slug>  (default workers-ai)
       const rows = [];
-      for (const model of q.split(',').map((m: string) => m.trim()).filter(Boolean).slice(0, 12)) {
+      for (const entry of q.split(',').map((m: string) => m.trim()).filter(Boolean).slice(0, 12)) {
         const t0 = Date.now();
+        const m = entry.match(/^p:([a-z]+)=(.+)$/i);
+        const provider = m ? String(m[1]).toLowerCase() : 'workers-ai';
+        const model = m ? String(m[2]).trim() : entry;
         try {
-          const out = (await env.AI.run(model, {
-            messages: [{ role: 'user', content: 'Reply with one word: ready' }],
-            max_tokens: 12,
-          })) as { response?: string };
-          const text = out.response ?? '';
-          rows.push({ model, ok: Boolean(text.trim()), ms: Date.now() - t0, text: text.slice(0, 30) });
+          let text = '';
+          if (provider === 'workers-ai') {
+            if (!env.AI) throw new Error('no AI binding');
+            const out = (await env.AI.run(model, {
+              messages: [{ role: 'user', content: 'Reply with one word: ready' }],
+              max_tokens: 12,
+            })) as { response?: string };
+            text = out.response ?? '';
+          } else {
+            const base =
+              provider === 'openrouter' ? 'https://openrouter.ai/api/v1'
+              : provider === 'groq' ? 'https://api.groq.com/openai/v1'
+              : provider === 'gemini' ? 'https://generativelanguage.googleapis.com/v1beta/openai'
+              : provider === 'venice' ? 'https://api.venice.ai/api/v1'
+              : '';
+            if (!base) throw new Error('unknown provider ' + provider);
+            const key =
+              provider === 'openrouter' ? env.OPENROUTER_API_KEY
+              : provider === 'groq' ? env.GROQ_API_KEY
+              : provider === 'gemini' ? env.GEMINI_API_KEY
+              : env.VENICE_API_KEY;
+            if (!key) throw new Error('no key stored for ' + provider);
+            const r = await fetch(base + '/chat/completions', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', authorization: 'Bearer ' + key },
+              body: JSON.stringify({ model, messages: [{ role: 'user', content: 'Reply with one word: ready' }], max_tokens: 12 }),
+            });
+            const body = await r.text();
+            if (!r.ok) throw new Error(r.status + ' ' + body.slice(0, 80));
+            text = (JSON.parse(body) as { choices?: { message?: { content?: string } }[] }).choices?.[0]?.message?.content ?? '';
+          }
+          rows.push({ provider, model, ok: Boolean(text.trim()), ms: Date.now() - t0, text: text.slice(0, 30) });
         } catch (e) {
-          rows.push({ model, ok: false, ms: Date.now() - t0, error: (e as Error).message.slice(0, 90) });
+          rows.push({ provider, model, ok: false, ms: Date.now() - t0, error: (e as Error).message.slice(0, 110) });
         }
       }
       return json({ rows });
