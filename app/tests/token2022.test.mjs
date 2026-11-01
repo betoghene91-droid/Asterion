@@ -455,7 +455,9 @@ test('renderToken2022 says "nothing looked at" instead of a confident zero', () 
       risky: 0,
       inertHooks: 0,
       notMints: 0,
+      absent: 0,
       unreadable: 0,
+      skipped: 0,
       noInputs: true,
       epoch: null,
       ticks: 1,
@@ -478,7 +480,9 @@ test('renderToken2022 flags unreadable mints as NOT clean', () => {
       risky: 1,
       inertHooks: 0,
       notMints: 0,
+      absent: 0,
       unreadable: 3,
+      skipped: 0,
       noInputs: false,
       epoch: 605,
       ticks: 1,
@@ -499,7 +503,9 @@ test('renderToken2022 reports an unknown fee epoch as a worst case, not as the l
     risky: 0,
     inertHooks: 0,
     notMints: 0,
+    absent: 0,
     unreadable: 0,
+    skipped: 0,
     noInputs: false,
     epoch: null,
     ticks: 1,
@@ -509,7 +515,9 @@ test('renderToken2022 reports an unknown fee epoch as a worst case, not as the l
   assert.match(renderToken2022({ ...stats, epoch: 605 }, []), /fee epoch {2}605/);
 });
 
-test('renderToken2022 states that a budget-skipped tick is not a clean result', () => {
+test('renderToken2022 names SKIPPED inputs as unread, separately from unreadable', () => {
+  // A budget stop is a third fact: the RPC was fine, we simply never asked. The
+  // tick must not present that as a clean result OR as an RPC failure.
   const text = renderToken2022(
     {
       mintsChecked: 0,
@@ -519,7 +527,9 @@ test('renderToken2022 states that a budget-skipped tick is not a clean result', 
       risky: 0,
       inertHooks: 0,
       notMints: 0,
+      absent: 0,
       unreadable: 0,
+      skipped: 4,
       noInputs: false,
       epoch: 605,
       ticks: 1,
@@ -527,8 +537,37 @@ test('renderToken2022 states that a budget-skipped tick is not a clean result', 
     },
     [],
   );
-  assert.match(text, /subrequest budget/);
-  assert.match(text, /not a clean result/);
+  assert.match(text, /skipped {4}4/);
+  assert.match(text, /budget ran out/);
+  assert.doesNotMatch(text, /unreadable/);
+});
+
+test('renderToken2022 distinguishes "absent" from "unreadable"', () => {
+  // An address with no account is a knowable fact; an RPC that never answered is
+  // an absence of knowledge. Printing one as the other is the bug this file is
+  // built to avoid, in both directions.
+  const withAbsent = renderToken2022(
+    {
+      mintsChecked: 0,
+      token2022: 0,
+      extensions: 0,
+      findings: 0,
+      risky: 0,
+      inertHooks: 0,
+      notMints: 0,
+      absent: 2,
+      unreadable: 0,
+      skipped: 0,
+      noInputs: false,
+      epoch: 605,
+      ticks: 1,
+      lastTickMs: 1,
+    },
+    [],
+  );
+  assert.match(withAbsent, /absent {5}2/);
+  assert.doesNotMatch(withAbsent, /NOT clean/);
+  assert.match(withAbsent, /nothing there to judge/);
 });
 
 test('informational extensions are not promoted to risk', () => {
@@ -565,11 +604,21 @@ test('informational extensions are not promoted to risk', () => {
  * A throttled read is NOT a decode failure, so a 429 must not be allowed to turn
  * this into a flaky gate — a test people learn to ignore is worse than no test.
  */
-async function liveAccount(addr, tries = 6) {
+async function liveAccount(addr, tries = 10) {
+  // TWO endpoints, because one is not enough. The whole suite runs the live
+  // tests of several files at once, and the official endpoint throttles by
+  // connection, not just by key: under that combined load `getAccountInfo` starts
+  // returning "Connection rate limits exceeded" even though nothing is wrong
+  // with the decode. publicnode serves getAccountInfo fine (it is only
+  // getTokenAccountsByOwner/getProgramAccounts it blocks), so failing over to it
+  // is the difference between a gate that means something and a gate people
+  // learn to re-run until green.
+  const RPC = ['https://api.mainnet-beta.solana.com', 'https://solana-rpc.publicnode.com'];
   let lastMsg = '';
   for (let i = 0; i < tries; i++) {
+    const url = RPC[i % RPC.length];
     try {
-      const res = await fetch('https://api.mainnet-beta.solana.com', {
+      const res = await fetch(url, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -586,10 +635,10 @@ async function liveAccount(addr, tries = 6) {
         return { owner: v.owner, bytes: Uint8Array.from(atob(v.data[0]), (c) => c.charCodeAt(0)) };
       }
       lastMsg = String(j.error.message ?? '');
-      if (!/rate limit|too many/i.test(lastMsg)) throw new Error(`rpc: ${lastMsg}`);
+      if (!/rate limit|too many|429/i.test(lastMsg)) throw new Error(`rpc: ${lastMsg}`);
     } catch (e) {
       lastMsg = e instanceof Error ? e.message : String(e);
-      if (!/rate limit|too many|fetch failed|network/i.test(lastMsg)) throw e;
+      if (!/rate limit|too many|429|fetch failed|network/i.test(lastMsg)) throw e;
     }
     await new Promise((r) => setTimeout(r, 2000 + i * 2000));
   }

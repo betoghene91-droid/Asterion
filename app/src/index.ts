@@ -42,6 +42,7 @@ import { deskTick, runCalibration, deskAnalystTick } from './desk/pipeline.js';
 import { runSweepBot, sweepStatus, renderSweep, SWEEP_DEST } from './desk/sweep.js';
 import { runDustBot, dustStatus, renderDust } from './desk/dust.js';
 import { runHunterBot, hunterStatus, hunterFindings, renderHunter } from './desk/hunter.js';
+import { runToken2022Bot, token2022Status, token2022Findings, renderToken2022 } from './desk/token2022.js';
 import {
   calibCard,
   deskCard,
@@ -286,6 +287,12 @@ export default {
           // program Asterion's crawler discovered. Pure reading, no capital, no
           // race — it cannot exploit anything, it makes a takeover visible.
           await ranJob(env, 'hunter_bot', 'cron hunter bot failed', async () => await runHunterBot(env));
+          // Token-2022 extension scanner: reads mint bytes and reports the
+          // holder-hostile extensions that are actually ACTIVE (permanent
+          // delegate, default-frozen, a live transfer hook, non-transferable,
+          // a non-zero transfer fee, a live close authority). Pure reading, and
+          // it shares this slot rather than taking a cron entry of its own.
+          await ranJob(env, 'token2022_bot', 'cron token2022 bot failed', async () => await runToken2022Bot(env));
           return;
         }
         if (cron === '15 3 * * *') {
@@ -1994,6 +2001,13 @@ async function dashboardApi(env: Env, path: string): Promise<Response> {
            FROM dust_scan ORDER BY closable DESC, rent_lamports DESC LIMIT 50`,
       ).all();
       return json({ ...s, rows: rows.results ?? [] });
+    }
+
+    case '/api/desk/token2022': {
+      // KV-backed like the hunter: a dashboard tab polling this must not spend
+      // an RPC subrequest, or it starves the hourly tick.
+      const s = await token2022Status(env);
+      return json({ ...s, findings: await token2022Findings(env) });
     }
 
     case '/api/desk/hunter': {

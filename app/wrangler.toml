@@ -60,6 +60,13 @@ TELEGRAM_BOT_USERNAME = "Mayor_own_bot"
 # These are the three largest Solana DEX programs, so the hourly tick does real
 # work from day one and the crawler's own finds are unioned on top.
 DESK_HUNTER_PROGRAMS = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8,whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc,JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+# Token-2022 mints to scan on top of desk_universe. Seeded with three real
+# Token-2022 mints so the hourly tick does real work before the desk universe
+# accumulates any: PYUSD (permanent delegate + close authority + inert transfer
+# hook + Borsh metadata - the richest single account on the chain for this
+# scanner) and two mints with NON-ZERO transfer fees, which prove the fee decode
+# against real money rather than against a zero.
+DESK_TOKEN2022_MINTS = "2b1kV6DkPAnxd5ixfnxCxmKwqjjaYmCZfHsFu24GXo,HcRLc9VDgjLeK154xDawfb1dmVJ98DoSqcwTHGqiDeJR,Pren1FvFX6J3E4kXhJuCiAD5aDmGEb7qJRncwA8Lkhw"
 # Local-first LLM. Empty means "use hosted free tiers".
 # Point LLM_LOCAL_BASE at your own tabbyapi / vLLM / Ollama OpenAI endpoint.
 LLM_LOCAL_BASE = ""

@@ -1030,7 +1030,7 @@ async function rpc<T>(method: string, params: unknown[], timeoutMs = 12_000): Pr
   return null;
 }
 
-/** Read one account, base64. `null` means the read failed OR the account is absent. */
+/** Read one account, base64. */
 async function getAccount(address: string): Promise<AccountInfo | null> {
   const r = await rpc<{
     value: { lamports: number; owner: string; executable: boolean; data: [string, string] } | null;
@@ -1038,6 +1038,47 @@ async function getAccount(address: string): Promise<AccountInfo | null> {
   const v = r?.value;
   if (!v) return null;
   return { lamports: v.lamports, owner: v.owner, executable: v.executable, dataBase64: v.data?.[0] ?? '' };
+}
+
+/**
+ * The outcome of one account read, as three DISTINCT facts.
+ *
+ * This distinction is the whole honesty invariant, and collapsing it is how a
+ * bot reports a clean zero:
+ *
+ *   · `account` — the bytes were read. They can be judged.
+ *   · `absent`  — the RPC answered and there is no account at that address. That
+ *     is a real, knowable fact (a nonexistent mint has no extensions), but it is
+ *     NOT a judgement about a mint.
+ *   · `failed`  — the RPC never answered (error, rate limit, timeout). We know
+ *     NOTHING. This is the one that must never be reported as clean.
+ *
+ * `getAccountInfo` returns `value: null` for `absent` and throws/errors for
+ * `failed`, which is exactly the pairing a JSON-RPC error handler erases if it
+ * treats both as "null".
+ */
+type AccountRead =
+  | { kind: 'account'; acc: AccountInfo }
+  | { kind: 'absent' }
+  | { kind: 'failed' };
+
+async function readAccount(address: string): Promise<AccountRead> {
+  // `rpc()` returns null when EVERY endpoint errored — but `result.value: null`
+  // is a successful answer saying "no such account". Re-asking once through the
+  // same helper cannot tell them apart, so read the raw envelope here.
+  for (const url of RPCS) {
+    const r = await rpcOnce<{
+      value: { lamports: number; owner: string; executable: boolean; data: [string, string] } | null;
+    }>(url, 'getAccountInfo', [address, { encoding: 'base64' }], 12_000);
+    if (r === null) continue; // this endpoint errored: try the next
+    const v = r.value;
+    if (!v) return { kind: 'absent' };
+    return {
+      kind: 'account',
+      acc: { lamports: v.lamports, owner: v.owner, executable: v.executable, dataBase64: v.data?.[0] ?? '' },
+    };
+  }
+  return { kind: 'failed' };
 }
 
 /**
@@ -1073,8 +1114,15 @@ export interface Token2022Stats {
   inertHooks: number;
   /** Accounts read successfully that are not mint-shaped (e.g. a token account). */
   notMints: number;
-  /** Accounts the RPC did not answer for. These are NOT clean. */
+  /**
+   * Addresses the RPC answered for that hold NO account. A knowable fact, and
+   * distinct from `unreadable`: there is nothing there to judge.
+   */
+  absent: number;
+  /** Accounts the RPC did not answer for at all. These are NOT clean. */
   unreadable: number;
+  /** Inputs dropped because the subrequest budget ran out before they were read. */
+  skipped: number;
   /** True when no inputs existed at all — a zero here means "nothing looked at". */
   noInputs: boolean;
   /** Cluster epoch used to resolve fee schedules; null when the RPC would not say. */
@@ -1099,7 +1147,9 @@ function emptyStats(): Token2022Stats {
     risky: 0,
     inertHooks: 0,
     notMints: 0,
+    absent: 0,
     unreadable: 0,
+    skipped: 0,
     noInputs: true,
     epoch: null,
     ticks: 0,
@@ -1194,7 +1244,9 @@ export async function runToken2022Bot(env: DeskEnv, now = Date.now()): Promise<T
   let extCount = 0;
   let inertHooks = 0;
   let notMints = 0;
+  let absent = 0;
   let unreadable = 0;
+  let skipped = 0;
   let epoch: number | null = null;
 
   // One subrequest for the epoch, and only when there is something to check.
@@ -1203,14 +1255,23 @@ export async function runToken2022Bot(env: DeskEnv, now = Date.now()): Promise<T
   }
 
   for (const mint of mints) {
-    if (!(await spendSubrequest(env, 1))) break;
-    const acc = await getAccount(mint);
-    if (!acc) {
-      // RPC error, rate limit or genuinely absent: all three are "not read", and
-      // none of them is evidence that the mint is extension-free.
+    if (!(await spendSubrequest(env, 1))) {
+      // Budget exhausted: everything left is UNREAD, not clean.
+      skipped++;
+      continue;
+    }
+    const read = await readAccount(mint);
+    if (read.kind === 'failed') {
+      // RPC error, rate limit or timeout: we know nothing about this mint.
       unreadable++;
       continue;
     }
+    if (read.kind === 'absent') {
+      // The RPC answered: no account exists here. Knowable, but not a judgement.
+      absent++;
+      continue;
+    }
+    const acc = read.acc;
 
     const info = decodeToken2022(toBytes(acc.dataBase64));
     if (!info) {
@@ -1257,7 +1318,9 @@ export async function runToken2022Bot(env: DeskEnv, now = Date.now()): Promise<T
     risky: merged.filter((f) => f.severity === 'high' || f.severity === 'medium').length,
     inertHooks,
     notMints,
+    absent,
     unreadable,
+    skipped,
     noInputs: mints.length === 0,
     epoch,
     ticks: prev.stats.ticks + 1,
@@ -1298,13 +1361,27 @@ export function renderToken2022(stats: Token2022Stats, findings: Token2022Findin
       ? '  fee epoch  UNKNOWN — fee schedules are reported as their worst case, not as the live rate'
       : `  fee epoch  ${stats.epoch} — fee schedules resolved to the epoch the chain is in`,
   );
+  if (stats.absent > 0) {
+    lines.push(`  absent     ${stats.absent} address(es) hold no account — nothing there to judge`);
+  }
   if (stats.unreadable > 0) {
     lines.push(`  unreadable ${stats.unreadable} — RPC did not answer, so these are NOT clean`);
   }
-  if (stats.mintsChecked === 0 && stats.unreadable === 0) {
-    // Inputs existed but nothing was read: a budget stop. Saying "0 findings"
-    // here would be the confident zero this bot exists to avoid.
-    lines.push('  note       every input was skipped by the subrequest budget — this is not a clean result');
+  if (stats.skipped > 0) {
+    // Said out loud rather than left implicit: an input we did not get to is not
+    // an input that came back clean.
+    lines.push(`  skipped    ${stats.skipped} — subrequest budget ran out before these were read`);
+  }
+  if (
+    stats.mintsChecked === 0 &&
+    stats.unreadable === 0 &&
+    stats.skipped === 0 &&
+    stats.absent === 0 &&
+    stats.notMints === 0
+  ) {
+    // The RPC answered for every input, none was a mint, and nothing was even
+    // classified. Stated rather than left as an unexplained "0 findings".
+    lines.push('  note       no input produced a mint to judge — this is not a clean result');
   }
   for (const f of risky.slice(0, 5)) {
     lines.push(`  · ${f.subject.slice(0, 12)}… ${f.risk} (${f.severity}): ${f.detail}`);

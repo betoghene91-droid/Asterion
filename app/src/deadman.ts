@@ -70,6 +70,7 @@ export type JobName =
   | 'sweep_bot'
   | 'dust_bot'
   | 'hunter_bot'
+  | 'token2022_bot'
   | 'maintenance'
   | 'desk_calibration'
   | 'briefing'
@@ -117,6 +118,9 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
   // The hunter reads a handful of accounts per tick — cheap enough to ride the
   // same hourly slot rather than consume one of the five cron entries.
   { name: 'hunter_bot', cron: '0 * * * *', periodSeconds: 3600 },
+  // Token-2022 scanner rides the same hourly slot for the same reason: it reads
+  // one account per mint, and a bounded slice of mints per tick.
+  { name: 'token2022_bot', cron: '0 * * * *', periodSeconds: 3600 },
   { name: 'maintenance', cron: '15 3 * * *', periodSeconds: 86400 },
   { name: 'desk_calibration', cron: '15 3 * * *', periodSeconds: 86400 },
   { name: 'briefing', cron: '30 6 * * *', periodSeconds: 86400 },
