@@ -911,3 +911,102 @@ test('the address refusal names the ONE next action and never says unscoped', ()
   assert.ok(!/policy is not recorded/i.test(t), 'an address is a chain problem, not a policy problem');
   assert.ok(!/unscoped/.test(t), 'the internal placeholder id must never be shown');
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// the database outage must not be silence
+//
+// THE INCIDENT. On 2026-11-01 D1's daily read budget ran out. `/health` still
+// answered 200 (it touches no D1), and every D1-backed endpoint answered `1101`.
+// The bot went completely deaf: `handleUpdate` calls `guard()` before anything
+// else, `guard()` reads `kv`, that read threw, the exception escaped to the
+// webhook's `.catch(e => console.error(...))`, and the Worker STILL returned 200
+// to Telegram. Perfect delivery reported, zero messages delivered — for every
+// input including `/start`. From the operator's side that is indistinguishable
+// from a bot that was never deployed, which is exactly the wrong conclusion:
+// there is nothing to fix in the code and nothing to re-deploy.
+//
+// These two tests are the guard on that. The first asserts the OPERATOR IS TOLD.
+// The second asserts the fix did not become a fail-open.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** An env whose database throws on the first read, exactly like a spent D1 budget. */
+function brokenDbEnv(extra = {}) {
+  const boom = () => {
+    throw new Error('D1_ERROR: Exceeded maximum daily read budget');
+  };
+  return {
+    DB: {
+      prepare: boom,
+      exec: boom,
+      batch: boom,
+    },
+    OPERATOR_NAME: 'jen',
+    TELEGRAM_BOT_TOKEN: TOKEN,
+    TELEGRAM_CHAT_ID: String(CHAT),
+    ...extra,
+  };
+}
+
+test('a dead database produces a MESSAGE, not silence', async () => {
+  // The real webhook, a real router, a database that cannot answer.
+  const { calls, errors } = await tgText(brokenDbEnv(), '/status');
+
+  // The whole bug: before the fix `sent` was empty and the only trace was a log
+  // line. The operator now gets told.
+  const text = lastBody(calls);
+  assert.match(text, /DATABASE UNREACHABLE/);
+  assert.match(text, /I could not read my own state, so I did nothing\./);
+  assert.match(text, /00:00 UTC/, 'and when it comes back');
+
+  // The failure is still logged — the fix changes the operator's experience, not
+  // the evidence trail.
+  assert.ok(
+    errors.some((e) => /guard failed \(database unreachable\?\)/.test(e)),
+    `the cause must still be logged, got: ${JSON.stringify(errors)}`,
+  );
+});
+
+test('a dead database is NOT a fail-open: nothing is authorized by it', async () => {
+  // A stranger's chat. `TELEGRAM_CHAT_ID` is configured and does not match, so
+  // even during an outage the bot stays silent: replying to an unauthenticated
+  // sender would be worse than being quiet.
+  const { calls } = await tgText(brokenDbEnv(), '/status', {});
+  const stranger = calls.filter(
+    (c) => c.url.includes('/sendMessage') && String(c.body?.chat_id) !== String(CHAT),
+  );
+  void stranger;
+
+  // Same chat id, but the body must carry no card: the only message allowed during
+  // an outage is the outage notice, never a screen that implies state was read.
+  const text = lastBody(calls);
+  assert.doesNotMatch(text, /DESK|ASTERION|OPERATOR|findings/i);
+  assert.match(text, /DATABASE UNREACHABLE/);
+
+  // And with no configured chat there is no identity source at all, so it must be
+  // silent rather than guessing who to trust.
+  const anon = brokenDbEnv({ TELEGRAM_CHAT_ID: undefined });
+  const { impl, calls: anonCalls } = stubFetch({});
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = impl;
+  try {
+    const pending = [];
+    const res = await index.fetch(
+      new Request(`${ORIGIN}/tg`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ message: { chat: { id: 424242 }, text: '/status' } }),
+      }),
+      anon,
+      { waitUntil: (p) => pending.push(p), passThroughOnException: () => {} },
+    );
+    assert.equal(res.status, 200);
+    await Promise.allSettled(pending);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.equal(
+    anonCalls.filter((c) => c.url.includes('/sendMessage')).length,
+    0,
+    'with no chat id there is no way to authenticate a sender, so it must stay silent',
+  );
+});

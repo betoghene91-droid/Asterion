@@ -191,6 +191,58 @@ export async function guard(env: Env, chatId: number): Promise<boolean> {
   return authorizeChat(env, chatId);
 }
 
+/**
+ * `guard()`, but a database outage produces a MESSAGE instead of silence.
+ *
+ * WHY THIS EXISTS. `guard()` reads the `kv` table on every single update, and
+ * `handleUpdate` calls it before doing anything else. When D1 refuses that read
+ * the exception propagates out of `handleUpdate`, is swallowed by the webhook's
+ * `.catch(e => console.error(...))`, and the Worker still answers Telegram HTTP
+ * 200. Telegram therefore reports perfect delivery while the operator receives
+ * nothing at all - for every message, including `/start`. Observed live on
+ * 2026-11-01 with D1's daily read budget spent: `/health` returned 200 while every
+ * D1-backed endpoint returned `1101`, and the bot went completely deaf. A bot
+ * that answers nothing is indistinguishable from a bot that died, which is the
+ * exact failure mode this codebase refuses to accept elsewhere (see `deadman.ts`
+ * and `agent.ts`'s "a failed tool is not a zero").
+ *
+ * WHAT IT IS NOT. This is not a fail-open. It never authorizes anything: on a
+ * read error it returns `false`, so no command runs, no hunt is created and no
+ * data is read. The only thing it does that the bare `guard()` did not is TELL
+ * the operator what is wrong.
+ *
+ * WHO IT TELLS. Only a chat that can be identified WITHOUT the database. With
+ * `TELEGRAM_CHAT_ID` configured, that is the configured chat and nothing else, so
+ * a stranger who finds the bot during an outage still gets silence. With no
+ * `TELEGRAM_CHAT_ID` set, `kv.operator_chat` is the only identity source and it
+ * is unreadable - so this stays silent rather than guessing, because replying to
+ * an unauthenticated sender is the one thing worse than being quiet.
+ */
+export async function guardOrExplain(env: Env, chatId: number): Promise<boolean> {
+  try {
+    return await guard(env, chatId);
+  } catch (e) {
+    console.error('guard failed (database unreachable?)', e);
+    const known = Boolean(env.TELEGRAM_CHAT_ID) && String(chatId) === String(env.TELEGRAM_CHAT_ID);
+    if (known) {
+      await send(
+        env,
+        [
+          '\u26A0 <b>DATABASE UNREACHABLE</b>',
+          rule(),
+          'I could not read my own state, so I did nothing.',
+          '',
+          'This is usually the D1 daily read budget: it resets at',
+          '00:00 UTC. Nothing was lost and nothing was changed.',
+        ].join('\n'),
+        undefined,
+        chatId,
+      ).catch(() => undefined);
+    }
+    return false;
+  }
+}
+
 // ── screens ───────────────────────────────────────────────────────────────
 
 export function homeScreen(name: string): string {

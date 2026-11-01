@@ -61,6 +61,7 @@ import {
   editText,
   esc,
   guard,
+  guardOrExplain,
   homeScreen,
   KEYBOARDS,
   rule,
@@ -335,7 +336,7 @@ async function handleUpdate(env: Env, u: TgUpdate): Promise<void> {
     const chatId = q.message?.chat.id;
     const msgId = q.message?.message_id;
     if (!chatId || !msgId) return;
-    if (!(await guard(env, chatId))) return;
+    if (!(await guardOrExplain(env, chatId))) return;
     await answerCb(env, q.id);
     await routeButton(env, chatId, msgId, q.data ?? 'm:main');
     return;
@@ -344,9 +345,15 @@ async function handleUpdate(env: Env, u: TgUpdate): Promise<void> {
   const msg = u.message;
   if (!msg?.text) return;
   const chatId = msg.chat.id;
-  if (!(await guard(env, chatId))) return;
+  if (!(await guardOrExplain(env, chatId))) return;
 
   const text = msg.text.trim();
+
+  // Guarding is the first database read on EVERY update, so it is also the first
+  // thing a D1 outage can kill. `guardOrExplain` behaves exactly like `guard`
+  // (false on any doubt, so nothing runs) but tells the configured chat what is
+  // wrong instead of letting the exception become silence. See its docstring in
+  // telegram.ts for the live incident this closes.
 
   if (text === '/start' || text === '/menu') {
     await send(env, homeScreen(env.OPERATOR_NAME ?? 'operator'), KEYBOARDS.main(), chatId);
