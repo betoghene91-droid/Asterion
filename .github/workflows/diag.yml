@@ -1,7 +1,7 @@
 name: diag
 
-# One-off diagnostics: read D1 usage, table sizes and the query plan behind the
-# daily row-read exhaustion. Temporary; remove once the fix is verified.
+# One-off diagnostics: read D1 row-read usage and the query plan behind the daily
+# limit exhaustion. Temporary; removed once the fix is verified.
 on:
   workflow_dispatch:
 
@@ -10,40 +10,35 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
 
-      - name: D1 usage (today, by account)
+      - name: D1 usage today
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          ACC="$CLOUDFLARE_ACCOUNT_ID"
-          DB="4f98cf48-ee71-4f18-8d61-2feceb4af16c"
-          echo "=== rows read today (d1AnalyticsAdaptiveGroups)"
+          set -e
+          TODAY=$(date -u +%Y-%m-%d)
+          YDAY=$(date -u -d '1 day ago' +%Y-%m-%d)
+          echo "=== rows read today (per database) ==="
+          Q="{\"query\":\"query{viewer{accounts(filter:{accountTag:\\\"$CF_ACCOUNT\\\"}){d1AnalyticsAdaptiveGroups(limit:50,filter:{date_geq:\\\"$TODAY\\\"},orderBy:[rowsRead_DESC]){sum{rowsRead rowsWritten}dimensions{databaseId}}}}}\"}"
           curl -sS -X POST "https://api.cloudflare.com/client/v4/graphql" \
-            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-            -H "content-type: application/json" \
-            --data-binary @- <<JSON | head -c 4000
-          {"query":"query{viewer{accounts(filter:{accountTag:\"$ACC\"}){d1AnalyticsAdaptiveGroups(limit:50,filter:{date_geq:\"$(date -u +%Y-%m-%d)\"},orderBy:[rowsRead_DESC]){sum{rowsRead rowsWritten}dimensions{databaseId}}}}}"}
-JSON
-          echo
-          echo "=== per-hour read breakdown (last 24h)"
+            -H "Authorization: Bearer $CF_TOKEN" -H "content-type: application/json" \
+            --data "$Q" | python3 -m json.tool | head -60
+
+          echo "=== per-hour, last 24h ==="
+          Q2="{\"query\":\"query{viewer{accounts(filter:{accountTag:\\\"$CF_ACCOUNT\\\"}){d1AnalyticsAdaptiveGroups(limit:200,filter:{date_geq:\\\"$YDAY\\\"},orderBy:[datetimeHour_ASC]){sum{rowsRead rowsWritten}dimensions{datetimeHour}}}}}\"}"
           curl -sS -X POST "https://api.cloudflare.com/client/v4/graphql" \
-            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-            -H "content-type: application/json" \
-            --data-binary @- <<JSON | head -c 6000
-          {"query":"query{viewer{accounts(filter:{accountTag:\"$ACC\"}){d1AnalyticsAdaptiveGroups(limit:100,filter:{date_geq:\"$(date -u -d '1 day ago' +%Y-%m-%d)\"},orderBy:[datetimeHour_ASC]){sum{rowsRead rowsWritten}dimensions{datetimeHour databaseId}}}}}"}
-JSON
+            -H "Authorization: Bearer $CF_TOKEN" -H "content-type: application/json" \
+            --data "$Q2" | python3 -m json.tool | head -200
 
       - name: table row counts
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        working-directory: app
         run: |
-          cd app
-          SQL="SELECT 'programs' t, COUNT(*) n FROM programs
+          cat > /tmp/q.sql <<'SQL'
+          SELECT 'programs' t, COUNT(*) n FROM programs
           UNION ALL SELECT 'candidates', COUNT(*) FROM candidates
           UNION ALL SELECT 'assets', COUNT(*) FROM assets
           UNION ALL SELECT 'findings', COUNT(*) FROM findings
@@ -59,5 +54,6 @@ JSON
           UNION ALL SELECT 'dust_scan', COUNT(*) FROM dust_scan
           UNION ALL SELECT 'desk_universe', COUNT(*) FROM desk_universe
           UNION ALL SELECT 'llm_log', COUNT(*) FROM llm_log
-          ORDER BY n DESC;"
-          npx --yes wrangler@4 d1 execute asterion --remote --env production --command "$SQL" 2>&1 | tail -40
+          ORDER BY n DESC;
+          SQL
+          npx --yes wrangler@4 d1 execute asterion --remote --env production --file /tmp/q.sql 2>&1 | tail -45
