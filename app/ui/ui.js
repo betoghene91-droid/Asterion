@@ -2240,7 +2240,10 @@ const RENDERERS = {
     }
 
     // Anything the named counts did not cover, shown raw rather than dropped.
-    const extra = Object.keys(o).filter((k) => k !== 'findings' && !scalarKeys.includes(k));
+    // `typeof null === 'object'`, which is why a null field is excluded here and
+    // not dumped as a literal `null` block: it has no value to show, and an
+    // empty-looking card reads as a rendering fault rather than as missing data.
+    const extra = Object.keys(o).filter((k) => k !== 'findings' && !scalarKeys.includes(k) && o[k] !== null && o[k] !== undefined);
     for (const k of extra.slice(0, 3)) out.appendChild(h('div', { class: 'card' }, [jsonBlock(o[k])]));
     return out;
   },
