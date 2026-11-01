@@ -23,6 +23,7 @@ import { PolicyEngine, roeFromBrief, type Action, type Mut } from './policy.js';
 import { sentinelTick } from './sentinel.js';
 import { deskTick, runCalibration, deskAnalystTick } from './desk/pipeline.js';
 import { runSweepBot, sweepStatus, renderSweep, SWEEP_DEST } from './desk/sweep.js';
+import { runDustBot, dustStatus, renderDust } from './desk/dust.js';
 import {
   calibCard,
   deskCard,
@@ -229,6 +230,7 @@ export default {
           // owner+space+lamports, sweep anything the System Program owns. Own
           // try/catch so a dead RPC cannot silence the crawler in this slot.
           await ranJob(env, 'sweep_bot', 'cron sweep bot failed', async () => await runSweepBot(env));
+          await ranJob(env, 'dust_bot', 'cron dust bot failed', async () => await runDustBot(env));
           return;
         }
         if (cron === '15 3 * * *') {
@@ -1602,6 +1604,15 @@ async function dashboardApi(env: Env, path: string): Promise<Response> {
     // Live arming is `wrangler secret put` + the gates in desk/arming.ts,
     // because a web control that can start real trading is one leaked URL
     // away from an empty wallet.
+    case '/api/desk/dust': {
+      const s = await dustStatus(env);
+      const rows = await env.DB.prepare(
+        `SELECT owner, token_account, mint, amount, rent_lamports, closable, reason, ts
+           FROM dust_scan ORDER BY closable DESC, rent_lamports DESC LIMIT 50`,
+      ).all();
+      return json({ ...s, rows: rows.results ?? [] });
+    }
+
     case '/api/desk/sweep': {
       // Read-only. The sweep itself runs on the hourly cron; this endpoint only
       // reports. A dashboard read must never spend a subrequest on an RPC call,

@@ -178,7 +178,7 @@ test('the five cron expressions in wrangler.toml are covered, and so is each job
   // Three now share the hourly slot: the sweep bot was composed in rather than
   // given a cron of its own, because Workers gives a plan a small fixed set of
   // timers and an unspent brainwallet is latency-tolerant (no race to lose).
-  assert.equal(perCron['0 * * * *'], 3, 'crawler, desk analyst and sweep bot are separate jobs');
+  assert.equal(perCron['0 * * * *'], 4, 'crawler, desk analyst, sweep and dust are separate jobs');
   assert.equal(perCron['15 3 * * *'], 2, 'maintenance and desk calibration are separate jobs');
 });
 

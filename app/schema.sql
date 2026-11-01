@@ -727,3 +727,22 @@ CREATE TABLE IF NOT EXISTS sweep_hits (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sweep_hits_addr ON sweep_hits(address);
 CREATE INDEX IF NOT EXISTS idx_sweep_hits_spendable ON sweep_hits(spendable, swept);
+
+-- ───────────────────────────────────────────────────────────── dust / rent ────
+-- Opening an SPL token account costs ~0.00203928 SOL in rent-exempt deposit and
+-- closing it returns that SOL. Most wallets never close empty accounts, so the
+-- rent stays locked. `closable` is NOT "balance == 0" alone: closing an account
+-- that still holds tokens DESTROYS them, so the reason column records why.
+CREATE TABLE IF NOT EXISTS dust_scan (
+  id            TEXT PRIMARY KEY,
+  ts            INTEGER NOT NULL,
+  owner         TEXT NOT NULL,
+  token_account TEXT NOT NULL,
+  mint          TEXT NOT NULL,
+  amount        TEXT NOT NULL,
+  rent_lamports INTEGER NOT NULL,
+  closable      INTEGER NOT NULL DEFAULT 0,
+  reason        TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_dust_acct ON dust_scan(token_account);
+CREATE INDEX IF NOT EXISTS idx_dust_closable ON dust_scan(closable, owner);
