@@ -51,8 +51,13 @@ const BASE_FEE = 5000;
 const MIN_NET = 1_000_000;
 
 const RPCS = [
-  'https://solana-rpc.publicnode.com',
+  // getTokenAccountsByOwner is BLOCKED on publicnode ("Request blocked") and only
+  // works on the official endpoint, so that one is first. The order here is not
+  // cosmetic: a blocked endpoint returns a JSON-RPC error, which this module
+  // treats as "try the next", so putting a blocked host first would have this
+  // bot silently report zero token accounts for every wallet forever.
   'https://api.mainnet-beta.solana.com',
+  'https://solana-rpc.publicnode.com',
 ];
 
 export interface DustCandidate {
